@@ -16,6 +16,16 @@ export const GAMES: RegistryEntry[] = [
     },
     load: () => import('./interwheel'),
   },
+  {
+    meta: {
+      id: 'pioupiou',
+      title: 'Pioupiou',
+      description: 'Climb falling blocks with arrow keys, dodge being crushed.',
+      width: 300,
+      height: 320,
+    },
+    load: () => import('./pioupiou'),
+  },
 ];
 
 export function findGame(id: string): RegistryEntry | undefined {
