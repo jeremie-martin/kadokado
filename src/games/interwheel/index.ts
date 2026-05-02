@@ -1149,6 +1149,7 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
     destroy() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      app.canvas.removeEventListener('pointerdown', onPointerDown);
       app.ticker.remove(tickerCallback);
       app.destroy(true, { children: true });
     },
