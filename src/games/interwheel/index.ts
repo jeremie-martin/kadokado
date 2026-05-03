@@ -1,4 +1,4 @@
-import { Application, Container, Sprite, Text } from 'pixi.js';
+import { Application, Container, Graphics, Sprite, Text } from 'pixi.js';
 import type { GameInstance } from '../types';
 import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
 
@@ -44,6 +44,7 @@ const PARTICLE_FADE_LIMIT = 10;
 const ENDGAME_DELAY = 30;
 const DECOR_SECTION_HEIGHT = 2000;
 const DECOR_SECTIONS = 5;
+const DECOR_BASE_COLOR = 0x436b70;
 
 const ASSET_ROOT = '/assets/interwheel';
 
@@ -490,6 +491,9 @@ class InterwheelGame {
   buildDecor(): void {
     for (let section = 0; section < DECOR_SECTIONS; section += 1) {
       const sectionTop = -(section + 1) * DECOR_SECTION_HEIGHT;
+      const base = new Graphics();
+      base.rect(0, sectionTop, STAGE_WIDTH, DECOR_SECTION_HEIGHT).fill(DECOR_BASE_COLOR);
+      this.decorLayer.addChild(base);
 
       for (let y = 0; y < DECOR_SECTION_HEIGHT; y += 40) {
         for (let x = 0; x < STAGE_WIDTH; x += 40) {
@@ -854,23 +858,23 @@ class InterwheelGame {
       if (this.checkPress()) {
         const sens = -blob.wallSide;
         this.jump(-Math.PI * 0.5 + JUMP_SIDE_ANGLE * sens);
+        this.integrateBlobFlight(false);
+      } else {
+        blob.y += blob.vy;
       }
+      return;
     }
 
-    if (blob.state === BlobState.Fly || blob.state === BlobState.Wall) {
-      if (blob.state === BlobState.Fly) {
-        blob.stateTick += 1;
-        this.spawnFlyTrail();
-      }
+    if (blob.state === BlobState.Fly) {
+      blob.stateTick += 1;
+      this.spawnFlyTrail();
       const oldX = blob.x;
       const oldY = blob.y;
       this.integrateBlobFlight();
-      if (blob.state === BlobState.Fly) {
-        blob.vvx = oldX - blob.x;
-        blob.vvy = oldY - blob.y;
-        blob.ox = blob.x;
-        blob.oy = blob.y;
-      }
+      blob.vvx = oldX - blob.x;
+      blob.vvy = oldY - blob.y;
+      blob.ox = blob.x;
+      blob.oy = blob.y;
     }
 
     this.checkSideCollision();
@@ -928,6 +932,7 @@ class InterwheelGame {
     blob.stateTick = 0;
     blob.x = side < 0 ? SIDE : STAGE_WIDTH - SIDE;
     blob.vx = 0;
+    blob.vy = 0;
   }
 
   jump(a: number): void {
@@ -1110,10 +1115,15 @@ class InterwheelGame {
       return;
     }
 
+    const wasFlying = blob.state === BlobState.Fly;
     blob.state = BlobState.Dead;
     blob.deathTick = 0;
     blob.stateTick = 0;
     blob.wallSide = 0;
+    if (wasFlying) {
+      blob.vx = 0;
+      blob.vy = 0;
+    }
     blob.view.removeFromParent();
     this.particleLayer.addChild(blob.view);
     blob.view.visible = true;
@@ -1184,15 +1194,16 @@ class InterwheelGame {
     const blob = this.blob;
     for (let i = 0; i < this.sparks.length; i += 1) {
       const spark = this.sparks[i];
+      spark.vx *= 0.9;
+      spark.vy *= 0.9;
+      spark.x += spark.vx;
+      spark.y += spark.vy;
+
       spark.distLimit += 0.05;
       spark.coefLimit += 0.001;
       spark.coef = Math.min(spark.coef + 0.005, spark.coefLimit);
-      spark.vx *= 0.9;
-      spark.vy *= 0.9;
       spark.vx += clamp((blob.x - spark.x) * spark.coef, -spark.distLimit, spark.distLimit);
       spark.vy += clamp((blob.y - spark.y) * spark.coef, -spark.distLimit, spark.distLimit);
-      spark.x += spark.vx;
-      spark.y += spark.vy;
       spark.view.position.set(spark.x, spark.y);
 
       if (Math.random() < 0.4) {
