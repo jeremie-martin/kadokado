@@ -37,8 +37,8 @@ const BLOB_COULE_FRAME_START = 19;
 const BLOB_COULE_FRAME_COUNT = 25;
 const BLOB_GRAB_FRAME_START = 44;
 const BLOB_GRAB_FRAME_COUNT = 15;
-const BLOB_DEATH_FRAME_START = 100;
-const BLOB_DEATH_FRAME_COUNT = 73;
+const BLOB_DEATH_FRAME_START = 102;
+const BLOB_DEATH_FRAME_COUNT = 71;
 const MINE_SPACE = 36;
 const PARTICLE_FADE_LIMIT = 10;
 const ENDGAME_DELAY = 30;
@@ -96,13 +96,14 @@ type Wheel = {
   mineSprites: Sprite[];
   destroyed: boolean;
   boomAngle: number | null;
+  active: boolean;
+  dustTick: number;
   group: Container;
   spin: Container;
   shadow: Sprite;
   dust: Sprite;
   stains: Container;
   stainMask: Sprite;
-  dustOffset: number;
 };
 
 type Pastille = {
@@ -111,6 +112,7 @@ type Pastille = {
   ray: number;
   type: number;
   phase: number;
+  active: boolean;
   view: Container;
   core: Sprite;
 };
@@ -254,7 +256,7 @@ async function loadAssets(): Promise<InterwheelAssets> {
     loadSeries(`${ASSET_ROOT}/motif`, 51, 78.5, 71),
     loadSeries(`${ASSET_ROOT}/frise`, 12, 140, 57.5),
     loadSeries(`${ASSET_ROOT}/explosion`, 14, 75.55, 86.6),
-    loadSeries(`${ASSET_ROOT}/start-explo`, 15, 75.55, 86.6),
+    loadSeries(`${ASSET_ROOT}/start-explo`, 15, 53.95, 53.95),
     loadSeries(`${ASSET_ROOT}/smoke`, 25, 18, 18),
     loadSeries(`${ASSET_ROOT}/mine-parts`, 2, 6, 6),
     loadSeries(`${ASSET_ROOT}/tache`, 19, 6.5, 6),
@@ -317,10 +319,9 @@ class InterwheelGame {
     text: '0m',
     style: {
       fontFamily: 'Arial, Helvetica, sans-serif',
-      fontSize: 15,
+      fontSize: 13,
       fontWeight: '700',
-      fill: 0x132329,
-      stroke: { color: 0xf5fff8, width: 3 },
+      fill: 0xe1bd6a,
     },
   });
 
@@ -357,7 +358,6 @@ class InterwheelGame {
   roof = 0;
   waterY = -300;
   waterBoost = 0;
-  heightOrigin = 0;
   maxHeight = 0;
   score = 0;
   tick = 0;
@@ -397,7 +397,7 @@ class InterwheelGame {
     this.scoreText.position.set(10, 8);
     this.gameOverText.anchor.set(0.5);
     this.gameOverText.position.set(150, 145);
-    this.hudLayer.addChild(this.scoreText, this.meterText, this.gameOverText);
+    this.hudLayer.addChild(this.meterText, this.gameOverText);
 
     const blobView = makeSprite(assets.blob[0]);
     this.blobLayer.addChild(blobView);
@@ -479,8 +479,6 @@ class InterwheelGame {
     this.blob.deathTick = 0;
     this.blob.stateTick = 0;
     this.grabWheel(this.wheels[START_WHEEL_ID]);
-    this.heightOrigin = -this.blob.y;
-
     const water = makeSprite(this.assets.water);
     water.position.set(0, this.waterY);
     this.waterLayer.addChild(water);
@@ -610,13 +608,14 @@ class InterwheelGame {
       mineSprites: [],
       destroyed: false,
       boomAngle: null,
+      active: false,
+      dustTick: 0,
       group: new Container(),
       spin: new Container(),
       shadow: new Sprite(),
       dust: new Sprite(),
       stains: new Container(),
       stainMask: new Sprite(),
-      dustOffset: randomInt(18),
     };
   }
 
@@ -676,7 +675,6 @@ class InterwheelGame {
 
     const lightFrame = this.assets.wheelLight[Math.min(wheel.fr - 1, this.assets.wheelLight.length - 1)];
     const light = makeSprite(lightFrame);
-    light.alpha = 0.62;
     light.scale.set(wheel.fr === 2 ? (wheel.ray * 2) / 100 : 1);
     wheel.group.addChild(wheel.dust, wheel.spin, light);
     this.wheelLayer.addChild(wheel.group);
@@ -713,6 +711,7 @@ class InterwheelGame {
         ray,
         type,
         phase: Math.random() * Math.PI * 2,
+        active: false,
         view: pastilleView.view,
         core: pastilleView.core,
       };
@@ -774,8 +773,8 @@ class InterwheelGame {
 
     this.updateWheels();
     this.checkWheelCollision();
-    this.updateBlob();
     this.updatePastilles();
+    this.updateBlob();
     this.separateSparks();
     this.updateSparks();
     this.updateParticles();
@@ -787,8 +786,15 @@ class InterwheelGame {
   updateWheels(): void {
     for (const wheel of this.wheels) {
       if (!this.isElementActive(wheel)) {
+        wheel.active = false;
         continue;
       }
+      if (!wheel.active) {
+        wheel.active = true;
+        wheel.dustTick = 0;
+        continue;
+      }
+      wheel.dustTick += 1;
       wheel.a += wheel.speed;
       if (wheel.destroyed) {
         wheel.speed *= 0.97;
@@ -975,7 +981,7 @@ class InterwheelGame {
     }
 
     for (const wheel of this.wheels) {
-      if (!this.isElementActive(wheel)) {
+      if (!wheel.active) {
         continue;
       }
       if (distance(blob, wheel) >= wheel.ray + BLOB_RAY) {
@@ -1136,6 +1142,11 @@ class InterwheelGame {
     for (let i = 0; i < this.pastilles.length; i += 1) {
       const pastille = this.pastilles[i];
       if (!this.isElementActive(pastille)) {
+        pastille.active = false;
+        continue;
+      }
+      if (!pastille.active) {
+        pastille.active = true;
         continue;
       }
       if (distance(blob, pastille) < 70) {
@@ -1236,14 +1247,13 @@ class InterwheelGame {
       this.endGame();
     }
 
-    const runHeight = Math.max(0, -blob.y - this.heightOrigin);
+    const runHeight = Math.max(0, -blob.y);
     const heightGain = runHeight - this.maxHeight;
     if (heightGain > 0) {
       this.score += Math.floor(heightGain);
     }
     this.maxHeight = Math.max(runHeight, this.maxHeight);
     this.meterText.text = `${Math.floor(this.maxHeight * 0.2)}m`;
-    this.scoreText.text = String(Math.floor(this.score));
   }
 
   updateBlobWaterEffects(): void {
@@ -1488,18 +1498,18 @@ class InterwheelGame {
     this.world.y = this.mapY;
 
     for (const wheel of this.wheels) {
-      const visible = this.isElementActive(wheel);
+      const visible = wheel.active;
       wheel.group.visible = visible;
       wheel.shadow.visible = visible;
       wheel.group.position.set(wheel.x, wheel.y);
       wheel.spin.rotation = wheel.a;
       wheel.shadow.position.set(wheel.x, wheel.y + 6);
       wheel.shadow.rotation = wheel.a;
-      setFrame(wheel.dust, this.assets.dust[(this.tick + wheel.dustOffset) % this.assets.dust.length]);
+      setFrame(wheel.dust, this.assets.dust[wheel.dustTick % this.assets.dust.length]);
     }
 
     for (const pastille of this.pastilles) {
-      pastille.view.visible = this.isElementActive(pastille);
+      pastille.view.visible = pastille.active;
     }
 
     const water = this.waterLayer.children[0] as Sprite | undefined;
