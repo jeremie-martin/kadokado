@@ -36,6 +36,16 @@ export const GAMES: RegistryEntry[] = [
     },
     load: () => import('./linea'),
   },
+  {
+    meta: {
+      id: 'iron-chouquette',
+      title: 'Iron Chouquette',
+      description: 'Vertical bullet-hell boss-rush with weapon types and parallax decor.',
+      width: 300,
+      height: 300,
+    },
+    load: () => import('./iron-chouquette'),
+  },
 ];
 
 export function findGame(id: string): RegistryEntry | undefined {
