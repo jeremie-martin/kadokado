@@ -30,11 +30,15 @@ const BLOB_RAY = 8;
 const BLOB_WEIGHT = 0.5;
 const BLOB_JUMP = 12;
 const JUMP_SIDE_ANGLE = 0.77;
+const BLOB_BLOP_START = 0.6;
+const BLOB_BLOP_MIN = 0.07;
+const BLOB_BLOP_FRICT = 0.94;
 const BLOB_COULE_FRAME_START = 19;
 const BLOB_COULE_FRAME_COUNT = 25;
 const BLOB_GRAB_FRAME_START = 44;
 const BLOB_GRAB_FRAME_COUNT = 15;
 const MINE_SPACE = 36;
+const PARTICLE_FADE_LIMIT = 10;
 const DECOR_SECTION_HEIGHT = 2000;
 const DECOR_SECTIONS = 5;
 
@@ -70,6 +74,12 @@ type InterwheelAssets = {
   startExplo: Frame[];
   smoke: Frame[];
   mineParts: Frame[];
+  tache: Frame[];
+  wallTache: Frame[];
+  goutte: Frame;
+  bubble: Frame[];
+  eyes: Frame;
+  starTache: Frame;
 };
 
 type Wheel = {
@@ -80,11 +90,15 @@ type Wheel = {
   a: number;
   fr: number;
   mines: number[];
+  mineSprites: Sprite[];
   destroyed: boolean;
+  boomAngle: number | null;
   group: Container;
   spin: Container;
   shadow: Sprite;
   dust: Sprite;
+  stains: Container;
+  stainMask: Sprite;
   dustOffset: number;
 };
 
@@ -110,6 +124,12 @@ type Blob = {
   wa: number;
   angle: number;
   wet: number;
+  wasInWater: boolean;
+  blop: number;
+  ox: number;
+  oy: number;
+  vvx: number;
+  vvy: number;
   view: Sprite;
   deathTick: number;
 };
@@ -133,10 +153,20 @@ type Particle = {
   vy: number;
   weight: number;
   frict: number;
-  life: number;
+  life: number | null;
   ttl: number;
+  scale: number;
+  fadeMode: 'alpha' | 'scale' | 'none';
   vr: number;
+  vs: number;
+  sFrict: number;
   frames?: Frame[];
+  frameCursor?: number;
+  bubbleFrames?: Frame[];
+  dec?: number;
+  dsp?: number;
+  ec?: number;
+  outTimer?: number;
 };
 
 function randomInt(max: number): number {
@@ -195,6 +225,12 @@ async function loadAssets(): Promise<InterwheelAssets> {
     startExplo,
     smoke,
     mineParts,
+    tache,
+    wallTache,
+    goutte,
+    bubble,
+    eyes,
+    starTache,
   ] = await Promise.all([
     loadFrame(`${ASSET_ROOT}/bg.png`, 0, 0),
     loadFrame(`${ASSET_ROOT}/background.png`, 0, 599.95),
@@ -218,6 +254,12 @@ async function loadAssets(): Promise<InterwheelAssets> {
     loadSeries(`${ASSET_ROOT}/start-explo`, 15, 75.55, 86.6),
     loadSeries(`${ASSET_ROOT}/smoke`, 25, 18, 18),
     loadSeries(`${ASSET_ROOT}/mine-parts`, 2, 6, 6),
+    loadSeries(`${ASSET_ROOT}/tache`, 19, 6.5, 6),
+    loadSeries(`${ASSET_ROOT}/wall-tache`, 4, 18, 13.5),
+    loadFrame(`${ASSET_ROOT}/goutte/1.png`, 4, 4),
+    loadSeries(`${ASSET_ROOT}/bubble`, 2, 7, 6),
+    loadFrame(`${ASSET_ROOT}/eyes/1.png`, 2.5, 4.5),
+    loadFrame(`${ASSET_ROOT}/star-tache/1.png`, 69, 54),
   ]);
 
   return {
@@ -243,6 +285,12 @@ async function loadAssets(): Promise<InterwheelAssets> {
     startExplo,
     smoke,
     mineParts,
+    tache,
+    wallTache,
+    goutte,
+    bubble,
+    eyes,
+    starTache,
   };
 }
 
@@ -252,11 +300,14 @@ class InterwheelGame {
   readonly world = new Container();
   readonly decorLayer = new Container();
   readonly shadowLayer = new Container();
+  readonly oilLayer = new Container();
+  readonly blobLayer = new Container();
   readonly wheelLayer = new Container();
   readonly pastilleLayer = new Container();
+  readonly starLayer = new Container();
   readonly particleLayer = new Container();
-  readonly blobLayer = new Container();
   readonly waterLayer = new Container();
+  readonly waterParticleLayer = new Container();
   readonly hudLayer = new Container();
 
   readonly meterText = new Text({
@@ -321,11 +372,14 @@ class InterwheelGame {
     this.world.addChild(
       this.decorLayer,
       this.shadowLayer,
+      this.oilLayer,
+      this.blobLayer,
       this.wheelLayer,
       this.pastilleLayer,
+      this.starLayer,
       this.particleLayer,
-      this.blobLayer,
       this.waterLayer,
+      this.waterParticleLayer,
     );
 
     const panel = makeSprite(assets.panel);
@@ -353,6 +407,12 @@ class InterwheelGame {
       wa: 0,
       angle: 0,
       wet: 0,
+      wasInWater: false,
+      blop: 0,
+      ox: STAGE_WIDTH * 0.5,
+      oy: 0,
+      vvx: 0,
+      vvy: 0,
       view: blobView,
       deathTick: 0,
     };
@@ -363,11 +423,14 @@ class InterwheelGame {
   reset(): void {
     this.decorLayer.removeChildren();
     this.shadowLayer.removeChildren();
+    this.oilLayer.removeChildren();
     this.wheelLayer.removeChildren();
     this.pastilleLayer.removeChildren();
+    this.starLayer.removeChildren();
     this.particleLayer.removeChildren();
     this.blobLayer.removeChildren();
     this.waterLayer.removeChildren();
+    this.waterParticleLayer.removeChildren();
 
     this.wheels = [];
     this.pastilles = [];
@@ -398,6 +461,12 @@ class InterwheelGame {
     this.blob.vx = 0;
     this.blob.vy = 0;
     this.blob.wet = 0;
+    this.blob.wasInWater = false;
+    this.blob.blop = 0;
+    this.blob.ox = this.blob.x;
+    this.blob.oy = this.blob.y;
+    this.blob.vvx = 0;
+    this.blob.vvy = 0;
     this.blob.deathTick = 0;
     this.blob.stateTick = 0;
     this.grabWheel(this.wheels[START_WHEEL_ID]);
@@ -497,7 +566,7 @@ class InterwheelGame {
           interWheel.ray = WHEEL_RAY_MIN + 10 + Math.random() * (WHEEL_RAY_MAX - WHEEL_RAY_MIN);
           interWheel.speed = WHEEL_SPEED_MIN + Math.random() * (WHEEL_SPEED_MAX - WHEEL_SPEED_MIN);
           const m = SIDE + SPACE + interWheel.ray;
-          interWheel.x = m + Math.random() * (STAGE_WIDTH - 2 * m);
+          interWheel.x = STAGE_WIDTH - m;
           const valid =
             distance(interWheel, wheel) >= interWheel.ray + wheel.ray + SPACE &&
             distance(interWheel, oldWheel) >= interWheel.ray + oldWheel.ray + SPACE;
@@ -529,11 +598,15 @@ class InterwheelGame {
       a: 0,
       fr: randomInt(5) + 1,
       mines: [],
+      mineSprites: [],
       destroyed: false,
+      boomAngle: null,
       group: new Container(),
       spin: new Container(),
       shadow: new Sprite(),
       dust: new Sprite(),
+      stains: new Container(),
+      stainMask: new Sprite(),
       dustOffset: randomInt(18),
     };
   }
@@ -572,8 +645,7 @@ class InterwheelGame {
 
     wheel.spin = new Container();
     wheel.spin.scale.set((wheel.ray * 2) / 100);
-    const base = makeSprite(this.assets.wheelBase[wheel.fr - 1]);
-    wheel.spin.addChild(base);
+    wheel.mineSprites = [];
 
     for (const mineAngle of wheel.mines) {
       const mine = makeSprite(this.assets.mine);
@@ -581,7 +653,17 @@ class InterwheelGame {
       mine.scale.set(100 / (wheel.ray * 2));
       mine.rotation = mineAngle;
       wheel.spin.addChild(mine);
+      wheel.mineSprites.push(mine);
     }
+
+    const base = makeSprite(this.assets.wheelBase[wheel.fr - 1]);
+    wheel.spin.addChild(base);
+
+    wheel.stains = new Container();
+    wheel.stainMask = makeSprite(this.assets.mask[wheel.fr - 1] ?? this.assets.mask[this.assets.mask.length - 1]);
+    wheel.stains.mask = wheel.stainMask;
+    wheel.stainMask.renderable = false;
+    wheel.spin.addChild(wheel.stains, wheel.stainMask);
 
     const lightFrame = this.assets.wheelLight[Math.min(wheel.fr - 1, this.assets.wheelLight.length - 1)];
     const light = makeSprite(lightFrame);
@@ -662,6 +744,7 @@ class InterwheelGame {
     this.checkWheelCollision();
     this.updateBlob();
     this.updatePastilles();
+    this.separateSparks();
     this.updateSparks();
     this.updateParticles();
     this.updateWaterAndScore();
@@ -674,6 +757,23 @@ class InterwheelGame {
       wheel.a += wheel.speed;
       if (wheel.destroyed) {
         wheel.speed *= 0.97;
+        if (wheel.boomAngle !== null && Math.random() < Math.abs(wheel.speed) * 5) {
+          const a = wheel.a + wheel.boomAngle;
+          const dist = wheel.ray - (5 + Math.random() * 5);
+          this.spawnParticle(
+            this.assets.oil,
+            wheel.x + Math.cos(a) * dist,
+            wheel.y + Math.sin(a) * dist,
+            0,
+            0,
+            {
+              scale: 0.8 + Math.random() * 0.8,
+              ttl: 10 + Math.random() * 20,
+              weight: 0.1 + Math.random() * 0.1,
+              fadeMode: 'scale',
+            },
+          );
+        }
       }
     }
   }
@@ -691,7 +791,13 @@ class InterwheelGame {
       blob.vy = 0;
       if (this.checkPress()) {
         this.jump(a);
+        const oldX = blob.x;
+        const oldY = blob.y;
         this.integrateBlobFlight();
+        blob.vvx = oldX - blob.x;
+        blob.vvy = oldY - blob.y;
+        blob.ox = blob.x;
+        blob.oy = blob.y;
         this.checkSideCollision();
       }
       return;
@@ -713,11 +819,44 @@ class InterwheelGame {
     if (blob.state === BlobState.Fly || blob.state === BlobState.Wall) {
       if (blob.state === BlobState.Fly) {
         blob.stateTick += 1;
+        this.spawnFlyTrail();
       }
+      const oldX = blob.x;
+      const oldY = blob.y;
       this.integrateBlobFlight();
+      if (blob.state === BlobState.Fly) {
+        blob.vvx = oldX - blob.x;
+        blob.vvy = oldY - blob.y;
+        blob.ox = blob.x;
+        blob.oy = blob.y;
+      }
     }
 
     this.checkSideCollision();
+  }
+
+  spawnFlyTrail(): void {
+    const blob = this.blob;
+    blob.blop = Math.max(BLOB_BLOP_MIN, blob.blop * BLOB_BLOP_FRICT);
+    if (Math.random() >= blob.blop) {
+      return;
+    }
+
+    const fr = 0.4 + Math.random() * 0.4;
+    this.spawnParticle(
+      this.assets.oil,
+      blob.x + (Math.random() * 2 - 1) * 3,
+      blob.y + (Math.random() * 2 - 1) * 3,
+      blob.vx * fr,
+      blob.vy * fr,
+      {
+        scale: 0.5 + Math.random() * 0.5 + blob.blop * 0.5,
+        ttl: 10 + Math.random() * 10,
+        weight: 0.2 + Math.random() * 0.2,
+        fadeMode: 'scale',
+        layer: this.oilLayer,
+      },
+    );
   }
 
   integrateBlobFlight(): void {
@@ -761,11 +900,18 @@ class InterwheelGame {
         scale: 0.5 + (i / 4) * 1.0,
         ttl: 10 + Math.random() * 30,
         weight: 0.2 + (i / 4) * 0.2,
+        fadeMode: 'scale',
+        layer: this.oilLayer,
       });
     }
 
     blob.vx = Math.cos(a) * BLOB_JUMP;
     blob.vy = Math.sin(a) * BLOB_JUMP;
+    blob.blop = BLOB_BLOP_START;
+    blob.ox = blob.x;
+    blob.oy = blob.y;
+    blob.vvx = 0;
+    blob.vvy = 0;
     blob.state = BlobState.Fly;
     blob.wallSide = 0;
     blob.stateTick = 0;
@@ -800,13 +946,17 @@ class InterwheelGame {
       }
 
       const ba = angleTo(blob, wheel) + Math.PI;
-      for (const mineAngle of wheel.mines) {
+      for (let i = 0; i < wheel.mines.length; i += 1) {
+        const mineAngle = wheel.mines[i];
         const da = hMod(mineAngle + wheel.a - ba, Math.PI);
         if (Math.abs(da) * wheel.ray < MINE_SPACE) {
           const x = wheel.x + Math.cos(wheel.a + mineAngle) * wheel.ray;
           const y = wheel.y + Math.sin(wheel.a + mineAngle) * wheel.ray;
           wheel.destroyed = true;
-          this.explodeBlob(x, y, ba);
+          wheel.boomAngle = mineAngle;
+          wheel.mineSprites[i]?.removeFromParent();
+          this.explodeMine(wheel, mineAngle, x, y, ba);
+          this.explodeBlob(ba);
           return;
         }
       }
@@ -816,32 +966,96 @@ class InterwheelGame {
     }
   }
 
-  explodeBlob(x: number, y: number, ba: number): void {
+  explodeMine(wheel: Wheel, mineAngle: number, x: number, y: number, ba: number): void {
+    this.spawnAnimation(this.assets.explosion, x, y, 0.5);
+
+    for (let i = 0; i < 5; i += 1) {
+      const a = ba + (Math.random() * 2 - 1) * 1.57;
+      const ray = 4;
+      const sp = 1 + Math.random() * 4;
+      const ca = Math.cos(a);
+      const sa = Math.sin(a);
+      this.spawnParticle(this.assets.mineParts[randomInt(this.assets.mineParts.length)], x + ca * ray, y + sa * ray, ca * sp, sa * sp, {
+        scale: 0.8 + Math.random() * 0.4,
+        ttl: 10 + Math.random() * 30,
+        weight: 0.1 + Math.random() * 0.2,
+        fadeMode: 'scale',
+        vr: (Math.random() * 2 - 1) * 20 * (Math.PI / 180),
+        rotation: Math.random() * Math.PI * 2,
+      });
+    }
+
+    for (let i = 0; i < 6; i += 1) {
+      const a = Math.random() * Math.PI * 2;
+      const sp = 0.5 + Math.random() * 2;
+      this.spawnParticle(this.assets.smoke[randomInt(this.assets.smoke.length)], x, y, Math.cos(a) * sp, Math.sin(a) * sp, {
+        scale: 0.8 + Math.random() * 0.6,
+        ttl: 10 + Math.random() * 20,
+        weight: -(0.1 + Math.random() * 0.3),
+        frict: 0.95,
+        vr: (Math.random() * 2 - 1) * 12 * (Math.PI / 180),
+        rotation: Math.random() * Math.PI * 2,
+      });
+    }
+
+    for (let i = 0; i < 4; i += 1) {
+      const a = ba + (Math.random() * 2 - 1) * 1.57;
+      const sp = Math.random() * 36;
+      const stain = makeSprite(this.assets.wallTache[randomInt(this.assets.wallTache.length)]);
+      stain.position.set(x + Math.cos(a) * sp, y + Math.sin(a) * sp);
+      stain.rotation = Math.random() * Math.PI * 2;
+      stain.scale.set(0.5 + Math.random() * 0.5);
+      this.decorLayer.addChild(stain);
+    }
+
+    this.spawnParticle(this.assets.starTache, x, y, 0, 0, {
+      scale: 0.4,
+      weight: 0,
+      frict: 1,
+      life: null,
+      fadeMode: 'none',
+      vs: 0.3,
+      sFrict: 0.65,
+      rotation: Math.random() * Math.PI * 2,
+      layer: this.decorLayer,
+    });
+
+    const bx = Math.cos(mineAngle) * 50;
+    const by = Math.sin(mineAngle) * 50;
+    const scm = 100 / (wheel.ray * 2);
+    for (let i = 0; i < 4; i += 1) {
+      const stain = makeSprite(this.assets.wallTache[randomInt(this.assets.wallTache.length)]);
+      const a = mineAngle + Math.PI + (Math.random() * 2 - 1) * 1.57;
+      const sp = Math.random() * 10 * scm;
+      stain.position.set(bx + Math.cos(a) * sp, by + Math.sin(a) * sp);
+      stain.scale.set((0.5 + Math.random() * 0.6) * scm);
+      stain.rotation = Math.random() * Math.PI * 2;
+      wheel.stains.addChild(stain);
+    }
+
+    const eyes = makeSprite(this.assets.eyes);
+    eyes.position.set(x, y);
+    eyes.rotation = ba;
+    this.decorLayer.addChild(eyes);
+  }
+
+  explodeBlob(ba: number): void {
     const blob = this.blob;
     blob.state = BlobState.Dead;
     blob.deathTick = 0;
     blob.stateTick = 0;
     blob.view.visible = false;
 
-    this.spawnAnimation(this.assets.explosion, x, y, 0.5);
-    for (let i = 0; i < 18; i += 1) {
+    for (let i = 0; i < 32; i += 1) {
       const dec = Math.random() * 2 - 1;
       const a = ba + dec * 0.8;
       const sp = (14 - Math.abs(dec) * 8) * (0.3 + Math.random() * 0.7);
       this.spawnParticle(this.assets.oil, blob.x, blob.y, Math.cos(a) * sp, Math.sin(a) * sp, {
-        scale: 0.5 + (i / 18) * 1.5,
+        scale: 0.5 + (i / 32) * 1.5,
         ttl: 10 + Math.random() * 20,
-        weight: 0.2 + (i / 18) * 0.2,
-      });
-    }
-    for (let i = 0; i < 8; i += 1) {
-      const a = Math.random() * Math.PI * 2;
-      const sp = 0.5 + Math.random() * 2;
-      this.spawnParticle(this.assets.smoke[randomInt(this.assets.smoke.length)], x, y, Math.cos(a) * sp, Math.sin(a) * sp, {
-        scale: 0.8 + Math.random() * 0.6,
-        ttl: 12 + Math.random() * 20,
-        weight: -(0.1 + Math.random() * 0.2),
-        frict: 0.95,
+        weight: 0.2 + (i / 32) * 0.2,
+        fadeMode: 'scale',
+        layer: this.oilLayer,
       });
     }
     this.endGame();
@@ -858,7 +1072,7 @@ class InterwheelGame {
         continue;
       }
 
-      const scale = 0.9 + Math.random() * 0.2 + Math.sin(this.tick * 0.25 + pastille.phase) * 0.02;
+      const scale = 0.9 + Math.random() * 0.2;
       pastille.core.scale.set(scale);
     }
   }
@@ -897,20 +1111,42 @@ class InterwheelGame {
       spark.y += spark.vy;
       spark.view.position.set(spark.x, spark.y);
 
-      if (Math.random() < 0.35) {
-        this.spawnParticle(this.assets.star, spark.x, spark.y, spark.vx * 0.45, spark.vy * 0.45, {
+      if (Math.random() < 0.4) {
+        this.spawnParticle(this.assets.star, spark.x, spark.y, spark.vx * (0.5 + (Math.random() * 2 - 1) * 0.1), spark.vy * (0.5 + (Math.random() * 2 - 1) * 0.1), {
           scale: 0.7 + Math.random() * 0.4,
           ttl: 10 + Math.random() * 10,
           weight: 0.1 + Math.random() * 0.1,
+          fadeMode: 'scale',
+          layer: this.starLayer,
         });
       }
 
       if (distance(blob, spark) < BLOB_RAY + 8) {
         this.score += spark.score;
-        this.spawnAnimation(this.assets.startExplo, spark.x, spark.y, 0.6);
+        this.spawnAnimation(this.assets.startExplo, spark.x, spark.y, 0.6, this.starLayer);
         spark.view.removeFromParent();
         this.sparks.splice(i, 1);
         i -= 1;
+      }
+    }
+  }
+
+  separateSparks(): void {
+    for (let i = 0; i < this.sparks.length; i += 1) {
+      const p0 = this.sparks[i];
+      for (let n = i + 1; n < this.sparks.length; n += 1) {
+        const p1 = this.sparks[n];
+        const dif = 16 - distance(p0, p1);
+        if (dif <= 0) {
+          continue;
+        }
+        const a = angleTo(p0, p1);
+        const cx = Math.cos(a) * dif * 0.5;
+        const cy = Math.sin(a) * dif * 0.5;
+        p0.x -= cx;
+        p0.y -= cy;
+        p1.x += cx;
+        p1.y += cy;
       }
     }
   }
@@ -920,18 +1156,37 @@ class InterwheelGame {
     this.waterBoost += WATER_SPEED_INC;
     this.waterY -= WATER_SPEED + this.waterBoost;
 
-    if (blob.y - BLOB_RAY > this.waterY) {
+    const inWater = blob.y - BLOB_RAY > this.waterY;
+    if (inWater) {
       blob.wet += 0.015;
       if (Math.random() < blob.wet) {
-        this.spawnParticle(this.assets.oil, blob.x, blob.y, blob.vx * 0.5, blob.vy * 0.5, {
-          scale: 1 + blob.wet,
-          ttl: 12 + Math.random() * 14,
-          weight: 0.1,
+        this.spawnParticle(this.assets.tache[0], blob.x, blob.y, blob.vx * 0.5 + (Math.random() * 2 - 1), blob.vy * 0.5 + (Math.random() * 2 - 1) * 0.5, {
+          scale: 1 + blob.wet * 1.5 + Math.random(),
+          life: null,
+          weight: 0,
+          fadeMode: 'none',
+          layer: this.oilLayer,
+          frames: this.assets.tache,
         });
+      }
+      if (Math.random() < blob.wet) {
+        this.spawnBubble(blob.x + Math.random() * BLOB_RAY, blob.y + Math.random() * BLOB_RAY, blob.vy * 0.8);
       }
     } else if (blob.wet > 0) {
       blob.wet = Math.max(0, blob.wet - 0.02);
+
+      if (Math.random() * 0.5 < blob.wet) {
+        const coef = 0.2 + Math.random() * 0.4;
+        this.spawnParticle(this.assets.goutte, blob.x + (Math.random() * 2 - 1) * 6, blob.y + (Math.random() * 2 - 1) * 6, (blob.vvx + blob.vx) * coef, (blob.vvy + blob.vy) * coef, {
+          scale: 0.6 + blob.wet * 0.8 + Math.random() * 0.5,
+          ttl: 10 + Math.random() * 10,
+          weight: 0,
+          fadeMode: 'scale',
+          layer: this.oilLayer,
+        });
+      }
     }
+    blob.wasInWater = inWater;
 
     if (blob.wet > 1) {
       this.endGame();
@@ -975,29 +1230,45 @@ class InterwheelGame {
       weight?: number;
       frict?: number;
       vr?: number;
+      vs?: number;
+      sFrict?: number;
+      fadeMode?: 'alpha' | 'scale' | 'none';
+      rotation?: number;
+      life?: number | null;
+      layer?: Container;
+      frames?: Frame[];
     } = {},
   ): void {
     const view = makeSprite(frame);
     view.position.set(x, y);
-    view.scale.set(options.scale ?? 1);
-    this.particleLayer.addChild(view);
+    const scale = options.scale ?? 1;
+    view.scale.set(scale);
+    view.rotation = options.rotation ?? 0;
+    (options.layer ?? this.particleLayer).addChild(view);
+    const life = options.life === undefined ? (options.ttl ?? 20) : options.life;
     this.particles.push({
       view,
       vx,
       vy,
       weight: options.weight ?? 0.2,
       frict: options.frict ?? 0.95,
-      life: options.ttl ?? 20,
-      ttl: options.ttl ?? 20,
-      vr: options.vr ?? (Math.random() * 2 - 1) * 0.2,
+      life,
+      ttl: options.ttl ?? (typeof life === 'number' ? life : 0),
+      scale,
+      fadeMode: options.fadeMode ?? 'alpha',
+      vr: options.vr ?? 0,
+      vs: options.vs ?? 0,
+      sFrict: options.sFrict ?? 1,
+      frames: options.frames,
+      frameCursor: options.frames ? 0 : undefined,
     });
   }
 
-  spawnAnimation(frames: Frame[], x: number, y: number, scale: number): void {
+  spawnAnimation(frames: Frame[], x: number, y: number, scale: number, layer: Container = this.particleLayer): void {
     const view = makeSprite(frames[0]);
     view.position.set(x, y);
     view.scale.set(scale);
-    this.particleLayer.addChild(view);
+    layer.addChild(view);
     this.particles.push({
       view,
       vx: 0,
@@ -1006,29 +1277,107 @@ class InterwheelGame {
       frict: 1,
       life: frames.length,
       ttl: frames.length,
+      scale,
+      fadeMode: 'none',
       vr: 0,
+      vs: 0,
+      sFrict: 1,
       frames,
+    });
+  }
+
+  spawnBubble(x: number, y: number, vy: number): void {
+    const view = makeSprite(this.assets.bubble[0]);
+    const scale = 0.3 + Math.random() * 0.5;
+    view.position.set(x, y);
+    view.scale.set(scale);
+    view.blendMode = 'screen';
+    this.waterParticleLayer.addChild(view);
+    this.particles.push({
+      view,
+      vx: 0,
+      vy,
+      weight: -(0.15 + Math.random() * 0.5),
+      frict: 0.98,
+      life: null,
+      ttl: 0,
+      scale,
+      fadeMode: 'none',
+      vr: 0,
+      vs: 0,
+      sFrict: 1,
+      bubbleFrames: this.assets.bubble,
+      dec: Math.random() * 628,
+      dsp: 10 + Math.random() * 20,
+      ec: 0.5 + Math.random() * 4,
     });
   }
 
   updateParticles(): void {
     for (let i = 0; i < this.particles.length; i += 1) {
       const particle = this.particles[i];
+      if (particle.bubbleFrames) {
+        if (particle.outTimer !== undefined) {
+          particle.outTimer -= 1;
+          particle.view.y = this.waterY;
+          particle.scale += 0.01;
+          particle.view.scale.set(particle.scale);
+          if (particle.outTimer < 0) {
+            particle.view.removeFromParent();
+            this.particles.splice(i, 1);
+            i -= 1;
+            continue;
+          }
+        } else {
+          particle.dec = ((particle.dec ?? 0) + (particle.dsp ?? 0)) % 628;
+          particle.vx = Math.cos((particle.dec ?? 0) / 100) * (particle.ec ?? 0);
+          if (particle.view.y < this.waterY) {
+            particle.view.y = this.waterY;
+            particle.vx = 0;
+            particle.vy = 0;
+            setFrame(particle.view, particle.bubbleFrames[1] ?? particle.bubbleFrames[0]);
+            particle.outTimer = 10 + Math.random() * 20;
+          }
+        }
+      }
+
       particle.vy += particle.weight;
       particle.vx *= particle.frict;
       particle.vy *= particle.frict;
       particle.view.x += particle.vx;
       particle.view.y += particle.vy;
       particle.view.rotation += particle.vr;
-      particle.life -= 1;
-      particle.view.alpha = clamp(particle.life / particle.ttl, 0, 1);
+      if (particle.vs !== 0) {
+        particle.vs *= particle.sFrict;
+        particle.scale += particle.vs;
+        particle.view.scale.set(particle.scale);
+      }
 
       if (particle.frames) {
-        const index = clamp(Math.floor((1 - particle.life / particle.ttl) * particle.frames.length), 0, particle.frames.length - 1);
+        let index: number;
+        if (particle.life === null) {
+          particle.frameCursor = Math.min((particle.frameCursor ?? 0) + 1, particle.frames.length - 1);
+          index = Math.floor(particle.frameCursor);
+        } else {
+          const elapsed = particle.ttl - particle.life;
+          index = clamp(Math.floor(elapsed), 0, particle.frames.length - 1);
+        }
         setFrame(particle.view, particle.frames[index]);
       }
 
-      if (particle.life <= 0) {
+      if (particle.life !== null) {
+        particle.life -= 1;
+        if (particle.life < PARTICLE_FADE_LIMIT) {
+          const c = clamp(particle.life / PARTICLE_FADE_LIMIT, 0, 1);
+          if (particle.fadeMode === 'scale') {
+            particle.view.scale.set(particle.scale * c);
+          } else if (particle.fadeMode === 'alpha') {
+            particle.view.alpha = c;
+          }
+        }
+      }
+
+      if (particle.life !== null && particle.life <= 0) {
         particle.view.removeFromParent();
         this.particles.splice(i, 1);
         i -= 1;
@@ -1041,7 +1390,7 @@ class InterwheelGame {
       return;
     }
     this.ended = true;
-    this.gameOverText.text = 'GAME OVER';
+    this.gameOverText.text = '';
   }
 
   render(): void {
