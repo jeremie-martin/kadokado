@@ -1049,11 +1049,22 @@ class InterwheelGame {
     for (let i = 0; i < 4; i += 1) {
       const a = ba + (Math.random() * 2 - 1) * 1.57;
       const sp = Math.random() * 36;
-      const stain = makeSprite(this.assets.wallTache[randomInt(this.assets.wallTache.length)]);
-      stain.position.set(x + Math.cos(a) * sp, y + Math.sin(a) * sp);
-      stain.rotation = Math.random() * Math.PI * 2;
-      stain.scale.set(0.5 + Math.random() * 0.5);
-      this.decorLayer.addChild(stain);
+      this.spawnParticle(
+        this.assets.wallTache[randomInt(this.assets.wallTache.length)],
+        x + Math.cos(a) * sp,
+        y + Math.sin(a) * sp,
+        0,
+        0,
+        {
+          scale: 0.5 + Math.random() * 0.5,
+          rotation: Math.random() * Math.PI * 2,
+          weight: Math.random() * 0.01,
+          frict: 1,
+          life: null,
+          fadeMode: 'none',
+          layer: this.decorLayer,
+        },
+      );
     }
 
     this.spawnParticle(this.assets.starTache, x, y, 0, 0, {
@@ -1115,15 +1126,10 @@ class InterwheelGame {
       return;
     }
 
-    const wasFlying = blob.state === BlobState.Fly;
     blob.state = BlobState.Dead;
     blob.deathTick = 0;
     blob.stateTick = 0;
     blob.wallSide = 0;
-    if (wasFlying) {
-      blob.vx = 0;
-      blob.vy = 0;
-    }
     blob.view.removeFromParent();
     this.particleLayer.addChild(blob.view);
     blob.view.visible = true;
@@ -1509,7 +1515,7 @@ class InterwheelGame {
     this.world.y = this.mapY;
 
     for (const wheel of this.wheels) {
-      const visible = wheel.active;
+      const visible = wheel.active || this.isElementActive(wheel);
       wheel.group.visible = visible;
       wheel.shadow.visible = visible;
       wheel.group.position.set(wheel.x, wheel.y);
@@ -1520,7 +1526,7 @@ class InterwheelGame {
     }
 
     for (const pastille of this.pastilles) {
-      pastille.view.visible = pastille.active;
+      pastille.view.visible = pastille.active || this.isElementActive(pastille);
     }
 
     const water = this.waterLayer.children[0] as Sprite | undefined;
@@ -1542,7 +1548,7 @@ class InterwheelGame {
       } else if (blob.state === BlobState.Wall) {
         const frameIndex = BLOB_COULE_FRAME_START + Math.min(blob.stateTick, BLOB_COULE_FRAME_COUNT - 1);
         setFrame(blob.view, this.assets.blob[clamp(frameIndex, 0, this.assets.blob.length - 1)]);
-        blob.view.scale.x = blob.wallSide < 0 ? 1 : -1;
+        blob.view.scale.x = 1;
       } else {
         const frameIndex = BLOB_GRAB_FRAME_START + Math.min(blob.stateTick, BLOB_GRAB_FRAME_COUNT - 1);
         setFrame(blob.view, this.assets.blob[frameIndex]);
