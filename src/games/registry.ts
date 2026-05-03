@@ -28,6 +28,16 @@ export const GAMES: RegistryEntry[] = [
   },
   {
     meta: {
+      id: 'killbulle',
+      title: 'Kill-Bulle',
+      description: 'Single-screen grapple-and-blob arena. Aim up, fire, retract.',
+      width: 300,
+      height: 320,
+    },
+    load: () => import('./killbulle'),
+  },
+  {
+    meta: {
       id: 'linea',
       title: 'Linea',
       description: 'Trace paths through dot grids; build x2/x3/x4 score multipliers.',
