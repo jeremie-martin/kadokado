@@ -6,16 +6,26 @@ import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_sha
 // Stage and timing
 // -------------------------------------------------------------------------------------------------
 //
-// Brief lists 40 FPS as tentative (not source-confirmed). The original drives
-// motion via Timer.tmod / Timer.deltaT; we run a fixed-step accumulator and feed
-// every fixed step a nominal `tmod` of 1.0 plus DELTA_T = STEP_SECONDS so per-step
-// physics matches the original constants.
+// The original SWF header is 40 FPS. The source drives motion via Timer.tmod /
+// Timer.deltaT; we run a fixed-step accumulator and feed every fixed step a
+// nominal `tmod` of 1.0 plus DELTA_T = STEP_SECONDS so per-step physics matches
+// the original constants.
 const STAGE_WIDTH = 300;
 const STAGE_HEIGHT = 320;
 const FPS = 40;
 const STEP_SECONDS = 1 / FPS;
 const TMOD = 1; // each fixed step counts as one frame at the target FPS
 const DELTA_T = STEP_SECONDS; // seconds elapsed per fixed step
+
+// The original game SWF renders into the top 300 px; KadoKado's loader overlays
+// a 20 px score strip below it inside the 300x320 embed.
+const SCORE_BAR_Y = 300;
+const SCORE_DIGITS = 7;
+const SCORE_DIGIT_X = 178;
+const SCORE_DIGIT_Y = 302;
+const SCORE_DIGIT_STEP = 17;
+const SCORE_DIGIT_WIDTH = 15;
+const SCORE_DIGIT_HEIGHT = 17;
 
 const ASSET_ROOT = '/assets/killbulle';
 
@@ -59,7 +69,7 @@ const BONUS_POINTS = 3;
 // animation reel; Hero.update resolves the matching extracted reel at runtime.
 const enum HeroFrame {
   Idle = 1, // mc.gotoAndStop("1")
-  Walking = 2, // mc.gotoAndStop("2") — alternates with Idle pose for fake walk cycle
+  Walking = 2, // mc.gotoAndStop("2")
   PostGrapple = 3, // mc.gotoAndStop("3")
   Grappling = 4, // mc.gotoAndStop("4")
   Special = 6, // mc.gotoAndStop("6") — shuriken activation
@@ -1107,6 +1117,53 @@ class Grapin {
 
 type Stats = { b: number; s: number; ts: number };
 
+class ScoreStrip {
+  view = new Container();
+  private readonly digits: Text[] = [];
+
+  constructor() {
+    const bar = new Graphics();
+    bar.rect(0, SCORE_BAR_Y, STAGE_WIDTH, STAGE_HEIGHT - SCORE_BAR_Y).fill(0xcfe87e);
+    bar.rect(0, SCORE_BAR_Y, STAGE_WIDTH, 2).fill(0xf0f8a5);
+    bar.rect(0, STAGE_HEIGHT - 2, STAGE_WIDTH, 2).fill(0xb5d764);
+    this.view.addChild(bar);
+
+    for (let i = 0; i < SCORE_DIGITS; i += 1) {
+      const x = SCORE_DIGIT_X + i * SCORE_DIGIT_STEP;
+      const y = SCORE_DIGIT_Y;
+      const capsule = new Graphics();
+      capsule.roundRect(x, y, SCORE_DIGIT_WIDTH, SCORE_DIGIT_HEIGHT, 6).fill(0xffffff);
+      capsule.roundRect(x + 1, y + 1, SCORE_DIGIT_WIDTH - 2, SCORE_DIGIT_HEIGHT - 2, 5).fill(0x7fefff);
+      capsule.roundRect(x + 2, y + 2, SCORE_DIGIT_WIDTH - 4, SCORE_DIGIT_HEIGHT - 4, 5).fill(0x25bde1);
+      capsule.roundRect(x + 3, y + 3, SCORE_DIGIT_WIDTH - 6, SCORE_DIGIT_HEIGHT - 6, 4).fill(0x1d9bd2);
+      this.view.addChild(capsule);
+
+      const digit = new Text({
+        text: '0',
+        style: {
+          fontFamily: 'Arial, Helvetica, sans-serif',
+          fontSize: 12,
+          fontWeight: '900',
+          fill: 0xffffff,
+          stroke: { color: 0x2aa6d6, width: 1 },
+        },
+      });
+      digit.anchor.set(0.5);
+      digit.position.set(x + SCORE_DIGIT_WIDTH / 2, y + SCORE_DIGIT_HEIGHT / 2 + 0.5);
+      this.digits.push(digit);
+      this.view.addChild(digit);
+    }
+  }
+
+  setScore(value: number): void {
+    const safe = Math.max(0, Math.floor(value));
+    const text = String(safe).slice(-SCORE_DIGITS).padStart(SCORE_DIGITS, '0');
+    for (let i = 0; i < SCORE_DIGITS; i += 1) {
+      this.digits[i].text = text[i];
+    }
+  }
+}
+
 class KillbulleGame {
   app: Application;
   assets: KillbulleAssets;
@@ -1158,18 +1215,19 @@ class KillbulleGame {
   private bgSprite: Sprite;
   private bg2Sprite: Sprite;
 
-  // HUD.
-  scoreText: Text;
-  shotsText: Text;
-  bonusText: Text;
+  // Loader-style score strip. `stats.s` / `stats.b` remain internal KKApi stats
+  // in source; the player only sees the bottom score display.
+  scoreStrip: ScoreStrip;
   gameOverText: Text;
 
-  // Flash overlay — solid-fill Graphics rect drawn over the entire stage with
+  // Flash overlay — solid-fill Graphics rect drawn over the game root with
   // additive blend, so it brightens the picture toward `flash_color` regardless
   // of underlying pixels. Replicates Game.mt's `Color.setTransform({ra=ga=ba=100,
   // rb/gb/bb = color_byte * d, …})` which is a strict additive transform on the
-  // root MovieClip. Earlier port used the bg texture as a tinted plate, which
-  // gave a shaped multiplicative tint instead of a uniform additive flash.
+  // root MovieClip. The KadoKado score strip is loader UI, so it stays above the
+  // flash just like the original. Earlier port used the bg texture as a tinted
+  // plate, which gave a shaped multiplicative tint instead of a uniform additive
+  // flash.
   private flashOverlay: Graphics;
 
   // Shared blob/explosion filter cache. Reused for every Blob.applyColor and
@@ -1221,42 +1279,7 @@ class KillbulleGame {
 
     this.hero = new Hero(this);
 
-    // HUD text.
-    this.scoreText = new Text({
-      text: '0',
-      style: {
-        fontFamily: 'Arial, Helvetica, sans-serif',
-        fontSize: 12,
-        fontWeight: '700',
-        fill: 0xffffff,
-        stroke: { color: 0x000000, width: 3 },
-      },
-    });
-    this.scoreText.position.set(8, 6);
-
-    this.shotsText = new Text({
-      text: 'shots: 0',
-      style: {
-        fontFamily: 'Arial, Helvetica, sans-serif',
-        fontSize: 11,
-        fontWeight: '700',
-        fill: 0xffffff,
-        stroke: { color: 0x000000, width: 3 },
-      },
-    });
-    this.shotsText.position.set(8, 22);
-
-    this.bonusText = new Text({
-      text: 'bonus: 0',
-      style: {
-        fontFamily: 'Arial, Helvetica, sans-serif',
-        fontSize: 11,
-        fontWeight: '700',
-        fill: 0xffffff,
-        stroke: { color: 0x000000, width: 3 },
-      },
-    });
-    this.bonusText.position.set(8, 36);
+    this.scoreStrip = new ScoreStrip();
 
     this.gameOverText = new Text({
       text: '',
@@ -1271,7 +1294,7 @@ class KillbulleGame {
     this.gameOverText.anchor.set(0.5);
     this.gameOverText.position.set(STAGE_WIDTH / 2, 140);
 
-    this.hudLayer.addChild(this.scoreText, this.shotsText, this.bonusText, this.gameOverText);
+    this.hudLayer.addChild(this.scoreStrip.view, this.gameOverText);
 
     this.updateHud();
   }
@@ -1287,9 +1310,7 @@ class KillbulleGame {
   }
 
   updateHud(): void {
-    this.scoreText.text = `score: ${this.game_score}`;
-    this.shotsText.text = `shots: ${this.stats.s}`;
-    this.bonusText.text = `bonus: ${this.stats.b}`;
+    this.scoreStrip.setScore(this.game_score);
   }
 
   flash(color: number): void {
