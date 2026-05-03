@@ -37,8 +37,11 @@ const BLOB_COULE_FRAME_START = 19;
 const BLOB_COULE_FRAME_COUNT = 25;
 const BLOB_GRAB_FRAME_START = 44;
 const BLOB_GRAB_FRAME_COUNT = 15;
+const BLOB_DEATH_FRAME_START = 100;
+const BLOB_DEATH_FRAME_COUNT = 73;
 const MINE_SPACE = 36;
 const PARTICLE_FADE_LIMIT = 10;
+const ENDGAME_DELAY = 30;
 const DECOR_SECTION_HEIGHT = 2000;
 const DECOR_SECTIONS = 5;
 
@@ -358,6 +361,9 @@ class InterwheelGame {
   maxHeight = 0;
   score = 0;
   tick = 0;
+  ending = false;
+  endTimer = 0;
+  endFocusY = 0;
   ended = false;
   spaceHeld = false;
   spacePressed = false;
@@ -443,6 +449,9 @@ class InterwheelGame {
     this.maxHeight = 0;
     this.score = 0;
     this.tick = 0;
+    this.ending = false;
+    this.endTimer = 0;
+    this.endFocusY = 0;
     this.ended = false;
     this.spacePressed = false;
     this.pointerPressed = false;
@@ -731,11 +740,34 @@ class InterwheelGame {
     return false;
   }
 
+  isElementActive(element: { y: number; ray: number }): boolean {
+    const viewTop = -this.mapY;
+    const viewBottom = viewTop + STAGE_HEIGHT;
+    return element.y - element.ray < viewBottom && element.y + element.ray > viewTop;
+  }
+
   update(): void {
     this.tick += 1;
 
     if (this.ended) {
       this.updateParticles();
+      this.render();
+      return;
+    }
+
+    if (this.ending) {
+      this.updateWheels();
+      this.updateBlobDeath();
+      this.separateSparks();
+      this.updateSparks();
+      this.updateParticles();
+      this.updateBlobWaterEffects();
+      this.scrollMap(false);
+      this.endTimer -= 1;
+      if (this.endTimer < 0) {
+        this.ending = false;
+        this.ended = true;
+      }
       this.render();
       return;
     }
@@ -754,6 +786,9 @@ class InterwheelGame {
 
   updateWheels(): void {
     for (const wheel of this.wheels) {
+      if (!this.isElementActive(wheel)) {
+        continue;
+      }
       wheel.a += wheel.speed;
       if (wheel.destroyed) {
         wheel.speed *= 0.97;
@@ -793,7 +828,7 @@ class InterwheelGame {
         this.jump(a);
         const oldX = blob.x;
         const oldY = blob.y;
-        this.integrateBlobFlight();
+        this.integrateBlobFlight(false);
         blob.vvx = oldX - blob.x;
         blob.vvy = oldY - blob.y;
         blob.ox = blob.x;
@@ -859,16 +894,15 @@ class InterwheelGame {
     );
   }
 
-  integrateBlobFlight(): void {
+  integrateBlobFlight(applyWaterDrag = true): void {
     const blob = this.blob;
+    if (applyWaterDrag && blob.state === BlobState.Fly && blob.wasInWater) {
+      blob.vx *= 0.95;
+      blob.vy *= 0.95;
+    }
     blob.vy += BLOB_WEIGHT;
     blob.vx *= 0.98;
     blob.vy *= 0.98;
-
-    if (blob.y - BLOB_RAY > this.waterY) {
-      blob.vx *= 0.95;
-      blob.vy *= blob.vy > 0 ? 0.9 : 0.95;
-    }
 
     blob.x += blob.vx;
     blob.y += blob.vy;
@@ -941,6 +975,9 @@ class InterwheelGame {
     }
 
     for (const wheel of this.wheels) {
+      if (!this.isElementActive(wheel)) {
+        continue;
+      }
       if (distance(blob, wheel) >= wheel.ray + BLOB_RAY) {
         continue;
       }
@@ -1061,10 +1098,46 @@ class InterwheelGame {
     this.endGame();
   }
 
+  startBlobDrowningDeath(): void {
+    const blob = this.blob;
+    if (blob.state === BlobState.Dead && blob.view.visible) {
+      return;
+    }
+
+    blob.state = BlobState.Dead;
+    blob.deathTick = 0;
+    blob.stateTick = 0;
+    blob.wallSide = 0;
+    blob.view.removeFromParent();
+    this.particleLayer.addChild(blob.view);
+    blob.view.visible = true;
+    blob.view.rotation = 0;
+    blob.view.scale.set(1);
+    setFrame(blob.view, this.assets.blob[BLOB_DEATH_FRAME_START]);
+  }
+
+  updateBlobDeath(): void {
+    const blob = this.blob;
+    if (blob.state !== BlobState.Dead || !blob.view.visible) {
+      return;
+    }
+
+    blob.wet -= 0.02;
+    blob.vy += BLOB_WEIGHT;
+    blob.vx *= 0.8;
+    blob.vy *= 0.8;
+    blob.x += blob.vx;
+    blob.y += blob.vy;
+    blob.deathTick += 1;
+  }
+
   updatePastilles(): void {
     const blob = this.blob;
     for (let i = 0; i < this.pastilles.length; i += 1) {
       const pastille = this.pastilles[i];
+      if (!this.isElementActive(pastille)) {
+        continue;
+      }
       if (distance(blob, pastille) < 70) {
         this.collectPastille(pastille);
         this.pastilles.splice(i, 1);
@@ -1156,9 +1229,36 @@ class InterwheelGame {
     this.waterBoost += WATER_SPEED_INC;
     this.waterY -= WATER_SPEED + this.waterBoost;
 
+    this.updateBlobWaterEffects();
+
+    if (blob.wet > 1) {
+      this.startBlobDrowningDeath();
+      this.endGame();
+    }
+
+    const runHeight = Math.max(0, -blob.y - this.heightOrigin);
+    const heightGain = runHeight - this.maxHeight;
+    if (heightGain > 0) {
+      this.score += Math.floor(heightGain);
+    }
+    this.maxHeight = Math.max(runHeight, this.maxHeight);
+    this.meterText.text = `${Math.floor(this.maxHeight * 0.2)}m`;
+    this.scoreText.text = String(Math.floor(this.score));
+  }
+
+  updateBlobWaterEffects(): void {
+    const blob = this.blob;
+    if (blob.state === BlobState.Dead && !blob.view.visible) {
+      return;
+    }
     const inWater = blob.y - BLOB_RAY > this.waterY;
     if (inWater) {
-      blob.wet += 0.015;
+      if (blob.state !== BlobState.Dead) {
+        blob.wet += 0.015;
+      }
+      if (blob.vy > 0) {
+        blob.vy *= 0.9;
+      }
       if (Math.random() < blob.wet) {
         this.spawnParticle(this.assets.tache[0], blob.x, blob.y, blob.vx * 0.5 + (Math.random() * 2 - 1), blob.vy * 0.5 + (Math.random() * 2 - 1) * 0.5, {
           scale: 1 + blob.wet * 1.5 + Math.random(),
@@ -1173,7 +1273,9 @@ class InterwheelGame {
         this.spawnBubble(blob.x + Math.random() * BLOB_RAY, blob.y + Math.random() * BLOB_RAY, blob.vy * 0.8);
       }
     } else if (blob.wet > 0) {
-      blob.wet = Math.max(0, blob.wet - 0.02);
+      if (blob.state !== BlobState.Dead) {
+        blob.wet = Math.max(0, blob.wet - 0.02);
+      }
 
       if (Math.random() * 0.5 < blob.wet) {
         const coef = 0.2 + Math.random() * 0.4;
@@ -1187,24 +1289,11 @@ class InterwheelGame {
       }
     }
     blob.wasInWater = inWater;
-
-    if (blob.wet > 1) {
-      this.endGame();
-    }
-
-    const runHeight = Math.max(0, -blob.y - this.heightOrigin);
-    const heightGain = runHeight - this.maxHeight;
-    if (heightGain > 0) {
-      this.score += Math.floor(heightGain);
-    }
-    this.maxHeight = Math.max(runHeight, this.maxHeight);
-    this.meterText.text = `${Math.floor(this.maxHeight * 0.2)}m`;
-    this.scoreText.text = String(Math.floor(this.score));
   }
 
   scrollMap(force: boolean): void {
     const blob = this.blob;
-    const focusY = blob.state === BlobState.Grab && blob.cw ? blob.cw.y - VIEW_WHEEL : blob.y;
+    const focusY = this.ending ? this.endFocusY : blob.state === BlobState.Grab && blob.cw ? blob.cw.y - VIEW_WHEEL : blob.y;
     const targetY = STAGE_HEIGHT * 0.5 - focusY;
 
     if (force) {
@@ -1386,10 +1475,12 @@ class InterwheelGame {
   }
 
   endGame(): void {
-    if (this.ended) {
+    if (this.ending || this.ended) {
       return;
     }
-    this.ended = true;
+    this.ending = true;
+    this.endTimer = ENDGAME_DELAY;
+    this.endFocusY = this.blob.y;
     this.gameOverText.text = '';
   }
 
@@ -1397,8 +1488,7 @@ class InterwheelGame {
     this.world.y = this.mapY;
 
     for (const wheel of this.wheels) {
-      const screenY = wheel.y + this.mapY;
-      const visible = screenY > -140 && screenY < STAGE_HEIGHT + 140;
+      const visible = this.isElementActive(wheel);
       wheel.group.visible = visible;
       wheel.shadow.visible = visible;
       wheel.group.position.set(wheel.x, wheel.y);
@@ -1406,6 +1496,10 @@ class InterwheelGame {
       wheel.shadow.position.set(wheel.x, wheel.y + 6);
       wheel.shadow.rotation = wheel.a;
       setFrame(wheel.dust, this.assets.dust[(this.tick + wheel.dustOffset) % this.assets.dust.length]);
+    }
+
+    for (const pastille of this.pastilles) {
+      pastille.view.visible = this.isElementActive(pastille);
     }
 
     const water = this.waterLayer.children[0] as Sprite | undefined;
@@ -1433,6 +1527,12 @@ class InterwheelGame {
         setFrame(blob.view, this.assets.blob[frameIndex]);
         blob.view.scale.x = 1;
       }
+    } else if (blob.view.visible) {
+      const frameIndex = BLOB_DEATH_FRAME_START + Math.min(blob.deathTick, BLOB_DEATH_FRAME_COUNT - 1);
+      blob.view.position.set(blob.x, blob.y);
+      blob.view.rotation = 0;
+      blob.view.scale.x = 1;
+      setFrame(blob.view, this.assets.blob[frameIndex]);
     }
   }
 }
@@ -1463,6 +1563,9 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
       game.reset();
       return;
     }
+    if (game.ending) {
+      return;
+    }
     if (!game.spaceHeld) {
       game.spacePressed = true;
     }
@@ -1476,6 +1579,9 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   const onPointerDown = () => {
     if (game.ended) {
       game.reset();
+      return;
+    }
+    if (game.ending) {
       return;
     }
     game.pointerPressed = true;
