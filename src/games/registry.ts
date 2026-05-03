@@ -26,6 +26,16 @@ export const GAMES: RegistryEntry[] = [
     },
     load: () => import('./pioupiou'),
   },
+  {
+    meta: {
+      id: 'linea',
+      title: 'Linea',
+      description: 'Trace paths through dot grids; build x2/x3/x4 score multipliers.',
+      width: 300,
+      height: 300,
+    },
+    load: () => import('./linea'),
+  },
 ];
 
 export function findGame(id: string): RegistryEntry | undefined {
