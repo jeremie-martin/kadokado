@@ -1,111 +1,286 @@
-# Fidelity Notes
+# Fidelity Guide
 
-Updated: 2026-05-02
+Updated: 2026-05-04
 
-This file is a working control panel for fidelity. It should stay practical: what is known, what is still approximate, and what would make us confident that a port matches the original. It is not an architecture decision record and it should not lock the project into TypeScript/PixiJS forever.
+This file is the canonical guide for making the ports faithful to the original
+games. It is intentionally not an audit transcript. Long agent pass logs,
+superseded conclusions, and stale bug narratives do not belong here.
+
+The source tree, git history, focused tests, and short code comments are better
+places for archaeology. This document should help the next porting pass make
+better decisions quickly.
 
 ## Quality Bar
 
-A port is only "done" when the important behavior and feel have been checked against the original Flash game, not merely when it is playable.
+A port is not done because it is playable. It is done only when the important
+behavior and feel have been checked against the original game.
 
-For each game, the target is:
+The target for each game:
 
-- Original extracted assets are used at the correct frame counts, pivots, scales, and draw order.
-- Physics, timing, RNG, scoring, collision, and input behavior are source-backed or explicitly documented as approximations.
-- The game runs at the original intended tick rate and preserves the original control feel.
-- Representative screenshots or captures from the original are compared against the port.
-- Known deviations are listed instead of hidden.
+- Use the original extracted assets with correct frame ranges, pivots, scale,
+  masks, and draw order.
+- Preserve the original stage size, frame rate, update order, input semantics,
+  RNG-sensitive behavior, scoring, collision, and end flow.
+- Back behavior with the original source or with reference captures.
+- Mark approximations explicitly and keep the list current.
+- Verify representative scenarios against the original: first frame, first input,
+  first collision, scoring, death, restart, and unusual edge cases.
+- Keep cleanup solid: no leaked listeners, tickers, Pixi resources, or stale input
+  state after route changes.
 
-## Current Technical Route
+## Evidence Levels
 
-The current route is TypeScript plus PixiJS.
+Use these labels when documenting a fact or deviation:
 
-Reasons this is working:
+- `source-backed`: confirmed from the original `.mt`, `.hx`, SWF metadata, or
+  extracted asset manifest.
+- `capture-backed`: confirmed by running the original SWF in Ruffle, projector,
+  or another controlled runtime.
+- `asset-backed`: confirmed from extracted PNG series, dimensions, frame counts,
+  or visible sprite content.
+- `inferred`: best current guess. This should be temporary and should explain
+  what would verify it.
+- `intentional deviation`: known difference kept for practical reasons. Explain
+  why it is acceptable and what would be needed to remove it.
 
-- The games are small enough to port game-by-game.
-- Pixi maps well to the extracted 2D Flash assets.
-- Browser playback makes iteration, sharing, and deployment simple.
-- The per-game `mount()` / `destroy()` shape keeps ports isolated.
+When evidence conflicts, prefer current source and fresh captures over old notes.
+If old documentation disagrees with the game, the old documentation is wrong.
 
-This can be revisited. If a game needs a different renderer, a source-to-code extraction pass, or a native runtime to match behavior more closely, that should be judged per game.
+## Porting Workflow
 
-## Shared Next Steps
+1. Locate the original material.
 
-1. Preserve asset provenance.
-   Add or keep extraction notes/manifests that connect each exported PNG series to its original Flash symbol, frame range, pivot, and intended transform.
+   Record the source directory, SWF path, loader parameters, asset extraction
+   path, stage size, and frame rate. Do not infer FPS from vague convention when
+   the SWF header or source has the answer.
 
-2. Build a reference workflow.
-   Capture the original game at known states where possible: start screen, first movement, collision, death, scoring, and unusual edge cases. Ruffle, a projector, or a controlled SWF run can all be useful if they produce repeatable evidence.
+2. Read the source before tuning.
 
-3. Make comparison states deterministic.
-   Add debug seeds or fixed scenarios where needed so a port can render the same situation repeatedly.
+   Identify the main loop, fixed-step timing, input gates, state transitions,
+   collision checks, scoring, death, restart, and per-frame update order. Port
+   these before tuning by feel.
 
-4. Separate fragile behavior from rendering when useful.
-   Keep full rewrites small, but pull collision or simulation code into testable units when it reduces risk.
+3. Inventory assets.
 
-5. Track approximations openly.
-   A guessed constant is acceptable during porting, but it should be marked until it is verified against source or reference behavior.
+   For every large sprite series, record the source symbol if known, frame count,
+   intended registration point, masks, timeline labels, and whether frame numbers
+   are one-indexed Flash frames mapped to zero-indexed arrays.
 
-6. Revisit audio and platform API behavior.
-   The current ports focus on playable visuals and controls. Sounds, score submission, replay behavior, and original platform hooks still need a deliberate pass.
+4. Rebuild the simulation conservatively.
 
-## Pioupiou
+   Match constants and update order first. Keep source quirks if they affect
+   gameplay and are verified. Do not "fix" source behavior without marking it as
+   an intentional deviation.
 
-Status: playable, asset-backed, not fidelity-certified.
+5. Rebuild the presentation.
 
-Implemented:
+   Match depth planes, MovieClip registration, masks, text placement, alpha,
+   blend behavior, frame holds, and particle lifetimes. Pixi containers should
+   reflect Flash depth order, not just approximate visual grouping.
 
-- 300x320 Pixi stage with extracted Pioupiou assets.
-- Fixed-step update loop targeting the original 40 FPS feel.
-- Arrow-key movement, running, falling, climbing, block landing, crush/death behavior, bonuses, scoring, meter, and simple effects.
-- Masked landed-block rendering that follows the original stacked-column visual idea.
+6. Compare against the original.
 
-Still approximate or unverified:
+   Use reference captures for known states. Add debug fixtures or deterministic
+   seeds when randomness prevents repeatable comparison.
 
-- Exact hero animation frame mapping, frame holds, pivots, squash/stretch, and state transitions.
-- Edge cases around climbing, falling blocks, crush timing, and standing between columns.
-- Falling block spawn rules, difficulty growth, bonus probabilities, and scoring details versus the original source.
-- HUD typography and precise Flash text rendering.
-- Audio, original platform score submission, and end-of-run flow.
+7. Keep the docs current and small.
 
-Useful next work:
+   Document only the live state: current approximations, current verification
+   status, and the next checks that matter. Delete stale conclusions when code or
+   evidence supersedes them.
 
-1. Identify the original source classes and constants that drove block spawning, hero movement, and scoring.
-2. Create a small reference capture set for startup, left/right movement, climbing, block impact, bonus pickup, and death.
-3. Audit every sprite series used by the hero and effects against original timeline labels or frame ranges.
-4. Add a debug fixture that starts the hero and a few blocks in known positions for repeatable visual checks.
+## Reference Captures
 
-## Interwheel
+Reference captures are often the fastest way to catch "works but feels wrong"
+bugs.
 
-Status: playable, asset-backed, not fidelity-certified.
+For each useful capture, record:
 
-Implemented:
+- Original command or runtime used.
+- SWF path and loader parameters.
+- Window size and scale.
+- Date of capture.
+- Input sequence or debug seed.
+- The port route and commit used for comparison.
 
-- 300x300 Pixi stage with extracted Interwheel assets.
-- One-button jump/grab loop, wheel generation, wheel rotation, mines, pastilles, water pressure, score/meter, wall sliding, death, particles, and decorative background layers.
-- Blob wall-slide rendering is present after the recent wall visual fix.
-- Per-game cleanup removes keyboard handlers, pointer handlers, and ticker callbacks.
+Useful capture points:
 
-Still approximate or unverified:
+- Initial loaded state.
+- First movement or input.
+- First collision or grab.
+- First score event.
+- Water, hazard, or death event.
+- Restart/remount.
 
-- Exact blob timeline mapping for grab, fly, wall-slide, wet, and death states.
-- Wheel generation order, seeded randomness, wheel spacing, mine placement, and difficulty ramp versus original behavior.
-- Original transforms and pivots for wheels, masks, dust, motifs, frises, explosions, mine parts, oil, and stars.
-- Particle counts, velocities, alpha curves, water interaction, and death effects.
-- Pastille attraction/collection thresholds and scoring timing.
-- Audio, original platform score submission, and end-of-run flow.
+Ruffle is usually good enough for visual and timing evidence. If Ruffle behavior
+looks suspicious, cross-check with source or another Flash runtime before tuning
+the port to Ruffle.
 
-Useful next work:
+## Common Flash Porting Traps
 
-1. Compare the current port against the original first-run sequence: initial wheel, first jump, first wall contact, first mine, first water contact.
-2. Build an asset manifest for Interwheel's large sprite sets so frame indexes and pivots are not tribal knowledge.
-3. Verify blob state frame ranges from the original timeline instead of relying on inferred frame slices.
-4. Add a fixed debug route or seed for repeatable wheel layouts and wall-slide checks.
+- `Timer.tmod` matters. A fixed-step port with `tmod = 1` should not double-scale
+  motion by applying both per-step constants and elapsed seconds.
+- Main-loop order matters. Moving collision checks before or after integration can
+  change gameplay even when the formulas are identical.
+- Flash MovieClip registration is not Pixi anchor. Confirm pivots from extraction
+  data or captures instead of centering everything.
+- Depth planes are behavior. Effects, masks, water, score popups, and shadows can
+  be wrong even if every asset is present.
+- `hitTest` may be pixel or shape based. Circle checks are approximations unless
+  the source used circle math.
+- Timeline labels can be frame numbers. `gotoAndStop("1")` may mean frame 1, not
+  a semantic label.
+- TextFields are visual assets in practice. Font, outline, alignment, and symbol
+  registration can make HUD placement look wrong.
+- Input often uses edge gates, not held state. Space/click release flags and blur
+  cleanup should be tested.
+- `Std.random(0)`, comma expressions, null callbacks, array mutation during
+  iteration, and other source-language quirks can be gameplay-relevant. Preserve
+  them only after verifying the source really behaves that way.
+- Pixi texture cleanup should respect shared asset caches. Destroy display trees,
+  but do not destroy globally cached textures unless the game owns them.
+- Headless screenshots can be blank if WebGL is unavailable. Use Chromium flags
+  that enable software WebGL when doing automated smoke captures.
 
-## Repo Health Notes
+## Documentation Rules
 
-- Keep each game isolated behind the shared `GameModule` interface.
-- Every `mount()` must have a complete `destroy()` that removes event listeners, ticker callbacks, timers, and owned Pixi resources.
-- Shared helpers should stay boring and asset-focused unless multiple games prove they need the same behavior.
-- Avoid broad refactors while fidelity is still being established. Small, source-backed corrections are more valuable than general abstractions.
+- Keep `docs/FIDELITY.md` short and canonical.
+- Do not add dated multi-pass audit logs here.
+- Do not keep contradicted conclusions for historical context.
+- Put asset provenance in `docs/porting/*-assets.md`.
+- Put game-specific porting briefs in `docs/porting/<game>.md`.
+- Put narrow implementation explanations near the code when they prevent a future
+  accidental "cleanup" from breaking fidelity.
+- If a bug fix invalidates a doc claim, update or delete the claim in the same
+  change.
 
+## Current Route
+
+The current implementation route is TypeScript plus PixiJS.
+
+This is a working route, not a permanent rule. Pixi maps well to extracted 2D
+Flash assets, browser playback makes iteration easy, and the per-game
+`mount()`/`destroy()` shape keeps ports isolated. If a game needs a different
+renderer, source-to-code extraction, a SWF-assisted runtime, or a native runtime
+for better fidelity, judge that per game.
+
+## Game Status
+
+All registered games are playable ports using extracted assets. None should be
+called 100 percent fidelity-certified until source review and reference captures
+cover the important scenarios.
+
+### Interwheel
+
+- Route: `/#interwheel`
+- Port: `src/games/interwheel/index.ts`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/Interwheel`
+- Stage: 300x300
+- Status: playable, asset-backed, source-audited in key mechanics.
+- Current focus: wall/collision feel, wheel grab/mine timing, water pressure,
+  blob timeline frames, HUD placement, and reference captures.
+- Known gaps: audio/platform score hooks, complete pivot/timeline manifest, and
+  deterministic reference scenarios.
+
+### Pioupiou
+
+- Route: `/#pioupiou`
+- Port: `src/games/pioupiou/index.ts`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/pioupiou`
+- Stage: 300x320
+- Status: playable, asset-backed, needs a fresh source and capture audit.
+- Current focus: block spawn rules, climbing/falling/crush edge cases, hero frame
+  mapping, scoring, and HUD text.
+- Known gaps: no current porting brief or asset provenance document in
+  `docs/porting/`.
+
+### Manda
+
+- Route: `/#manda`
+- Port: `src/games/manda/index.ts`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/manda`
+- Stage: 300x320
+- Docs: `docs/porting/manda.md`, `docs/porting/manda-assets.md`
+- Status: playable, asset-backed, extensively source-audited, but not certified.
+- Current focus: keep remaining approximations explicit and verify with captures.
+- Known gaps: exact pixel-perfect self-collision, some timeline/sub-clip details,
+  audio, and platform score hooks.
+
+### Kill-Bulle
+
+- Route: `/#killbulle`
+- Port: `src/games/killbulle/index.ts`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/killbulle`
+- Stage: 300x320
+- Docs: `docs/porting/killbulle.md`, `docs/porting/killbulle-assets.md`
+- Status: playable, asset-backed, source-audited in many mechanics, not certified.
+- Current focus: grapple feel, blob spawn cadence, collision, bonuses, depth order,
+  and death/restart capture checks.
+- Known gaps: audio/platform hooks and any timeline details not represented by the
+  extracted assets.
+
+### Linea
+
+- Route: `/#linea`
+- Port: `src/games/linea/index.ts`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/linea`
+- Stage: 300x300
+- Docs: `docs/porting/linea.md`, `docs/porting/linea-assets.md`
+- Status: playable, asset-backed, source-audited in many mechanics, not certified.
+- Current focus: path tracing cadence, dot collision/removal order, scoring
+  multipliers, render-texture effects, and capture comparisons.
+- Known gaps: audio/platform hooks and visual differences from Flash filters or
+  bitmap effects.
+
+### Alphabounce
+
+- Route: `/#alphabounce`
+- Port: `src/games/alphabounce/`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/Alphabounce`
+- Stage: 300x320
+- Docs: `docs/porting/alphabounce.md`, `docs/porting/alphabounce-assets.md`
+- Status: playable, asset-backed, not certified.
+- Current focus: ball/pad collision, block/event timing, enemy waves, power-ups,
+  and effect lifetimes.
+- Known gaps: audio/platform hooks, capture coverage, and any asset timeline
+  labels not recovered by extraction.
+
+### K-Slash
+
+- Route: `/#kslash`
+- Port: `src/games/kslash/`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/kslash`
+- Stage: 300x300
+- Docs: `docs/porting/kslash.md`, `docs/porting/kslash-assets.md`
+- Status: playable, asset-backed, not certified.
+- Current focus: hero controls, slash/kunai hit rules, enemy states, scrolling,
+  score pickups, and death flow.
+- Known gaps: audio/platform hooks and full capture coverage for enemy edge cases.
+
+### Iron Chouquette
+
+- Route: `/#iron-chouquette`
+- Port: `src/games/iron-chouquette/index.ts`
+- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/Iron Chouquette`
+- Stage: 300x300
+- Docs: `docs/porting/iron-chouquette.md`,
+  `docs/porting/iron-chouquette-assets.md`
+- Status: playable, asset-backed, not certified.
+- Current focus: player movement, weapon behavior, boss patterns, bullets,
+  parallax, scoring, and death/restart flow.
+- Known gaps: audio/platform hooks, capture coverage, and any boss timeline
+  details not recovered in assets.
+
+## Next Useful Work
+
+- Build a small reference-capture set for Interwheel and Pioupiou first, because
+  their current docs have the least structured provenance.
+- Add per-game debug fixtures or deterministic seeds where random layouts block
+  comparison.
+- Keep asset manifests close to the games that need them most: large atlases,
+  timeline-heavy sprites, masks, and symbols with non-center registration.
+- Add focused tests for pure gameplay helpers when it reduces regression risk:
+  collision, scoring, spawn formulas, random weighted draws, and input edge
+  gates.
+- Revisit audio and original platform APIs as their own pass instead of mixing
+  them into visual/gameplay fidelity work.

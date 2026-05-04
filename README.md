@@ -33,5 +33,4 @@ npm run preview
 
 ## Current State
 
-Both games are playable and use real extracted assets, but neither should be considered 100% faithful yet. The current priority is to make the ports measurable against the original games: preserve asset provenance, compare against reference captures, and replace guessed behavior with source-backed behavior where possible.
-
+All registered games are playable and use real extracted assets, but none should be considered 100% faithful yet. The current priority is to make the ports measurable against the original games: preserve asset provenance, compare against reference captures, and replace guessed behavior with source-backed behavior where possible.
