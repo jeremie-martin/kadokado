@@ -28,6 +28,16 @@ export const GAMES: RegistryEntry[] = [
   },
   {
     meta: {
+      id: 'manda',
+      title: 'Manda',
+      description: 'Angular snake with continuous rotation, fruits, and a slot-machine jackpot.',
+      width: 300,
+      height: 320,
+    },
+    load: () => import('./manda'),
+  },
+  {
+    meta: {
       id: 'killbulle',
       title: 'Kill-Bulle',
       description: 'Single-screen grapple-and-blob arena. Aim up, fire, retract.',
@@ -55,6 +65,16 @@ export const GAMES: RegistryEntry[] = [
       height: 320,
     },
     load: () => import('./alphabounce'),
+  },
+  {
+    meta: {
+      id: 'kslash',
+      title: 'K-Slash',
+      description: 'Side-scrolling slash + kunai action with multiple enemy types.',
+      width: 300,
+      height: 300,
+    },
+    load: () => import('./kslash'),
   },
   {
     meta: {

@@ -864,8 +864,14 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
       game.keys.delete(event.key);
     }
   };
+  // Clear the key set when the window loses focus — without this, holding
+  // ArrowLeft and tabbing away leaves the hero permanently walking left.
+  const onBlur = () => {
+    game.keys.clear();
+  };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
 
   let acc = 0;
   const tickerCallback = (ticker: Ticker) => {
@@ -883,8 +889,12 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
     destroy() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       app.ticker.remove(tickerCallback);
-      app.destroy(true, { children: true });
+      // texture:false — textures live in the global Assets cache; destroying
+      // them would warn per-texture every mount and force re-decoding on
+      // replay. Pioupiou has no off-tree GPU resources (no filters or RTs).
+      app.destroy(true, { children: true, texture: false });
     },
   };
 }

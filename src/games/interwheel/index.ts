@@ -324,9 +324,9 @@ class InterwheelGame {
   readonly meterText = new Text({
     text: '0m',
     style: {
-      fontFamily: 'Arial, Helvetica, sans-serif',
+      fontFamily: 'Arial Rounded MT Bold, Trebuchet MS, Arial, Helvetica, sans-serif',
       fontSize: 13,
-      fontWeight: '700',
+      fontWeight: '900',
       fill: 0xe1bd6a,
     },
   });
@@ -1210,7 +1210,6 @@ class InterwheelGame {
 
       if (Math.random() < 0.4) {
         this.spawnParticle(this.assets.star, spark.x, spark.y, spark.vx * (0.5 + (Math.random() * 2 - 1) * 0.1), spark.vy * (0.5 + (Math.random() * 2 - 1) * 0.1), {
-          scale: 0.7 + Math.random() * 0.4,
           ttl: 10 + Math.random() * 10,
           weight: 0.1 + Math.random() * 0.1,
           fadeMode: 'scale',
@@ -1616,7 +1615,9 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
       game.spaceHeld = false;
     }
   };
-  const onPointerDown = () => {
+  const onPointerDown = (event: PointerEvent) => {
+    // Primary button only — keep right-clicks from acting as a tap.
+    if (event.button !== 0) return;
     if (game.ended) {
       return;
     }
@@ -1625,9 +1626,21 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
     }
     game.pointerPressed = true;
   };
+  // Suppress the browser context menu over the canvas.
+  const onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
+  };
+  // Release held keys when the tab loses focus — otherwise the OS never
+  // delivers a keyup and `spaceHeld` would stay latched while the player tabs
+  // away.
+  const onBlur = () => {
+    game.spaceHeld = false;
+  };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('blur', onBlur);
   app.canvas.addEventListener('pointerdown', onPointerDown);
+  app.canvas.addEventListener('contextmenu', onContextMenu);
 
   let acc = 0;
   const tickerCallback = () => {
@@ -1643,9 +1656,14 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
     destroy() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
+      window.removeEventListener('blur', onBlur);
       app.canvas.removeEventListener('pointerdown', onPointerDown);
+      app.canvas.removeEventListener('contextmenu', onContextMenu);
       app.ticker.remove(tickerCallback);
-      app.destroy(true, { children: true });
+      // texture:false — textures are managed by the global Assets cache and
+      // destroying them here would (a) warn every mount cycle and (b) force a
+      // re-fetch on the next mount.
+      app.destroy(true, { children: true, texture: false });
     },
   };
 }

@@ -1,4 +1,4 @@
-import { Application, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, Text, Ticker } from 'pixi.js';
+import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, Text, Ticker } from 'pixi.js';
 import { noopGameHost } from '../types';
 import type { GameHost, GameInstance, GameMountContext } from '../types';
 import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
@@ -97,18 +97,18 @@ function brighten(color: number, prc: number): number {
   const r = (color >> 16) & 0xff;
   const g = (color >> 8) & 0xff;
   const b = color & 0xff;
-  const nr = Math.round(r * t + 255 * (1 - t));
-  const ng = Math.round(g * t + 255 * (1 - t));
-  const nb = Math.round(b * t + 255 * (1 - t));
+  const nr = Math.trunc(r * t + 255 * (1 - t));
+  const ng = Math.trunc(g * t + 255 * (1 - t));
+  const nb = Math.trunc(b * t + 255 * (1 - t));
   return rgb(nr, ng, nb);
 }
 
 function darken(color: number, prc: number): number {
-  const t = Math.min(100, Math.max(0, prc)) / 100;
   const r = (color >> 16) & 0xff;
   const g = (color >> 8) & 0xff;
   const b = color & 0xff;
-  return rgb(Math.round(r * (1 - t)), Math.round(g * (1 - t)), Math.round(b * (1 - t)));
+  const t = Math.min(100, Math.max(0, prc)) / 100;
+  return rgb(r - Math.floor(r * t), g - Math.floor(g * t), b - Math.floor(b * t));
 }
 
 // -----------------------------------------------------------------------------
@@ -116,13 +116,15 @@ function darken(color: number, prc: number): number {
 // -----------------------------------------------------------------------------
 //
 // The original Geom uses degree-input cos/sin and a Bresenham bitmap-line draw.
-// We keep the degree API so call sites translate 1:1.
+// Geom.DegreesToRadMult is the literal 0.0174 approximation, not Math.PI/180;
+// preserve that tiny phase error so dot shimmer and particle rays translate 1:1.
 
+const DEGREES_TO_RAD_MULT = 0.0174;
 function gcos(deg: number): number {
-  return Math.cos((deg * Math.PI) / 180);
+  return Math.cos(deg * DEGREES_TO_RAD_MULT);
 }
 function gsin(deg: number): number {
-  return Math.sin((deg * Math.PI) / 180);
+  return Math.sin(deg * DEGREES_TO_RAD_MULT);
 }
 
 // -----------------------------------------------------------------------------
@@ -234,12 +236,39 @@ class Phys {
   // The original kept absolute target coords on `x`/`y`; we mirror that.
   x = 0;
   y = 0;
+  private blurFilter: BlurFilter | null = null;
 
   constructor(view: Container, timer = 15) {
     this.view = view;
     this.timer = timer;
     this.x = view.x;
     this.y = view.y;
+  }
+
+  private ensureBlurFilter(): BlurFilter {
+    if (!this.blurFilter) {
+      this.blurFilter = new BlurFilter({ strengthX: 0, strengthY: 0, quality: 1, kernelSize: 5 });
+    }
+    const existing = this.view.filters;
+    const filters = Array.isArray(existing) ? existing : existing ? [existing] : [];
+    if (!filters.includes(this.blurFilter)) this.view.filters = [...filters, this.blurFilter];
+    return this.blurFilter;
+  }
+
+  destroy(): void {
+    if (!this.blurFilter) return;
+    const blur = this.blurFilter;
+    const existing = this.view.filters;
+    const filters = Array.isArray(existing)
+      ? existing.filter((filter) => filter !== blur)
+      : existing === blur
+        ? []
+        : existing
+          ? [existing]
+          : [];
+    this.view.filters = filters;
+    blur.destroy();
+    this.blurFilter = null;
   }
 
   step(): boolean {
@@ -298,7 +327,13 @@ class Phys {
           break;
         case 4:
           // Source: `_alpha = c*alpha; Filt.blur(root, (1-c)*16, 0)`.
-          // Blur omitted (no filter dep); alpha matches.
+          // Pixi BlurFilter supports independent axes, so this mirrors the
+          // original horizontal-only blur instead of substituting alpha alone.
+          {
+            const blur = this.ensureBlurFilter();
+            blur.strengthX = (1 - c) * 16;
+            blur.strengthY = 0;
+          }
           this.view.alpha = c;
           break;
         case 5:
@@ -322,17 +357,15 @@ class Phys {
 // Faithful to Dotter.hx, with the BitmapData calls replaced by:
 //  - a RenderTexture (`plane`) we render single-pixel Graphics into per dot move
 //  - a "scroll" implemented by drawing the prior-frame texture offset by `-scr`
-//  - the shimmer ColorTransform replaced by a per-frame tint sweep on the sprite
-//    (a true colorTransform would require a fragment shader; tint is the closest
-//    no-shader approximation in Pixi 8).
+//  - the shimmer ColorTransform applied to the plane→scratch blit via Pixi's
+//    ColorMatrixFilter, including the source's +128 alpha offset.
 //
 // NOTE: the BitmapData→RenderTexture port loses pixel-perfect equivalence with
 // the original in the following ways:
-//   1. The shimmer ColorTransform is not bit-identical (we tint the host sprite
-//      instead of compositing per-pixel).
-//   2. A small alpha-offset (128) the original applied each frame to keep
-//      drawn pixels from fading is not modelled; trails persist by virtue of
-//      the rt-on-rt blit instead.
+//   1. RenderTexture blits go through Pixi/WebGL sampling rather than Flash's
+//      BitmapData integer pipeline.
+//   2. The ColorMatrixFilter is a shader implementation, so final per-channel
+//      rounding may differ by a value of 1 from Flash.
 
 interface DotState {
   x: number;
@@ -553,7 +586,8 @@ class Dotter {
     // This boosts every pixel's alpha by +128 each frame; trail pixels written
     // at low alpha (0x60) become opaque within ~2 frames, matching the source
     // semantics where trails persist as solid pixels rather than alpha-fading.
-    const k = 0.98 + Math.sin((this.sinct * Math.PI) / 180) / 100;
+    this.sinct += 5;
+    const k = 0.98 + gsin(this.sinct) / 100;
     this.shimmerFilter.matrix = [
       k, 0, 0, 0, 0,
       0, k, 0, 0, 0,
@@ -561,8 +595,6 @@ class Dotter {
       0, 0, 0, 1, 128 / 255,
     ];
     this.scrollPlane(-scr);
-
-    this.sinct += 5;
 
     const linked = this.dots.filter((d) => d.started);
     const first = linked[0];
@@ -686,13 +718,10 @@ class Dotter {
 
     if (dy === 0) {
       const span = this.scroll + dx;
-      // Single horizontal trail segment per frame; rendered as one line for perf.
+      // Source loops `for (i in 0...scroll+dx)`, which draws nothing when the
+      // upper bound is <= 0.
       if (span > 0) {
         this.drawBitmapLine(x, y, x + span - 1, y, col);
-      } else if (span < 0) {
-        this.drawBitmapLine(x + span, y, x, y, col);
-      } else {
-        this.drawPixel(x, y, col);
       }
       dot.prevX = dot.x;
       dot.prevY = dot.y;
@@ -1754,6 +1783,7 @@ class LineaGame {
       const p = this.particles[i];
       const alive = p.phys.step();
       if (!alive) {
+        p.phys.destroy();
         p.view.removeFromParent();
         this.particles.splice(i, 1);
         i -= 1;
@@ -1950,6 +1980,8 @@ class LineaGame {
     // array, not a child sprite).
     for (const f of this.flasher) this.clearFlashFilter(f);
     this.flasher.length = 0;
+    for (const p of this.particles) p.phys.destroy();
+    this.particles.length = 0;
     this.dotter.destroy();
     this.scroller.destroy();
   }
