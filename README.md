@@ -10,6 +10,7 @@ TypeScript/PixiJS is the current implementation route because it is working well
 
 - Interwheel: `/#interwheel`
 - Pioupiou: `/#pioupiou`
+- Alphabounce: `/#alphabounce`
 
 The root route shows the small launcher.
 

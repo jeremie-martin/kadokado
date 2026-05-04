@@ -48,6 +48,16 @@ export const GAMES: RegistryEntry[] = [
   },
   {
     meta: {
+      id: 'alphabounce',
+      title: 'Alphabounce',
+      description: 'Breakout with letter power-ups and event-driven enemy waves.',
+      width: 300,
+      height: 320,
+    },
+    load: () => import('./alphabounce'),
+  },
+  {
+    meta: {
       id: 'iron-chouquette',
       title: 'Iron Chouquette',
       description: 'Vertical bullet-hell boss-rush with weapon types and parallax decor.',
