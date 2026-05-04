@@ -45,6 +45,10 @@ const ENDGAME_DELAY = 30;
 const DECOR_SECTION_HEIGHT = 2000;
 const DECOR_SECTIONS = 5;
 const DECOR_BASE_COLOR = 0x436b70;
+const PANEL_X = 238;
+const PANEL_Y = 265;
+const PANEL_TEXT_X = 263;
+const PANEL_TEXT_Y = 280;
 
 const ASSET_ROOT = '/assets/interwheel';
 
@@ -243,7 +247,7 @@ async function loadAssets(): Promise<InterwheelAssets> {
     loadFrame(`${ASSET_ROOT}/water.png`, 0, 0),
     loadFrame(`${ASSET_ROOT}/mine.png`, 8.65, 11.85),
     loadFrame(`${ASSET_ROOT}/side.png`, 1, 0.45),
-    loadFrame(`${ASSET_ROOT}/panel.png`, -1.45, -1.4),
+    loadFrame(`${ASSET_ROOT}/panel-template.svg`, -1.45, -1.4),
     loadFrame(`${ASSET_ROOT}/oil.png`, 2.5, 2.5),
     loadFrame(`${ASSET_ROOT}/star.png`, 7, 7),
     loadSeries(`${ASSET_ROOT}/blob`, 173, 35.95, 34.9),
@@ -326,17 +330,6 @@ class InterwheelGame {
     },
   });
 
-  readonly scoreText = new Text({
-    text: '0',
-    style: {
-      fontFamily: 'Arial, Helvetica, sans-serif',
-      fontSize: 12,
-      fontWeight: '700',
-      fill: 0xf7f7f7,
-      stroke: { color: 0x173640, width: 3 },
-    },
-  });
-
   readonly gameOverText = new Text({
     text: '',
     style: {
@@ -360,6 +353,7 @@ class InterwheelGame {
   waterY = -300;
   waterBoost = 0;
   maxHeight = 0;
+  // Source scoring is submitted through KKApi; the visible HUD only shows height.
   score = 0;
   tick = 0;
   ending = false;
@@ -390,12 +384,11 @@ class InterwheelGame {
     );
 
     const panel = makeSprite(assets.panel);
-    panel.position.set(238, 265);
+    panel.position.set(PANEL_X, PANEL_Y);
     this.hudLayer.addChild(panel);
 
     this.meterText.anchor.set(0.5);
-    this.meterText.position.set(263, 280);
-    this.scoreText.position.set(10, 8);
+    this.meterText.position.set(PANEL_TEXT_X, PANEL_TEXT_Y);
     this.gameOverText.anchor.set(0.5);
     this.gameOverText.position.set(150, 145);
     this.hudLayer.addChild(this.meterText, this.gameOverText);
@@ -457,7 +450,6 @@ class InterwheelGame {
     this.spacePressed = false;
     this.pointerPressed = false;
     this.gameOverText.text = '';
-    this.scoreText.text = '0';
     this.meterText.text = '0m';
 
     this.buildDecor();
