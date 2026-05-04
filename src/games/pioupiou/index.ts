@@ -1,5 +1,6 @@
 import { Application, Container, Graphics, Sprite, Text, Ticker } from 'pixi.js';
-import type { GameInstance } from '../types';
+import { noopGameHost } from '../types';
+import type { GameHost, GameInstance, GameMountContext } from '../types';
 import { type Frame, loadFrame, loadSeries, makeSprite } from '../_shared/frames';
 
 const STAGE_WIDTH = 300;
@@ -112,6 +113,7 @@ function trunc(value: number): number {
 class PioupiouGame {
   readonly app: Application;
   readonly assets: GameAssets;
+  readonly host: GameHost;
   readonly keys = new Set<string>();
   readonly world = new Container();
   readonly entityLayer = new Container();
@@ -167,9 +169,10 @@ class PioupiouGame {
   data = { b: [0, 0, 0], l: 0 };
   ended = false;
 
-  constructor(app: Application, assets: GameAssets) {
+  constructor(app: Application, assets: GameAssets, host: GameHost) {
     this.app = app;
     this.assets = assets;
+    this.host = host;
     this.app.stage.addChild(this.world, this.hudLayer);
 
     const stageBg = makeSprite(assets.bg);
@@ -207,6 +210,7 @@ class PioupiouGame {
     this.initLevel();
     this.updateMask();
     this.render();
+    this.host.updateScore(0);
   }
 
   initLevel(): void {
@@ -418,6 +422,7 @@ class PioupiouGame {
         this.addVanishFx(bonus.view.x + 16, bonus.view.y + 16, bonus.type);
         this.score += BONUS_POINTS[bonus.type] ?? 0;
         this.scoreText.text = String(this.score);
+        this.host.updateScore(this.score);
         this.data.b[bonus.type] += 1;
         bonus.view.removeFromParent();
         this.bonuses.splice(i, 1);
@@ -677,6 +682,7 @@ class PioupiouGame {
         if (this.hero.deathTime < 0 && !this.ended) {
           this.ended = true;
           this.gameOverText.text = 'GAME OVER';
+          this.host.endRun({ score: this.score });
         }
         break;
     }
@@ -829,7 +835,7 @@ async function loadGameAssets(): Promise<GameAssets> {
   };
 }
 
-export async function mount(container: HTMLElement): Promise<GameInstance> {
+export async function mount(container: HTMLElement, context?: GameMountContext): Promise<GameInstance> {
   const app = new Application();
   const [, assets] = await Promise.all([
     app.init({
@@ -844,7 +850,7 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   ]);
   container.appendChild(app.canvas);
 
-  const game = new PioupiouGame(app, assets);
+  const game = new PioupiouGame(app, assets, context?.host ?? noopGameHost);
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {

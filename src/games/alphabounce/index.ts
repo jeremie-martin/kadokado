@@ -4,11 +4,12 @@
 // exhaustively cleans up listeners and Pixi resources.
 
 import { Application, Ticker } from 'pixi.js';
-import type { GameInstance } from '../types';
+import { noopGameHost } from '../types';
+import type { GameInstance, GameMountContext } from '../types';
 import { STAGE_HEIGHT, STAGE_WIDTH, STEP_SECONDS } from './constants';
 import { AlphabounceGame, loadAssets } from './game';
 
-export async function mount(container: HTMLElement): Promise<GameInstance> {
+export async function mount(container: HTMLElement, context?: GameMountContext): Promise<GameInstance> {
   const app = new Application();
   const [, assets] = await Promise.all([
     app.init({
@@ -23,7 +24,7 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   ]);
   container.appendChild(app.canvas);
 
-  const game = new AlphabounceGame(app, assets);
+  const game = new AlphabounceGame(app, assets, context?.host ?? noopGameHost);
 
   // Keyboard: Left/Right move pad; Space = action (mouse-down equivalent).
   let spaceHeld = false;

@@ -1,5 +1,6 @@
 import { Application, Container, Graphics, Sprite, Text } from 'pixi.js';
-import type { GameInstance } from '../types';
+import { noopGameHost } from '../types';
+import type { GameHost, GameInstance, GameMountContext } from '../types';
 import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
 
 const STAGE_WIDTH = 300;
@@ -346,6 +347,7 @@ class InterwheelGame {
   sparks: Spark[] = [];
   particles: Particle[] = [];
   blob: Blob;
+  host: GameHost;
 
   mapY = 0;
   svy = 0;
@@ -364,9 +366,10 @@ class InterwheelGame {
   spacePressed = false;
   pointerPressed = false;
 
-  constructor(app: Application, assets: InterwheelAssets) {
+  constructor(app: Application, assets: InterwheelAssets, host: GameHost) {
     this.app = app;
     this.assets = assets;
+    this.host = host;
 
     const bg = makeSprite(assets.bg);
     this.app.stage.addChild(bg, this.world, this.hudLayer);
@@ -451,6 +454,8 @@ class InterwheelGame {
     this.pointerPressed = false;
     this.gameOverText.text = '';
     this.meterText.text = '0m';
+    this.host.updateScore(0);
+    this.host.updateMetric({ key: 'height', label: 'Height', value: 0, unit: 'm' });
 
     this.buildDecor();
     this.initWheels();
@@ -760,8 +765,7 @@ class InterwheelGame {
       this.scrollMap(false);
       this.endTimer -= 1;
       if (this.endTimer < 0) {
-        this.ending = false;
-        this.ended = true;
+        this.finishRun();
       }
       this.render();
       return;
@@ -1216,6 +1220,7 @@ class InterwheelGame {
 
       if (distance(blob, spark) < BLOB_RAY + 8) {
         this.score += spark.score;
+        this.host.updateScore(this.score);
         this.spawnAnimation(this.assets.startExplo, spark.x, spark.y, 0.6, this.starLayer);
         spark.view.removeFromParent();
         this.sparks.splice(i, 1);
@@ -1259,10 +1264,16 @@ class InterwheelGame {
     const runHeight = Math.max(0, -blob.y);
     const heightGain = runHeight - this.maxHeight;
     if (heightGain > 0) {
-      this.score += Math.floor(heightGain);
+      const scoreGain = Math.floor(heightGain);
+      if (scoreGain > 0) {
+        this.score += scoreGain;
+        this.host.updateScore(this.score);
+      }
     }
     this.maxHeight = Math.max(runHeight, this.maxHeight);
-    this.meterText.text = `${Math.floor(this.maxHeight * 0.2)}m`;
+    const heightMeters = Math.floor(this.maxHeight * 0.2);
+    this.meterText.text = `${heightMeters}m`;
+    this.host.updateMetric({ key: 'height', label: 'Height', value: heightMeters, unit: 'm' });
   }
 
   updateBlobWaterEffects(): void {
@@ -1503,6 +1514,17 @@ class InterwheelGame {
     this.gameOverText.text = '';
   }
 
+  finishRun(): void {
+    if (this.ended) return;
+    const heightMeters = Math.floor(this.maxHeight * 0.2);
+    this.ending = false;
+    this.ended = true;
+    this.host.endRun({
+      score: this.score,
+      secondary: { key: 'height', label: 'Height', value: heightMeters, unit: 'm' },
+    });
+  }
+
   render(): void {
     this.world.y = this.mapY;
 
@@ -1556,7 +1578,7 @@ class InterwheelGame {
   }
 }
 
-export async function mount(container: HTMLElement): Promise<GameInstance> {
+export async function mount(container: HTMLElement, context?: GameMountContext): Promise<GameInstance> {
   const app = new Application();
   const [, assets] = await Promise.all([
     app.init({
@@ -1571,7 +1593,7 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   ]);
   container.appendChild(app.canvas);
 
-  const game = new InterwheelGame(app, assets);
+  const game = new InterwheelGame(app, assets, context?.host ?? noopGameHost);
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.code !== 'Space') {
@@ -1579,7 +1601,6 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
     }
     event.preventDefault();
     if (game.ended) {
-      game.reset();
       return;
     }
     if (game.ending) {
@@ -1597,7 +1618,6 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   };
   const onPointerDown = () => {
     if (game.ended) {
-      game.reset();
       return;
     }
     if (game.ending) {

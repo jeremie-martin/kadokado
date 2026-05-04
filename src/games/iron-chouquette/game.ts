@@ -14,6 +14,7 @@ import type { Bads } from './bads';
 import type { Shot } from './projectiles';
 import { Inter } from './inter';
 import { type Frame, loadFrame, loadSeries, makeSprite } from '../_shared/frames';
+import type { GameHost } from '../types';
 
 export type IronChouquetteAssets = {
   // Pre-rasterized rasters from bmp/.
@@ -125,6 +126,7 @@ type BulletTime = { trg: number; timer: number; val: number };
 export class IronChouquetteGame {
   app: Application;
   assets: IronChouquetteAssets;
+  host: GameHost;
 
   // Layers (z-order increases with index).
   bgLayer = new Container();        // DP_BG
@@ -208,9 +210,10 @@ export class IronChouquetteGame {
 
   ended = false;
 
-  constructor(app: Application, assets: IronChouquetteAssets) {
+  constructor(app: Application, assets: IronChouquetteAssets, host: GameHost) {
     this.app = app;
     this.assets = assets;
+    this.host = host;
 
     // Compose stage layers in z-order.
     this.app.stage.addChild(
@@ -235,6 +238,7 @@ export class IronChouquetteGame {
 
     this.initStep(0);
     this.initPlasma();
+    this.host.updateScore(0);
   }
 
   // Plasma cache: 2 RenderTextures driven by Pixi's renderer instead of BitmapData.draw.
@@ -609,6 +613,7 @@ export class IronChouquetteGame {
 
   addScore(value: number): void {
     this.score += value;
+    this.host.updateScore(this.score);
   }
 
   spawnBonus(x: number, y: number): Bonus {
@@ -619,6 +624,7 @@ export class IronChouquetteGame {
     if (this.ended) return;
     this.ended = true;
     this.inter.setGameOver();
+    this.host.endRun({ score: this.score });
   }
 
   destroy(): void {

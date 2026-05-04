@@ -1,5 +1,6 @@
 import { Application, ColorMatrixFilter, Container, Graphics, RenderTexture, Sprite, Text, Ticker } from 'pixi.js';
-import type { GameInstance } from '../types';
+import { noopGameHost } from '../types';
+import type { GameHost, GameInstance, GameMountContext } from '../types';
 import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
 
 // -----------------------------------------------------------------------------
@@ -799,6 +800,7 @@ class LineaGame {
   app: Application;
   assets: LineaAssets;
   root: Container;
+  host: GameHost;
 
   // Layered containers (DepthManager replacement; addChildAt order = layer order).
   bgLayer = new Container();
@@ -887,9 +889,10 @@ class LineaGame {
 
   keys = new Set<string>();
 
-  constructor(app: Application, assets: LineaAssets) {
+  constructor(app: Application, assets: LineaAssets, host: GameHost) {
     this.app = app;
     this.assets = assets;
+    this.host = host;
     this.root = new Container();
     app.stage.addChild(this.root);
     this.root.addChild(this.bgLayer, this.bmpLayer, this.underLayer, this.objectsLayer, this.bonusLayer, this.dotLayer, this.uiLayer);
@@ -988,6 +991,7 @@ class LineaGame {
     this.dotter = new Dotter(app, dotterHost, Math.ceil(WIDTH_BMD / 2), HEIGHT_BMD, XMARGIN, MARGIN);
     this.dotter.setOnStage(0, 0);
     this.dotter.setVisibleWidth(STAGE_WIDTH, HEIGHT_BMD);
+    this.host.updateScore(0);
 
     // First dot from palette + matching UI dot.
     const firstColor = this.palette.pop() ?? 0xffffff;
@@ -1074,6 +1078,7 @@ class LineaGame {
         else if (xfactor < 1) this.difFactorText.text = '1';
         else this.difFactorText.text = String(xfactor).slice(0, 3);
         this.scoreText.text = String(this.scoreVal);
+        this.host.updateScore(this.scoreVal);
         break;
       }
       case GameStep.Ending: {
@@ -1104,6 +1109,7 @@ class LineaGame {
     if (this.gameOver && !this.signalSent) {
       // KKApi.gameOver({Phit, PBonus, PLines, PCamper})
       this.signalSent = true;
+      this.host.endRun({ score: this.scoreVal });
     }
   }
 
@@ -1497,6 +1503,7 @@ class LineaGame {
         this.score(hitX, hitY - 50, 'combo', BONUS_COMBO);
         this.pBonus += BONUS_COMBO;
         this.scoreVal += BONUS_COMBO;
+        this.host.updateScore(this.scoreVal);
         continue;
       }
 
@@ -1504,6 +1511,7 @@ class LineaGame {
       const s = BASE_SCORE * mult;
       this.pBonus += s;
       this.scoreVal += s;
+      this.host.updateScore(this.scoreVal);
     }
   }
 
@@ -2042,7 +2050,7 @@ class ScrollerLayer {
 // Entry point
 // -----------------------------------------------------------------------------
 
-export async function mount(container: HTMLElement): Promise<GameInstance> {
+export async function mount(container: HTMLElement, context?: GameMountContext): Promise<GameInstance> {
   const app = new Application();
   const [, assets] = await Promise.all([
     app.init({
@@ -2057,7 +2065,7 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   ]);
   container.appendChild(app.canvas);
 
-  const game = new LineaGame(app, assets);
+  const game = new LineaGame(app, assets, context?.host ?? noopGameHost);
 
   const tracked = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
   const onKeyDown = (event: KeyboardEvent) => {

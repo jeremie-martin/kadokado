@@ -1,12 +1,13 @@
 import { Application, Ticker } from 'pixi.js';
-import type { GameInstance } from '../types';
+import { noopGameHost } from '../types';
+import type { GameInstance, GameMountContext } from '../types';
 import { STAGE_WIDTH, STAGE_HEIGHT, STEP_SECONDS } from './constants';
 import { IronChouquetteGame, loadAssets } from './game';
 
 // Multi-file Iron Chouquette port. This module is the only export surface;
 // the registry imports it via `() => import('./iron-chouquette')`.
 
-export async function mount(container: HTMLElement): Promise<GameInstance> {
+export async function mount(container: HTMLElement, context?: GameMountContext): Promise<GameInstance> {
   const app = new Application();
   const [, assets] = await Promise.all([
     app.init({
@@ -21,7 +22,7 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   ]);
   container.appendChild(app.canvas);
 
-  const game = new IronChouquetteGame(app, assets);
+  const game = new IronChouquetteGame(app, assets, context?.host ?? noopGameHost);
 
   const onKeyDown = (event: KeyboardEvent) => {
     const key = mapKey(event);

@@ -2,6 +2,7 @@
 // procedural map generation, plasma backdrop, scoring, and the entity lists.
 
 import { Application, BlurFilter, ColorMatrixFilter, Container, Graphics, Matrix, RenderTexture, Sprite, Text } from 'pixi.js';
+import type { GameHost } from '../types';
 import { loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
 
 import {
@@ -224,6 +225,7 @@ type TitlePopup = {
 export class AlphabounceGame implements GameContext {
   app: Application;
   assets: AlphabounceAssets;
+  host: GameHost;
 
   // Layers (DepthManager equivalent).
   root = new Container();
@@ -308,9 +310,10 @@ export class AlphabounceGame implements GameContext {
   // Ended flag — ensures KKApi.gameOver-like signal fires once.
   signalSent = false;
 
-  constructor(app: Application, assets: AlphabounceAssets) {
+  constructor(app: Application, assets: AlphabounceAssets, host: GameHost) {
     this.app = app;
     this.assets = assets;
+    this.host = host;
 
     app.stage.addChild(this.root);
     this.root.addChild(
@@ -397,6 +400,7 @@ export class AlphabounceGame implements GameContext {
 
     // Initial scroll (entry transition).
     this.initScroll(1);
+    this.host.updateScore(0);
   }
 
   // ---------------------------------------------------------------------------
@@ -612,6 +616,7 @@ export class AlphabounceGame implements GameContext {
     this.step = Step.GameOver;
     if (!this.signalSent) {
       this.signalSent = true; // KKApi.gameOver({}) — no-op in port
+      this.host.endRun({ score: this.score });
     }
     this.gameOverText.text = 'GAME OVER';
   }
@@ -1187,6 +1192,7 @@ export class AlphabounceGame implements GameContext {
   addScore(value: number): void {
     this.score += value;
     this.scoreText.text = String(this.score);
+    this.host.updateScore(this.score);
   }
   newPart(opts: Partial<FxParticle> & Pick<FxParticle, 'kind' | 'view'>): FxParticle {
     return makePart(this, opts);

@@ -1,5 +1,6 @@
 import { Application, ColorMatrixFilter, Container, Graphics, Sprite, Text, Ticker } from 'pixi.js';
-import type { GameInstance } from '../types';
+import { noopGameHost } from '../types';
+import type { GameHost, GameInstance, GameMountContext } from '../types';
 import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
 
 // -------------------------------------------------------------------------------------------------
@@ -1167,6 +1168,7 @@ class ScoreStrip {
 class KillbulleGame {
   app: Application;
   assets: KillbulleAssets;
+  host: GameHost;
 
   // Layers mirror mt.DepthManager's plan model. In Flash, each plan is a
   // 1000-depth bucket and objects inside the same plan render by attach order.
@@ -1245,9 +1247,10 @@ class KillbulleGame {
     return hasBonus ? this.blobFilters.bonus : this.blobFilters.plain;
   }
 
-  constructor(app: Application, assets: KillbulleAssets) {
+  constructor(app: Application, assets: KillbulleAssets, host: GameHost) {
     this.app = app;
     this.assets = assets;
+    this.host = host;
 
     // Build backgrounds. Source attaches both to the panned root MovieClip,
     // then only counter-pans `bg` with `bg._x = -root._x / 3`; `bg2` remains
@@ -1297,6 +1300,7 @@ class KillbulleGame {
     this.hudLayer.addChild(this.scoreStrip.view, this.gameOverText);
 
     this.updateHud();
+    this.host.updateScore(0);
   }
 
   addUpdate(fn: UpdateFn): void {
@@ -1307,6 +1311,7 @@ class KillbulleGame {
     this.stats.ts += 0; // ts is shot-attributed; addScore mirrors KKApi.addScore which is global
     this.game_score += value;
     this.updateHud();
+    this.host.updateScore(this.game_score);
   }
 
   updateHud(): void {
@@ -1402,6 +1407,7 @@ class KillbulleGame {
     if (this.game_over_flag) return;
     this.game_over_flag = true;
     this.gameOverText.text = 'GAME OVER';
+    this.host.endRun({ score: this.game_score });
   }
 
   // Game.mt main().
@@ -1494,7 +1500,7 @@ class KillbulleGame {
 // Module entry
 // -------------------------------------------------------------------------------------------------
 
-export async function mount(container: HTMLElement): Promise<GameInstance> {
+export async function mount(container: HTMLElement, context?: GameMountContext): Promise<GameInstance> {
   const app = new Application();
   const [, assets] = await Promise.all([
     app.init({
@@ -1509,7 +1515,7 @@ export async function mount(container: HTMLElement): Promise<GameInstance> {
   ]);
   container.appendChild(app.canvas);
 
-  const game = new KillbulleGame(app, assets);
+  const game = new KillbulleGame(app, assets, context?.host ?? noopGameHost);
 
   const onKeyDown = (event: KeyboardEvent) => {
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
