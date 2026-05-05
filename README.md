@@ -24,9 +24,16 @@ The root route shows the small launcher.
 ```sh
 npm install
 npm run dev
+npm run dev:api
 npm run build
 npm run preview
+npm start
+npm run test:api
 ```
+
+For the persistent leaderboard locally, run `npm run dev:api` in one terminal and `npm run dev` in another; Vite proxies `/api` to the Node server. For production, run `npm run build` and then `npm start`.
+
+The leaderboard database defaults to `.data/leaderboard.sqlite`. Override it with `LEADERBOARD_DB_PATH`. Set `IP_HASH_SECRET` in production so stored IP hashes are stable without storing raw IPs. If the app is behind a trusted reverse proxy, set `TRUST_PROXY=1`.
 
 ## Layout
 
@@ -35,6 +42,7 @@ npm run preview
 - `src/games/<game>/index.ts`: one self-contained Pixi game module with `mount()` and `destroy()`.
 - `src/games/_shared/frames.ts`: shared helpers for loading extracted sprite frames with pivots.
 - `public/assets/<game>/`: extracted raster assets used by the ports.
+- `server/`: Express + SQLite leaderboard API.
 - `docs/FIDELITY.md`: current fidelity state, validation plan, and next work.
 
 ## Current State

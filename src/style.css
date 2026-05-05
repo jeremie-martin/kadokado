@@ -93,7 +93,7 @@ body {
 
 .player-layout {
   display: grid;
-  grid-template-columns: auto 220px;
+  grid-template-columns: auto 250px;
   gap: 20px;
   align-items: start;
 }
@@ -111,7 +111,7 @@ body {
 }
 
 .player-panel {
-  width: 220px;
+  width: 250px;
   box-sizing: border-box;
   background: #202020;
   border: 1px solid #303030;
@@ -181,6 +181,132 @@ body {
 .player-action:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.player-submit,
+.player-leaderboard {
+  border-top: 1px solid #303030;
+  margin-top: 14px;
+  padding-top: 12px;
+}
+
+.player-submit h2,
+.player-leaderboard h2 {
+  margin: 0 0 8px;
+  color: #ededed;
+  font-size: 12px;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.player-submit label {
+  display: block;
+  margin: 0 0 6px;
+  color: #9d9d9d;
+  font-size: 11px;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.player-submit-controls {
+  display: flex;
+  gap: 6px;
+}
+
+.player-submit input {
+  min-width: 0;
+  flex: 1;
+  box-sizing: border-box;
+  background: #171717;
+  color: #f0f0f0;
+  border: 1px solid #414141;
+  border-radius: 4px;
+  padding: 8px;
+  font: inherit;
+  font-size: 13px;
+}
+
+.player-submit input:focus {
+  border-color: #4b8bff;
+  outline: none;
+}
+
+.player-submit button {
+  flex: 0 0 auto;
+  background: #2a2a2a;
+  color: #f0f0f0;
+  border: 1px solid #414141;
+  border-radius: 4px;
+  padding: 8px 10px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+}
+
+.player-submit button:hover:not(:disabled) {
+  border-color: #4b8bff;
+}
+
+.player-submit button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.player-submit-message,
+.player-leaderboard-message {
+  margin: 8px 0 0;
+  color: #ffb3a5;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.player-leaderboard-message {
+  color: #9d9d9d;
+}
+
+.player-leaderboard-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.player-leaderboard-row {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  min-height: 22px;
+  color: #dcdcdc;
+  font-size: 13px;
+  line-height: 1.25;
+}
+
+.player-leaderboard-rank {
+  color: #858585;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.player-leaderboard-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.player-leaderboard-score {
+  color: #f0f0f0;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.player-leaderboard-secondary {
+  grid-column: 2 / -1;
+  margin-top: -5px;
+  color: #858585;
+  font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .player-error {

@@ -8,6 +8,7 @@ if (!rootEl) {
 }
 const root = rootEl;
 const BESTS_STORAGE_KEY = 'motiontwin-ports:v1:bests';
+const PSEUDONYM_STORAGE_KEY = 'motiontwin-ports:v1:pseudonym';
 
 let active: GameInstance | null = null;
 let renderId = 0;
@@ -19,6 +20,15 @@ type StoredBest = {
 };
 
 type StoredBests = Record<string, StoredBest>;
+
+type LeaderboardEntry = {
+  id: number;
+  gameId: string;
+  pseudonym: string;
+  score: number;
+  submittedAt: string;
+  secondary?: GameMetric;
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -37,6 +47,28 @@ function normalizeMetric(value: unknown): GameMetric | undefined {
     return undefined;
   }
   return unit === undefined ? { key, label, value: metricValue } : { key, label, value: metricValue, unit };
+}
+
+function normalizeLeaderboardEntry(value: unknown): LeaderboardEntry | undefined {
+  if (!isRecord(value)) return undefined;
+  const id = value.id;
+  const gameId = value.gameId;
+  const pseudonym = value.pseudonym;
+  const score = value.score;
+  const submittedAt = value.submittedAt;
+  if (
+    typeof id !== 'number' ||
+    !Number.isSafeInteger(id) ||
+    typeof gameId !== 'string' ||
+    typeof pseudonym !== 'string' ||
+    typeof score !== 'number' ||
+    !Number.isFinite(score) ||
+    typeof submittedAt !== 'string'
+  ) {
+    return undefined;
+  }
+  const secondary = normalizeMetric(value.secondary);
+  return secondary === undefined ? { id, gameId, pseudonym, score, submittedAt } : { id, gameId, pseudonym, score, submittedAt, secondary };
 }
 
 function readBests(): StoredBests {
@@ -69,11 +101,27 @@ function writeBests(bests: StoredBests): void {
   }
 }
 
-function saveBest(gameId: string, result: GameResult): StoredBest | null {
+function readPseudonym(): string {
+  try {
+    return window.localStorage.getItem(PSEUDONYM_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function writePseudonym(pseudonym: string): void {
+  try {
+    window.localStorage.setItem(PSEUDONYM_STORAGE_KEY, pseudonym);
+  } catch {
+    // Private browsing / quota failures should not block score submission.
+  }
+}
+
+function saveBest(gameId: string, result: GameResult): { best: StoredBest; isNew: boolean } {
   const bests = readBests();
   const previous = bests[gameId];
   if (previous && previous.score >= result.score) {
-    return previous;
+    return { best: previous, isNew: false };
   }
 
   const next: StoredBest = {
@@ -85,7 +133,74 @@ function saveBest(gameId: string, result: GameResult): StoredBest | null {
   }
   bests[gameId] = next;
   writeBests(bests);
-  return next;
+  return { best: next, isNew: true };
+}
+
+async function readApiJson(response: Response): Promise<unknown> {
+  const text = await response.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new Error(response.ok ? 'The server returned invalid JSON.' : response.statusText);
+  }
+}
+
+function apiErrorMessage(payload: unknown, fallback: string): string {
+  if (isRecord(payload) && typeof payload.error === 'string' && payload.error) {
+    return payload.error;
+  }
+  return fallback;
+}
+
+function getErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof Error && err.message ? err.message : fallback;
+}
+
+async function fetchLeaderboard(gameId: string): Promise<LeaderboardEntry[]> {
+  const response = await fetch(`/api/games/${encodeURIComponent(gameId)}/leaderboard?limit=10`, {
+    headers: { Accept: 'application/json' },
+  });
+  const payload = await readApiJson(response);
+  if (!response.ok) {
+    throw new Error(apiErrorMessage(payload, 'Could not load leaderboard.'));
+  }
+  if (!isRecord(payload) || !Array.isArray(payload.entries)) {
+    throw new Error('The server returned an invalid leaderboard.');
+  }
+  return payload.entries.map(normalizeLeaderboardEntry).filter((entry): entry is LeaderboardEntry => Boolean(entry));
+}
+
+async function submitScore(gameId: string, pseudonym: string, result: GameResult): Promise<{ entry: LeaderboardEntry; leaderboard: LeaderboardEntry[] }> {
+  const body: { pseudonym: string; score: number; secondary?: GameMetric } = {
+    pseudonym,
+    score: result.score,
+  };
+  if (result.secondary) {
+    body.secondary = result.secondary;
+  }
+
+  const response = await fetch(`/api/games/${encodeURIComponent(gameId)}/scores`, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  const payload = await readApiJson(response);
+  if (!response.ok) {
+    throw new Error(apiErrorMessage(payload, 'Could not save score.'));
+  }
+  if (!isRecord(payload)) {
+    throw new Error('The server returned an invalid score response.');
+  }
+  const entry = normalizeLeaderboardEntry(payload.entry);
+  if (!entry || !Array.isArray(payload.leaderboard)) {
+    throw new Error('The server returned an invalid score response.');
+  }
+  const leaderboard = payload.leaderboard.map(normalizeLeaderboardEntry).filter((item): item is LeaderboardEntry => Boolean(item));
+  return { entry, leaderboard };
 }
 
 function formatNumber(value: number): string {
@@ -167,6 +282,14 @@ async function renderGame(id: string): Promise<void> {
   let mod: GameModule | null = null;
   let busy = false;
   let busyStatus = 'Loading';
+  let saveCandidate: GameResult | null = null;
+  let submitBusy = false;
+  let submitError = '';
+  let scoreSaved = false;
+  let leaderboardEntries: LeaderboardEntry[] = [];
+  let leaderboardLoading = false;
+  let leaderboardError = '';
+  let leaderboardRequestId = 0;
 
   const player = document.createElement('div');
   player.className = 'player';
@@ -222,7 +345,43 @@ async function renderGame(id: string): Promise<void> {
   restart.className = 'player-action';
   restart.type = 'button';
 
-  panel.append(title, status, currentRow, bestRow, secondaryRow, restart);
+  const submitForm = document.createElement('form');
+  submitForm.className = 'player-submit';
+  submitForm.hidden = true;
+  const submitTitle = document.createElement('h2');
+  submitTitle.textContent = 'Save score';
+  const pseudonymLabel = document.createElement('label');
+  const pseudonymInputId = `pseudonym-${myId}`;
+  pseudonymLabel.htmlFor = pseudonymInputId;
+  pseudonymLabel.textContent = 'Pseudonym';
+  const submitControls = document.createElement('div');
+  submitControls.className = 'player-submit-controls';
+  const pseudonymInput = document.createElement('input');
+  pseudonymInput.id = pseudonymInputId;
+  pseudonymInput.name = 'pseudonym';
+  pseudonymInput.type = 'text';
+  pseudonymInput.setAttribute('autocomplete', 'nickname');
+  pseudonymInput.maxLength = 64;
+  pseudonymInput.placeholder = 'Name';
+  const submitButton = document.createElement('button');
+  submitButton.type = 'submit';
+  submitButton.textContent = 'Save';
+  const submitMessage = document.createElement('p');
+  submitMessage.className = 'player-submit-message';
+  submitControls.append(pseudonymInput, submitButton);
+  submitForm.append(submitTitle, pseudonymLabel, submitControls, submitMessage);
+
+  const leaderboardSection = document.createElement('section');
+  leaderboardSection.className = 'player-leaderboard';
+  const leaderboardTitle = document.createElement('h2');
+  leaderboardTitle.textContent = 'Leaderboard';
+  const leaderboardList = document.createElement('ol');
+  leaderboardList.className = 'player-leaderboard-list';
+  const leaderboardMessage = document.createElement('p');
+  leaderboardMessage.className = 'player-leaderboard-message';
+  leaderboardSection.append(leaderboardTitle, leaderboardMessage, leaderboardList);
+
+  panel.append(title, status, currentRow, bestRow, secondaryRow, restart, submitForm, leaderboardSection);
   layout.append(stage, panel);
   player.append(back, layout);
   root.appendChild(player);
@@ -230,9 +389,19 @@ async function renderGame(id: string): Promise<void> {
   function renderPanel(): void {
     currentValue.textContent = formatNumber(currentScore);
     bestValue.textContent = best ? formatNumber(best.score) : '-';
-    status.textContent = busy ? busyStatus : ended ? 'Run ended' : 'Playing';
+    status.textContent = busy
+      ? busyStatus
+      : submitBusy
+        ? 'Saving score'
+        : saveCandidate
+          ? 'New best'
+          : scoreSaved
+            ? 'Score saved'
+            : ended
+              ? 'Run ended'
+              : 'Playing';
     restart.textContent = ended ? 'Play again' : 'Restart';
-    restart.disabled = busy;
+    restart.disabled = busy || submitBusy;
 
     if (currentSecondary) {
       secondaryLabel.textContent = currentSecondary.label;
@@ -244,6 +413,79 @@ async function renderGame(id: string): Promise<void> {
       secondaryRow.hidden = false;
     } else {
       secondaryRow.hidden = true;
+    }
+
+    submitForm.hidden = !saveCandidate;
+    pseudonymInput.disabled = submitBusy;
+    submitButton.disabled = submitBusy;
+    submitMessage.textContent = submitError;
+    submitMessage.hidden = submitError === '';
+  }
+
+  function renderLeaderboard(): void {
+    leaderboardList.replaceChildren();
+    leaderboardMessage.hidden = false;
+
+    if (leaderboardLoading) {
+      leaderboardMessage.textContent = 'Loading leaderboard';
+      return;
+    }
+    if (leaderboardError) {
+      leaderboardMessage.textContent = leaderboardError;
+      return;
+    }
+    if (leaderboardEntries.length === 0) {
+      leaderboardMessage.textContent = 'No scores yet';
+      return;
+    }
+
+    leaderboardMessage.hidden = true;
+    leaderboardMessage.textContent = '';
+    leaderboardEntries.forEach((leaderboardEntry, index) => {
+      const item = document.createElement('li');
+      item.className = 'player-leaderboard-row';
+
+      const rank = document.createElement('span');
+      rank.className = 'player-leaderboard-rank';
+      rank.textContent = String(index + 1);
+
+      const name = document.createElement('span');
+      name.className = 'player-leaderboard-name';
+      name.textContent = leaderboardEntry.pseudonym;
+
+      const score = document.createElement('strong');
+      score.className = 'player-leaderboard-score';
+      score.textContent = formatNumber(leaderboardEntry.score);
+
+      item.append(rank, name, score);
+      if (leaderboardEntry.secondary) {
+        const secondary = document.createElement('span');
+        secondary.className = 'player-leaderboard-secondary';
+        secondary.textContent = `${leaderboardEntry.secondary.label}: ${formatMetric(leaderboardEntry.secondary)}`;
+        item.appendChild(secondary);
+      }
+      leaderboardList.appendChild(item);
+    });
+  }
+
+  async function refreshLeaderboard(): Promise<void> {
+    const requestId = ++leaderboardRequestId;
+    leaderboardLoading = true;
+    leaderboardError = '';
+    renderLeaderboard();
+
+    try {
+      const entries = await fetchLeaderboard(gameId);
+      if (myId !== renderId || requestId !== leaderboardRequestId) return;
+      leaderboardEntries = entries;
+    } catch (err) {
+      if (myId !== renderId || requestId !== leaderboardRequestId) return;
+      leaderboardError = getErrorMessage(err, 'Leaderboard unavailable.');
+    } finally {
+      if (myId === renderId && requestId === leaderboardRequestId) {
+        leaderboardLoading = false;
+        renderLeaderboard();
+      }
     }
   }
 
@@ -259,6 +501,37 @@ async function renderGame(id: string): Promise<void> {
     restart.disabled = false;
   }
 
+  async function submitCandidate(): Promise<void> {
+    if (!saveCandidate || submitBusy) return;
+    const candidate = saveCandidate;
+    const submitRunId = runId;
+    submitBusy = true;
+    submitError = '';
+    scoreSaved = false;
+    renderPanel();
+
+    try {
+      const saved = await submitScore(gameId, pseudonymInput.value, candidate);
+      if (myId !== renderId || submitRunId !== runId) return;
+      leaderboardRequestId += 1;
+      writePseudonym(saved.entry.pseudonym);
+      saveCandidate = null;
+      scoreSaved = true;
+      leaderboardEntries = saved.leaderboard;
+      leaderboardError = '';
+      leaderboardLoading = false;
+      renderLeaderboard();
+    } catch (err) {
+      if (myId !== renderId || submitRunId !== runId) return;
+      submitError = getErrorMessage(err, 'Could not save score.');
+    } finally {
+      if (myId === renderId && submitRunId === runId) {
+        submitBusy = false;
+        renderPanel();
+      }
+    }
+  }
+
   async function mountRun(): Promise<void> {
     if (!mod || myId !== renderId) return;
 
@@ -269,6 +542,9 @@ async function renderGame(id: string): Promise<void> {
     currentScore = 0;
     currentSecondary = undefined;
     ended = false;
+    saveCandidate = null;
+    submitError = '';
+    scoreSaved = false;
     busy = true;
     busyStatus = 'Starting';
     renderPanel();
@@ -296,7 +572,16 @@ async function renderGame(id: string): Promise<void> {
           currentSecondary = resultMetric;
         }
         ended = true;
-        best = saveBest(gameId, { score: currentScore, secondary: currentSecondary });
+
+        const finalResult: GameResult = currentSecondary ? { score: currentScore, secondary: currentSecondary } : { score: currentScore };
+        const saved = saveBest(gameId, finalResult);
+        best = saved.best;
+        if (saved.isNew) {
+          saveCandidate = finalResult;
+          pseudonymInput.value = readPseudonym();
+          submitError = '';
+          scoreSaved = false;
+        }
         renderPanel();
       },
     };
@@ -325,7 +610,14 @@ async function renderGame(id: string): Promise<void> {
     void renderGame(id);
   });
 
+  submitForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    void submitCandidate();
+  });
+
   renderPanel();
+  renderLeaderboard();
+  void refreshLeaderboard();
   busy = true;
   busyStatus = 'Loading';
   renderPanel();
