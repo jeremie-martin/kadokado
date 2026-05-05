@@ -1,6 +1,17 @@
 import './style.css';
 import type { GameHost, GameInstance, GameMetric, GameModule, GameResult } from './games/types';
 import { GAMES, findGame } from './games/registry';
+import {
+  SUPPORTED_LANGUAGES,
+  type SupportedLanguage,
+  currentLanguage,
+  formatLocalizedNumber,
+  initI18n,
+  metricLabel,
+  onLanguageChanged,
+  setLanguage,
+  t,
+} from './i18n';
 
 const rootEl = document.querySelector<HTMLDivElement>('#app');
 if (!rootEl) {
@@ -10,11 +21,12 @@ const root = rootEl;
 const BESTS_STORAGE_KEY = 'motiontwin-ports:v1:bests';
 const PSEUDONYM_STORAGE_KEY = 'motiontwin-ports:v1:pseudonym';
 const SITE_ASSET_BASE = '/assets/site/kadokado';
+const MAX_PSEUDONYM_LENGTH = 24;
 
 const MENU_ITEMS = [
-  { label: 'Jouer', href: '#', exact: true },
-  { label: 'Scores', href: '#scores', exact: false },
-  { label: 'About', href: '#about', exact: false },
+  { labelKey: 'nav.play', href: '#', exact: true },
+  { labelKey: 'nav.scores', href: '#scores', exact: false },
+  { labelKey: 'nav.about', href: '#about', exact: false },
 ];
 
 const LEGACY_THUMBNAILS: Record<string, string> = {
@@ -28,40 +40,9 @@ const LEGACY_THUMBNAILS: Record<string, string> = {
   alphabounce: '/assets/alphabounce/title.png',
 };
 
-const LEGACY_DESCRIPTIONS: Record<string, string> = {
-  interwheel:
-    "Au secours c'est l'inondation, aidez krakra la petite tache de crasse a s'evader de la salle de bain du temple azteque Tenochtitlan, attention aux mines ancestrales du grand Quetzal !",
-  pioupiou:
-    "Aidez le pauvre Piou-Piou tombe dans cet affreux piege digne des plus machiaveliques ecraseurs de poussins.",
-  manda: 'Tortillez-vous pour ramasser les fruits et les bonus, tentez de survivre longtemps et surtout evitez les murs ! Un grand classique.',
-  killbulle:
-    "Retrouvez Kanji le Ninja dans une nouvelle aventure ! Utilisez le grapin de facon a detruire les bulles bondissantes et gagnez ainsi un max de points.",
-  linea: "Tracez les lignes les plus longues possible, composez les bonus et tentez de garder le rythme jusqu'au dernier point lumineux.",
-  alphabounce: "Rebondissez dans l'espace, cassez les blocs et survivez aux evenements qui transforment chaque niveau en pluie de lettres.",
-  kslash:
-    "Kanji est en infiltration au pays des bambous ! Debarassez vous de ses encombrantes tortues belliqueuses grace a vos shuriken et votre sabre.",
-  'iron-chouquette':
-    "La patrouille des lapins-robots a kidnappe chouquette ! Retrouvez-la avant qu'il ne soit trop tard dans le tournoi interstellaire d'andromede.",
-};
-
-const LEGACY_TITLES: Record<string, string> = {
-  killbulle: 'Kill Bulle',
-  kslash: 'K-Slash !',
-};
-
-const HELP_TEXT: Record<string, string> = {
-  interwheel: 'Use one button to jump from wheel to wheel. Avoid mines and rising water while climbing as high as possible.',
-  pioupiou: 'Move with the arrow keys. Climb falling blocks, collect coins, and avoid getting crushed.',
-  manda: 'Steer with left and right, accelerate with up, collect fruit and bonuses, and avoid the walls and your tail.',
-  killbulle: 'Move with the arrow keys. Fire the grappling hook with space to split bubbles before they touch Kanji.',
-  linea: 'Draw paths through matching dots. Longer lines and multipliers are the key to a strong score.',
-  alphabounce: 'Control the paddle, break letter blocks, catch useful bonuses, and survive each event wave.',
-  kslash: 'Move, jump, slash, and throw kunai to clear enemies while pushing through the bamboo stages.',
-  'iron-chouquette': 'Dodge bullet patterns, collect bonuses, and push through the boss rush without losing control of the arena.',
-};
-
 let active: GameInstance | null = null;
 let renderId = 0;
+let refreshCurrentView: (() => void) | null = null;
 
 type StoredBest = {
   score: number;
@@ -78,6 +59,19 @@ type LeaderboardEntry = {
   score: number;
   submittedAt: string;
   secondary?: GameMetric;
+};
+
+const API_ERROR_KEYS: Record<string, string> = {
+  'Pseudonym is required.': 'errors.pseudonymRequired',
+  'Pseudonym contains unsupported characters.': 'errors.pseudonymUnsupported',
+  'Pseudonym must be 24 characters or fewer.': 'errors.pseudonymTooLong',
+  'Score must be a non-negative integer.': 'errors.invalidScore',
+  'Too many score submissions. Try again later.': 'errors.rateLimited',
+  'Cross-origin score submissions are not accepted.': 'errors.crossOrigin',
+  'Request body must be a JSON object.': 'errors.invalidBody',
+  'Request body must be valid JSON.': 'errors.invalidJson',
+  'Unknown game.': 'errors.unknownGame',
+  'Internal server error.': 'errors.internalServer',
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -192,19 +186,20 @@ async function readApiJson(response: Response): Promise<unknown> {
   try {
     return JSON.parse(text) as unknown;
   } catch {
-    throw new Error(response.ok ? 'The server returned invalid JSON.' : response.statusText);
+    throw new Error(response.ok ? t('errors.invalidJson') : response.statusText);
   }
 }
 
-function apiErrorMessage(payload: unknown, fallback: string): string {
+function apiErrorMessage(payload: unknown, fallbackKey: string): string {
   if (isRecord(payload) && typeof payload.error === 'string' && payload.error) {
-    return payload.error;
+    const key = API_ERROR_KEYS[payload.error];
+    return key ? t(key) : payload.error;
   }
-  return fallback;
+  return t(fallbackKey);
 }
 
-function getErrorMessage(err: unknown, fallback: string): string {
-  return err instanceof Error && err.message ? err.message : fallback;
+function getErrorMessage(err: unknown, fallbackKey: string): string {
+  return err instanceof Error && err.message ? err.message : t(fallbackKey);
 }
 
 async function fetchLeaderboard(gameId: string, limit = 10): Promise<LeaderboardEntry[]> {
@@ -213,10 +208,10 @@ async function fetchLeaderboard(gameId: string, limit = 10): Promise<Leaderboard
   });
   const payload = await readApiJson(response);
   if (!response.ok) {
-    throw new Error(apiErrorMessage(payload, 'Could not load leaderboard.'));
+    throw new Error(apiErrorMessage(payload, 'errors.loadLeaderboard'));
   }
   if (!isRecord(payload) || !Array.isArray(payload.entries)) {
-    throw new Error('The server returned an invalid leaderboard.');
+    throw new Error(t('errors.invalidLeaderboard'));
   }
   return payload.entries.map(normalizeLeaderboardEntry).filter((entry): entry is LeaderboardEntry => Boolean(entry));
 }
@@ -240,24 +235,21 @@ async function submitScore(gameId: string, pseudonym: string, result: GameResult
   });
   const payload = await readApiJson(response);
   if (!response.ok) {
-    throw new Error(apiErrorMessage(payload, 'Could not save score.'));
+    throw new Error(apiErrorMessage(payload, 'errors.saveScore'));
   }
   if (!isRecord(payload)) {
-    throw new Error('The server returned an invalid score response.');
+    throw new Error(t('errors.invalidScoreResponse'));
   }
   const entry = normalizeLeaderboardEntry(payload.entry);
   if (!entry || !Array.isArray(payload.leaderboard)) {
-    throw new Error('The server returned an invalid score response.');
+    throw new Error(t('errors.invalidScoreResponse'));
   }
   const leaderboard = payload.leaderboard.map(normalizeLeaderboardEntry).filter((item): item is LeaderboardEntry => Boolean(item));
   return { entry, leaderboard };
 }
 
 function formatNumber(value: number): string {
-  if (!Number.isFinite(value)) return '0';
-  return new Intl.NumberFormat(undefined, {
-    maximumFractionDigits: Number.isInteger(value) ? 0 : 1,
-  }).format(value);
+  return formatLocalizedNumber(value);
 }
 
 function formatMetric(metric: GameMetric): string {
@@ -266,7 +258,7 @@ function formatMetric(metric: GameMetric): string {
 }
 
 function recordText(score: number | undefined): string {
-  return score === undefined ? 'Record: -' : `Record: ${formatNumber(score)}`;
+  return score === undefined ? t('record.empty') : t('record.value', { score: formatNumber(score) });
 }
 
 function localBestScore(gameId: string): number | undefined {
@@ -287,11 +279,61 @@ function destroyActive(): void {
 function clear(): void {
   renderId += 1;
   destroyActive();
+  refreshCurrentView = null;
   root.replaceChildren();
 }
 
-function legacyTitle(entry: { meta: { id: string; title: string } }): string {
-  return LEGACY_TITLES[entry.meta.id] ?? entry.meta.title;
+function gameTitle(entry: { meta: { id: string; title: string } }): string {
+  return t(`games.${entry.meta.id}.title`, { defaultValue: entry.meta.title });
+}
+
+function gameDescription(entry: { meta: { id: string; description: string } }): string {
+  return t(`games.${entry.meta.id}.description`, { defaultValue: entry.meta.description });
+}
+
+function gameHelp(entry: { meta: { id: string; description: string } }): string {
+  return t(`games.${entry.meta.id}.help`, { defaultValue: entry.meta.description });
+}
+
+function localizedMetricLabel(metric: GameMetric): string {
+  return metricLabel(metric.key, metric.label);
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.trim().replace(/\s+/gu, ' ');
+}
+
+function countGraphemes(value: string): number {
+  const Segmenter = (
+    Intl as typeof Intl & {
+      Segmenter?: new (
+        locales?: string | string[],
+        options?: { granularity?: 'grapheme' | 'word' | 'sentence' },
+      ) => { segment(value: string): Iterable<{ segment: string }> };
+    }
+  ).Segmenter;
+  if (Segmenter) {
+    const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
+    return Array.from(segmenter.segment(value)).length;
+  }
+  return Array.from(value).length;
+}
+
+function normalizedPseudonym(value: string): string {
+  return normalizeWhitespace(value.normalize('NFKC'));
+}
+
+function validatePseudonym(value: string): string {
+  if (value === '') {
+    return 'errors.pseudonymRequired';
+  }
+  if (/[\p{Cc}\p{Cf}]/u.test(value)) {
+    return 'errors.pseudonymUnsupported';
+  }
+  if (countGraphemes(value) > MAX_PSEUDONYM_LENGTH) {
+    return 'errors.pseudonymTooLong';
+  }
+  return '';
 }
 
 function createPaneBox(title: string, content: Node[], href?: string): HTMLDivElement {
@@ -325,7 +367,7 @@ function createMenuBox(): HTMLDivElement {
   for (const item of MENU_ITEMS) {
     const link = document.createElement('a');
     link.href = item.href;
-    link.textContent = item.label;
+    link.textContent = t(item.labelKey);
     const currentHash = window.location.hash || '#';
     if ((item.exact && currentHash === '#') || (!item.exact && currentHash === item.href)) {
       link.className = 'active';
@@ -344,12 +386,12 @@ function createLeftPane(): HTMLDivElement {
   const buildInfo = document.createElement('div');
   buildInfo.className = 'sideText';
   const gameCount = document.createElement('p');
-  gameCount.textContent = `${GAMES.length} games online`;
+  gameCount.textContent = t('site.gamesOnline', { count: GAMES.length });
   const noAccount = document.createElement('p');
-  noAccount.textContent = 'No account required';
+  noAccount.textContent = t('site.noAccount');
   buildInfo.append(gameCount, noAccount);
 
-  content.append(createMenuBox(), createPaneBox('Build', [buildInfo]));
+  content.append(createMenuBox(), createPaneBox(t('site.buildTitle'), [buildInfo]));
   pane.appendChild(content);
   return pane;
 }
@@ -363,22 +405,22 @@ function createRightPane(): HTMLDivElement {
   const status = document.createElement('div');
   status.className = 'sideText';
   const statusLine = document.createElement('p');
-  statusLine.textContent = 'Ports playable';
+  statusLine.textContent = t('site.portsPlayable');
   const statusLink = document.createElement('a');
   statusLink.href = '#about';
-  statusLink.textContent = 'About project';
+  statusLink.textContent = t('site.aboutProject');
   status.append(statusLine, statusLink);
 
   const scores = document.createElement('div');
   scores.className = 'sideText';
   const scoreLine = document.createElement('p');
-  scoreLine.textContent = 'Records use saved scores';
+  scoreLine.textContent = t('site.recordsUseScores');
   const scoreLink = document.createElement('a');
   scoreLink.href = '#scores';
-  scoreLink.textContent = 'View scores';
+  scoreLink.textContent = t('site.viewScores');
   scores.append(scoreLine, scoreLink);
 
-  content.append(createPaneBox('Status', [status]), createPaneBox('Scores', [scores]));
+  content.append(createPaneBox(t('site.statusTitle'), [status]), createPaneBox(t('site.scoresTitle'), [scores]));
   pane.appendChild(content);
   return pane;
 }
@@ -386,7 +428,28 @@ function createRightPane(): HTMLDivElement {
 function createInfoBar(): HTMLDivElement {
   const bar = document.createElement('div');
   bar.id = 'mainBarInfo';
-  bar.textContent = 'Fan preservation project - play instantly';
+  const label = document.createElement('span');
+  label.textContent = t('site.topBar');
+
+  const languageSwitch = document.createElement('span');
+  languageSwitch.className = 'languageSwitch';
+  languageSwitch.setAttribute('aria-label', t('language.label'));
+
+  SUPPORTED_LANGUAGES.forEach((language) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = t(`language.${language}`);
+    button.setAttribute('aria-pressed', String(currentLanguage() === language));
+    if (currentLanguage() === language) {
+      button.className = 'active';
+    }
+    button.addEventListener('click', () => {
+      void setLanguage(language as SupportedLanguage);
+    });
+    languageSwitch.appendChild(button);
+  });
+
+  bar.append(label, languageSwitch);
   return bar;
 }
 
@@ -416,8 +479,8 @@ function createPortalShell(content: HTMLElement): HTMLDivElement {
   const corporateLinks = document.createElement('div');
   corporateLinks.id = 'corporateLinks';
   const links = [
-    { label: 'about', href: '#about' },
-    { label: 'scores', href: '#scores' },
+    { label: t('nav.about').toLowerCase(), href: '#about' },
+    { label: t('nav.scores').toLowerCase(), href: '#scores' },
   ];
   links.forEach((item, index) => {
     const link = document.createElement('a');
@@ -432,7 +495,7 @@ function createPortalShell(content: HTMLElement): HTMLDivElement {
   const footer = document.createElement('div');
   footer.id = 'footer';
   const footerText = document.createElement('p');
-  footerText.textContent = 'Fan preservation project - original games by Motion Twin';
+  footerText.textContent = t('site.footer');
   footer.appendChild(footerText);
 
   container.append(createInfoBar(), createLeftPane(), createRightPane(), contentPane, corporateLinks, footer);
@@ -454,33 +517,33 @@ function createGameRow(entry: (typeof GAMES)[number], index: number): DocumentFr
   caption.className = 'gameCaption';
   const imageLink = document.createElement('a');
   imageLink.href = `#${entry.meta.id}`;
-  imageLink.title = 'jouer';
+  imageLink.title = t('actions.play');
   const image = document.createElement('img');
   image.src = LEGACY_THUMBNAILS[entry.meta.id] ?? '';
-  image.alt = 'image';
+  image.alt = gameTitle(entry);
   imageLink.appendChild(image);
   caption.appendChild(imageLink);
 
   const desc = document.createElement('div');
   desc.className = 'gameDesc';
   const title = document.createElement('h3');
-  title.textContent = legacyTitle(entry);
+  title.textContent = gameTitle(entry);
   const text = document.createElement('p');
-  text.textContent = LEGACY_DESCRIPTIONS[entry.meta.id] ?? entry.meta.description;
+  text.textContent = gameDescription(entry);
   desc.append(title, text);
 
   const play = document.createElement('div');
   play.className = 'playLink';
   const playLink = document.createElement('a');
   playLink.href = `#${entry.meta.id}`;
-  playLink.textContent = 'jouer';
+  playLink.textContent = t('actions.play');
   play.appendChild(playLink);
 
   const help = document.createElement('div');
   help.className = 'helpLink';
   const helpLink = document.createElement('a');
   helpLink.href = `#help-${entry.meta.id}`;
-  helpLink.textContent = 'aide';
+  helpLink.textContent = t('actions.help');
   help.appendChild(helpLink);
 
   const helpBox = document.createElement('div');
@@ -489,7 +552,7 @@ function createGameRow(entry: (typeof GAMES)[number], index: number): DocumentFr
   helpBox.hidden = true;
   const helpContent = document.createElement('div');
   helpContent.className = 'help';
-  helpContent.textContent = HELP_TEXT[entry.meta.id] ?? entry.meta.description;
+  helpContent.textContent = gameHelp(entry);
   helpBox.appendChild(helpContent);
 
   helpLink.addEventListener('click', (event) => {
@@ -521,13 +584,14 @@ async function refreshLandingRecords(pageRenderId: number): Promise<void> {
 
 function renderLanding(): void {
   clear();
+  refreshCurrentView = renderLanding;
   const myId = renderId;
   const games = document.createElement('div');
   games.className = 'gameList';
 
   const notice = document.createElement('p');
   notice.className = 'error';
-  notice.textContent = 'Playable ports, rebuilt with original assets where available';
+  notice.textContent = t('landing.notice');
   games.appendChild(notice);
 
   GAMES.forEach((entry, index) => {
@@ -548,21 +612,21 @@ function createTextPage(title: string): HTMLDivElement {
 
 function renderAbout(): void {
   clear();
-  const page = createTextPage('About');
+  refreshCurrentView = renderAbout;
+  const page = createTextPage(t('pages.aboutTitle'));
   const intro = document.createElement('p');
-  intro.textContent =
-    'This is a fan preservation project for playable Motion Twin and KadoKado-era browser games. The ports use TypeScript and PixiJS, with original extracted assets where available.';
+  intro.textContent = t('pages.aboutIntro');
   const scope = document.createElement('p');
-  scope.textContent =
-    'The website keeps the 2005-2006 portal aesthetic, but avoids fake accounts, prizes, forums, clans, ads, and platform features that are not implemented.';
+  scope.textContent = t('pages.aboutScope');
   page.append(intro, scope);
   root.appendChild(createPortalShell(page));
 }
 
 function renderScores(): void {
   clear();
+  refreshCurrentView = renderScores;
   const myId = renderId;
-  const page = createTextPage('Scores');
+  const page = createTextPage(t('pages.scoresTitle'));
   const list = document.createElement('div');
   list.className = 'scoresPage';
 
@@ -570,12 +634,12 @@ function renderScores(): void {
     const box = document.createElement('section');
     box.className = 'scoreBox';
     const heading = document.createElement('h2');
-    heading.textContent = legacyTitle(entry);
+    heading.textContent = gameTitle(entry);
     const rows = document.createElement('ol');
     rows.className = 'scoreRows';
     const message = document.createElement('p');
     message.className = 'scoreMessage';
-    message.textContent = 'Loading scores';
+    message.textContent = t('pages.loadingScores');
     box.append(heading, message, rows);
     list.appendChild(box);
 
@@ -584,7 +648,7 @@ function renderScores(): void {
         if (myId !== renderId) return;
         rows.replaceChildren();
         if (entries.length === 0) {
-          message.textContent = 'No scores yet';
+          message.textContent = t('pages.noScores');
           return;
         }
         message.hidden = true;
@@ -600,7 +664,7 @@ function renderScores(): void {
       })
       .catch((err) => {
         if (myId !== renderId) return;
-        message.textContent = getErrorMessage(err, 'Scores unavailable.');
+        message.textContent = getErrorMessage(err, 'errors.scoresUnavailable');
       });
   }
 
@@ -614,7 +678,8 @@ async function renderGame(id: string): Promise<void> {
     renderLanding();
     return;
   }
-  const gameId = entry.meta.id;
+  const gameEntry = entry;
+  const gameId = gameEntry.meta.id;
 
   clear();
   const myId = renderId;
@@ -625,10 +690,11 @@ async function renderGame(id: string): Promise<void> {
   let runId = 0;
   let mod: GameModule | null = null;
   let busy = false;
-  let busyStatus = 'Loading';
+  let busyStatusKey = 'player.status.loading';
   let saveCandidate: GameResult | null = null;
   let submitBusy = false;
   let submitError = '';
+  let submitErrorKey = '';
   let scoreSaved = false;
   let leaderboardEntries: LeaderboardEntry[] = [];
   let leaderboardLoading = false;
@@ -641,7 +707,7 @@ async function renderGame(id: string): Promise<void> {
   const back = document.createElement('button');
   back.className = 'player-back';
   back.type = 'button';
-  back.textContent = 'Retour aux jeux';
+  back.textContent = t('player.back');
   back.addEventListener('click', () => {
     window.location.hash = '';
   });
@@ -651,15 +717,15 @@ async function renderGame(id: string): Promise<void> {
 
   const stage = document.createElement('div');
   stage.className = 'player-stage';
-  stage.style.width = `${entry.meta.width}px`;
-  stage.style.height = `${entry.meta.height}px`;
+  stage.style.width = `${gameEntry.meta.width}px`;
+  stage.style.height = `${gameEntry.meta.height}px`;
 
   const panel = document.createElement('aside');
   panel.className = 'player-panel';
 
   const title = document.createElement('h1');
   title.className = 'player-title';
-  title.textContent = legacyTitle(entry);
+  title.textContent = gameTitle(gameEntry);
 
   const status = document.createElement('p');
   status.className = 'player-status';
@@ -676,13 +742,13 @@ async function renderGame(id: string): Promise<void> {
   const currentRow = document.createElement('div');
   currentRow.className = 'player-stat';
   const currentLabel = document.createElement('span');
-  currentLabel.textContent = 'Score';
+  currentLabel.textContent = t('player.score');
   currentRow.append(currentLabel, currentValue);
 
   const bestRow = document.createElement('div');
   bestRow.className = 'player-stat';
   const bestLabel = document.createElement('span');
-  bestLabel.textContent = 'Best';
+  bestLabel.textContent = t('player.best');
   bestRow.append(bestLabel, bestValue);
 
   const restart = document.createElement('button');
@@ -693,11 +759,11 @@ async function renderGame(id: string): Promise<void> {
   submitForm.className = 'player-submit';
   submitForm.hidden = true;
   const submitTitle = document.createElement('h2');
-  submitTitle.textContent = 'Save score';
+  submitTitle.textContent = t('player.saveScore');
   const pseudonymLabel = document.createElement('label');
   const pseudonymInputId = `pseudonym-${myId}`;
   pseudonymLabel.htmlFor = pseudonymInputId;
-  pseudonymLabel.textContent = 'Pseudonym';
+  pseudonymLabel.textContent = t('player.pseudonym');
   const submitControls = document.createElement('div');
   submitControls.className = 'player-submit-controls';
   const pseudonymInput = document.createElement('input');
@@ -705,11 +771,10 @@ async function renderGame(id: string): Promise<void> {
   pseudonymInput.name = 'pseudonym';
   pseudonymInput.type = 'text';
   pseudonymInput.setAttribute('autocomplete', 'nickname');
-  pseudonymInput.maxLength = 64;
-  pseudonymInput.placeholder = 'Name';
+  pseudonymInput.placeholder = t('player.pseudonymPlaceholder');
   const submitButton = document.createElement('button');
   submitButton.type = 'submit';
-  submitButton.textContent = 'Save';
+  submitButton.textContent = t('player.save');
   const submitMessage = document.createElement('p');
   submitMessage.className = 'player-submit-message';
   submitControls.append(pseudonymInput, submitButton);
@@ -718,7 +783,7 @@ async function renderGame(id: string): Promise<void> {
   const leaderboardSection = document.createElement('section');
   leaderboardSection.className = 'player-leaderboard';
   const leaderboardTitle = document.createElement('h2');
-  leaderboardTitle.textContent = 'Leaderboard';
+  leaderboardTitle.textContent = t('player.leaderboard');
   const leaderboardList = document.createElement('ol');
   leaderboardList.className = 'player-leaderboard-list';
   const leaderboardMessage = document.createElement('p');
@@ -730,29 +795,51 @@ async function renderGame(id: string): Promise<void> {
   player.appendChild(layout);
   root.appendChild(createPortalShell(player));
 
+  function refreshGameText(): void {
+    title.textContent = gameTitle(gameEntry);
+    currentLabel.textContent = t('player.score');
+    bestLabel.textContent = t('player.best');
+    submitTitle.textContent = t('player.saveScore');
+    pseudonymLabel.textContent = t('player.pseudonym');
+    pseudonymInput.placeholder = t('player.pseudonymPlaceholder');
+    submitButton.textContent = t('player.save');
+    leaderboardTitle.textContent = t('player.leaderboard');
+    back.textContent = t('player.back');
+    renderPanel();
+    renderLeaderboard();
+  }
+
+  refreshCurrentView = () => {
+    refreshGameText();
+    root.replaceChildren(createPortalShell(player));
+    if (leaderboardError) {
+      void refreshLeaderboard();
+    }
+  };
+
   function renderPanel(): void {
     currentValue.textContent = formatNumber(currentScore);
     bestValue.textContent = best ? formatNumber(best.score) : '-';
     status.textContent = busy
-      ? busyStatus
+      ? t(busyStatusKey)
       : submitBusy
-        ? 'Saving score'
+        ? t('player.status.saving')
         : saveCandidate
-          ? 'New best'
+          ? t('player.status.newBest')
           : scoreSaved
-            ? 'Score saved'
+            ? t('player.status.saved')
             : ended
-              ? 'Run ended'
-              : 'Playing';
-    restart.textContent = ended ? 'Play again' : 'Restart';
+              ? t('player.status.ended')
+              : t('player.status.playing');
+    restart.textContent = ended ? t('player.playAgain') : t('player.restart');
     restart.disabled = busy || submitBusy;
 
     if (currentSecondary) {
-      secondaryLabel.textContent = currentSecondary.label;
+      secondaryLabel.textContent = localizedMetricLabel(currentSecondary);
       secondaryValue.textContent = formatMetric(currentSecondary);
       secondaryRow.hidden = false;
     } else if (best?.secondary) {
-      secondaryLabel.textContent = `Best ${best.secondary.label.toLowerCase()}`;
+      secondaryLabel.textContent = t('player.bestMetric', { label: localizedMetricLabel(best.secondary).toLowerCase() });
       secondaryValue.textContent = formatMetric(best.secondary);
       secondaryRow.hidden = false;
     } else {
@@ -762,8 +849,9 @@ async function renderGame(id: string): Promise<void> {
     submitForm.hidden = !saveCandidate;
     pseudonymInput.disabled = submitBusy;
     submitButton.disabled = submitBusy;
-    submitMessage.textContent = submitError;
-    submitMessage.hidden = submitError === '';
+    const submitErrorText = submitErrorKey ? t(submitErrorKey) : submitError;
+    submitMessage.textContent = submitErrorText;
+    submitMessage.hidden = submitErrorText === '';
   }
 
   function renderLeaderboard(): void {
@@ -771,7 +859,7 @@ async function renderGame(id: string): Promise<void> {
     leaderboardMessage.hidden = false;
 
     if (leaderboardLoading) {
-      leaderboardMessage.textContent = 'Loading leaderboard';
+      leaderboardMessage.textContent = t('player.loadingLeaderboard');
       return;
     }
     if (leaderboardError) {
@@ -779,7 +867,7 @@ async function renderGame(id: string): Promise<void> {
       return;
     }
     if (leaderboardEntries.length === 0) {
-      leaderboardMessage.textContent = 'No scores yet';
+      leaderboardMessage.textContent = t('player.noScores');
       return;
     }
 
@@ -805,7 +893,7 @@ async function renderGame(id: string): Promise<void> {
       if (leaderboardEntry.secondary) {
         const secondary = document.createElement('span');
         secondary.className = 'player-leaderboard-secondary';
-        secondary.textContent = `${leaderboardEntry.secondary.label}: ${formatMetric(leaderboardEntry.secondary)}`;
+        secondary.textContent = `${localizedMetricLabel(leaderboardEntry.secondary)}: ${formatMetric(leaderboardEntry.secondary)}`;
         item.appendChild(secondary);
       }
       leaderboardList.appendChild(item);
@@ -824,7 +912,7 @@ async function renderGame(id: string): Promise<void> {
       leaderboardEntries = entries;
     } catch (err) {
       if (myId !== renderId || requestId !== leaderboardRequestId) return;
-      leaderboardError = getErrorMessage(err, 'Leaderboard unavailable.');
+      leaderboardError = getErrorMessage(err, 'errors.leaderboardUnavailable');
     } finally {
       if (myId === renderId && requestId === leaderboardRequestId) {
         leaderboardLoading = false;
@@ -840,8 +928,8 @@ async function renderGame(id: string): Promise<void> {
     error.textContent = message;
     stage.appendChild(error);
     busy = false;
-    status.textContent = 'Unable to start';
-    restart.textContent = 'Retry';
+    status.textContent = t('player.status.unableToStart');
+    restart.textContent = t('player.retry');
     restart.disabled = false;
   }
 
@@ -849,13 +937,26 @@ async function renderGame(id: string): Promise<void> {
     if (!saveCandidate || submitBusy) return;
     const candidate = saveCandidate;
     const submitRunId = runId;
+    const pseudonym = normalizedPseudonym(pseudonymInput.value);
+    const validationError = validatePseudonym(pseudonym);
+    if (validationError) {
+      pseudonymInput.value = pseudonym;
+      submitError = '';
+      submitErrorKey = validationError;
+      scoreSaved = false;
+      renderPanel();
+      return;
+    }
+
+    pseudonymInput.value = pseudonym;
     submitBusy = true;
     submitError = '';
+    submitErrorKey = '';
     scoreSaved = false;
     renderPanel();
 
     try {
-      const saved = await submitScore(gameId, pseudonymInput.value, candidate);
+      const saved = await submitScore(gameId, pseudonym, candidate);
       if (myId !== renderId || submitRunId !== runId) return;
       leaderboardRequestId += 1;
       writePseudonym(saved.entry.pseudonym);
@@ -867,7 +968,8 @@ async function renderGame(id: string): Promise<void> {
       renderLeaderboard();
     } catch (err) {
       if (myId !== renderId || submitRunId !== runId) return;
-      submitError = getErrorMessage(err, 'Could not save score.');
+      submitErrorKey = '';
+      submitError = getErrorMessage(err, 'errors.saveScore');
     } finally {
       if (myId === renderId && submitRunId === runId) {
         submitBusy = false;
@@ -888,9 +990,10 @@ async function renderGame(id: string): Promise<void> {
     ended = false;
     saveCandidate = null;
     submitError = '';
+    submitErrorKey = '';
     scoreSaved = false;
     busy = true;
-    busyStatus = 'Starting';
+    busyStatusKey = 'player.status.starting';
     renderPanel();
 
     const host: GameHost = {
@@ -924,6 +1027,7 @@ async function renderGame(id: string): Promise<void> {
           saveCandidate = finalResult;
           pseudonymInput.value = readPseudonym();
           submitError = '';
+          submitErrorKey = '';
           scoreSaved = false;
         }
         renderPanel();
@@ -942,7 +1046,7 @@ async function renderGame(id: string): Promise<void> {
     } catch (err) {
       if (myId !== renderId || myRunId !== runId) return;
       console.error(`[launcher] mount() threw for ${id}`, err);
-      showError('Could not start this game.');
+      showError(t('errors.startGame'));
     }
   }
 
@@ -963,15 +1067,15 @@ async function renderGame(id: string): Promise<void> {
   renderLeaderboard();
   void refreshLeaderboard();
   busy = true;
-  busyStatus = 'Loading';
+  busyStatusKey = 'player.status.loading';
   renderPanel();
 
   try {
-    mod = await entry.load();
+    mod = await gameEntry.load();
   } catch (err) {
     if (myId !== renderId) return;
     console.error(`[launcher] failed to load module for ${id}`, err);
-    showError('Could not load this game.');
+    showError(t('errors.loadGame'));
     return;
   }
   if (myId !== renderId) return;
@@ -991,5 +1095,13 @@ function route(): void {
   }
 }
 
-window.addEventListener('hashchange', route);
-route();
+async function start(): Promise<void> {
+  await initI18n();
+  onLanguageChanged(() => {
+    refreshCurrentView?.();
+  });
+  window.addEventListener('hashchange', route);
+  route();
+}
+
+void start();

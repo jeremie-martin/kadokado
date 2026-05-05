@@ -73,9 +73,14 @@ img {
 }
 
 #mainBarInfo {
+  position: relative;
+  box-sizing: border-box;
   height: 22px;
   max-height: 25px;
+  padding-right: 75px;
+  padding-left: 75px;
   padding-top: 3px;
+  overflow: hidden;
   background: #ddd url('/assets/site/kadokado/topBar.gif') no-repeat;
   color: #777;
   font-size: 8pt;
@@ -84,6 +89,45 @@ img {
   line-height: 16px;
   text-align: center;
   text-transform: uppercase;
+}
+
+#mainBarInfo > span:first-child {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.languageSwitch {
+  position: absolute;
+  top: 3px;
+  right: 8px;
+  display: flex;
+  gap: 2px;
+  line-height: 14px;
+}
+
+.languageSwitch button {
+  height: 16px;
+  min-width: 25px;
+  box-sizing: border-box;
+  padding: 0 3px;
+  border: 1px solid #ccc;
+  background: #eee;
+  color: #777;
+  cursor: pointer;
+  font-size: 8pt;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 13px;
+  text-transform: uppercase;
+}
+
+.languageSwitch button:hover,
+.languageSwitch button.active {
+  border-color: #f5bc38;
+  background: #fff4a1;
+  color: #f8692c;
 }
 
 #leftPane,

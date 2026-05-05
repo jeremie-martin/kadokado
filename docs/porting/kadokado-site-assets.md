@@ -48,6 +48,20 @@ Keep:
 - `Record`: real saved leaderboard score where available, with local best as
   the initial fallback.
 
+Language:
+
+- French is the canonical voice because the original KadoKado portal was in
+  French. Copy should keep that compact, playful portal tone where possible.
+- English is fully supported through the same shell and routes. Do not fork the
+  layout, assets, or feature set by language.
+- The implementation uses `i18next` with `i18next-browser-languagedetector`.
+  Saved user choice wins first, then browser language. French browser locales
+  resolve to French; other locales resolve to English.
+- The top bar includes a persistent `FR` / `EN` switcher. Manual selection is
+  stored in local storage and must remain easy to change.
+- Do not use IP geolocation for v1. Browser language plus manual choice is the
+  simplest robust behavior.
+
 Do not ship in v1:
 
 - Fake account login, registration, or secret-code fields.

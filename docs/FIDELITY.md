@@ -176,6 +176,9 @@ for better fidelity, judge that per game.
 - Product rule: keep the KadoKado-era visual language, but every visible feature
   must be functional, truthful, or removed. No fake login, registration, gifts,
   ads, guestbook, forum, clans, legal pages, or platform rewards in v1.
+- Language rule: French remains the canonical original-site voice, with English
+  fully supported through `i18next`, browser-language detection, saved manual
+  choice, and the top-bar `FR` / `EN` switcher.
 - Known gaps: fallback thumbnails for games that do not have a recovered
   KadoKado list icon yet, and score pages depend on the local leaderboard API.
 
