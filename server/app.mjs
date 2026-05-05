@@ -40,21 +40,15 @@ function normalizeWhitespace(value) {
   return value.trim().replace(/\s+/gu, ' ');
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 function countGraphemes(value) {
-  if (typeof Intl.Segmenter !== 'undefined') {
-    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    return Array.from(segmenter.segment(value)).length;
-  }
-  return Array.from(value).length;
+  return Array.from(graphemeSegmenter.segment(value)).length;
 }
 
 function truncateGraphemes(value, maxLength) {
   if (countGraphemes(value) <= maxLength) return value;
-  if (typeof Intl.Segmenter !== 'undefined') {
-    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
-    return Array.from(segmenter.segment(value), (segment) => segment.segment).slice(0, maxLength).join('');
-  }
-  return Array.from(value).slice(0, maxLength).join('');
+  return Array.from(graphemeSegmenter.segment(value), (segment) => segment.segment).slice(0, maxLength).join('');
 }
 
 function hasControlOrFormatCharacters(value) {
@@ -474,13 +468,8 @@ export function createServerApp(options = {}) {
 
   app.get('/api/games/:gameId/leaderboard', (req, res, next) => {
     try {
-      const { gameId } = req.params;
-      if (!isKnownGameId(gameId)) {
-        notFound(res, 'Unknown game.');
-        return;
-      }
       const limit = parseLimit(req.query.limit);
-      res.json({ entries: store.getLeaderboard(gameId, limit) });
+      res.json({ entries: store.getLeaderboard(req.params.gameId, limit) });
     } catch (err) {
       next(err);
     }
@@ -541,6 +530,10 @@ export function createServerApp(options = {}) {
       app.use((req, res, next) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') {
           next();
+          return;
+        }
+        if (!req.accepts('html')) {
+          notFound(res);
           return;
         }
         res.sendFile(indexPath);

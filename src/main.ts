@@ -64,7 +64,6 @@ type LeaderboardEntry = {
 const API_ERROR_KEYS: Record<string, string> = {
   'Pseudonym is required.': 'errors.pseudonymRequired',
   'Pseudonym contains unsupported characters.': 'errors.pseudonymUnsupported',
-  'Pseudonym must be 24 characters or fewer.': 'errors.pseudonymTooLong',
   'Score must be a non-negative integer.': 'errors.invalidScore',
   'Too many score submissions. Try again later.': 'errors.rateLimited',
   'Cross-origin score submissions are not accepted.': 'errors.crossOrigin',
@@ -73,6 +72,8 @@ const API_ERROR_KEYS: Record<string, string> = {
   'Unknown game.': 'errors.unknownGame',
   'Internal server error.': 'errors.internalServer',
 };
+
+const PSEUDONYM_TOO_LONG_PATTERN = /^Pseudonym must be \d+ characters or fewer\.$/;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -192,7 +193,7 @@ async function readApiJson(response: Response): Promise<unknown> {
 
 function apiErrorMessage(payload: unknown, fallbackKey: string): string {
   if (isRecord(payload) && typeof payload.error === 'string' && payload.error) {
-    const key = API_ERROR_KEYS[payload.error];
+    const key = API_ERROR_KEYS[payload.error] ?? (PSEUDONYM_TOO_LONG_PATTERN.test(payload.error) ? 'errors.pseudonymTooLong' : undefined);
     return key ? t(key) : payload.error;
   }
   return t(fallbackKey);
@@ -261,9 +262,6 @@ function recordText(score: number | undefined): string {
   return score === undefined ? t('record.empty') : t('record.value', { score: formatNumber(score) });
 }
 
-function localBestScore(gameId: string): number | undefined {
-  return readBests()[gameId]?.score;
-}
 
 function destroyActive(): void {
   if (active) {
@@ -303,20 +301,10 @@ function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/gu, ' ');
 }
 
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 function countGraphemes(value: string): number {
-  const Segmenter = (
-    Intl as typeof Intl & {
-      Segmenter?: new (
-        locales?: string | string[],
-        options?: { granularity?: 'grapheme' | 'word' | 'sentence' },
-      ) => { segment(value: string): Iterable<{ segment: string }> };
-    }
-  ).Segmenter;
-  if (Segmenter) {
-    const segmenter = new Segmenter(undefined, { granularity: 'grapheme' });
-    return Array.from(segmenter.segment(value)).length;
-  }
-  return Array.from(value).length;
+  return Array.from(graphemeSegmenter.segment(value)).length;
 }
 
 function normalizedPseudonym(value: string): string {
@@ -503,7 +491,7 @@ function createPortalShell(content: HTMLElement): HTMLDivElement {
   return page;
 }
 
-function createGameRow(entry: (typeof GAMES)[number], index: number): DocumentFragment {
+function createGameRow(entry: (typeof GAMES)[number], index: number, bests: StoredBests): DocumentFragment {
   const fragment = document.createDocumentFragment();
   const row = document.createElement('div');
   row.className = `gameBox ${index === 0 ? 'boxNewOpen' : 'boxOpen'}`;
@@ -511,7 +499,7 @@ function createGameRow(entry: (typeof GAMES)[number], index: number): DocumentFr
   const record = document.createElement('div');
   record.className = 'recordBadge';
   record.dataset.gameRecord = entry.meta.id;
-  record.textContent = recordText(localBestScore(entry.meta.id));
+  record.textContent = recordText(bests[entry.meta.id]?.score);
 
   const caption = document.createElement('div');
   caption.className = 'gameCaption';
@@ -594,8 +582,9 @@ function renderLanding(): void {
   notice.textContent = t('landing.notice');
   games.appendChild(notice);
 
+  const bests = readBests();
   GAMES.forEach((entry, index) => {
-    games.appendChild(createGameRow(entry, index));
+    games.appendChild(createGameRow(entry, index, bests));
   });
   root.appendChild(createPortalShell(games));
   void refreshLandingRecords(myId);

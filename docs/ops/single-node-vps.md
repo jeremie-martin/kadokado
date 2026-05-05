@@ -17,8 +17,12 @@ npm start
 
 - `PORT`: HTTP port for the Node server. Defaults to `8787`.
 - `LEADERBOARD_DB_PATH`: SQLite path. Defaults to `.data/leaderboard.sqlite`.
-- `IP_HASH_SECRET`: required for production. Keep it stable across restarts.
-- `TRUST_PROXY`: set to `1` only behind a trusted reverse proxy.
+- `IP_HASH_SECRET`: strongly recommended in production. Unset, the server logs a
+  warning and falls back to a development secret, making IP hashes predictable.
+  Keep it stable across restarts.
+- `TRUST_PROXY`: set to `1` when behind a reverse proxy. Without it, every
+  request appears to come from the proxy's address and the rate limiter
+  collapses into a single shared bucket.
 
 Put a reverse proxy in front of `PORT` for TLS.
 
