@@ -14,7 +14,6 @@ const SITE_ASSET_BASE = '/assets/site/kadokado';
 const MENU_ITEMS = [
   { label: 'Jouer', href: '#', exact: true },
   { label: 'Scores', href: '#scores', exact: false },
-  { label: 'Fidelity', href: '#fidelity', exact: false },
   { label: 'About', href: '#about', exact: false },
 ];
 
@@ -366,8 +365,8 @@ function createRightPane(): HTMLDivElement {
   const statusLine = document.createElement('p');
   statusLine.textContent = 'Ports playable';
   const statusLink = document.createElement('a');
-  statusLink.href = '#fidelity';
-  statusLink.textContent = 'Fidelity notes';
+  statusLink.href = '#about';
+  statusLink.textContent = 'About project';
   status.append(statusLine, statusLink);
 
   const scores = document.createElement('div');
@@ -418,7 +417,6 @@ function createPortalShell(content: HTMLElement): HTMLDivElement {
   corporateLinks.id = 'corporateLinks';
   const links = [
     { label: 'about', href: '#about' },
-    { label: 'fidelity', href: '#fidelity' },
     { label: 'scores', href: '#scores' },
   ];
   links.forEach((item, index) => {
@@ -558,26 +556,6 @@ function renderAbout(): void {
   scope.textContent =
     'The website keeps the 2005-2006 portal aesthetic, but avoids fake accounts, prizes, forums, clans, ads, and platform features that are not implemented.';
   page.append(intro, scope);
-  root.appendChild(createPortalShell(page));
-}
-
-function renderFidelity(): void {
-  clear();
-  const page = createTextPage('Fidelity');
-  const list = document.createElement('ul');
-  for (const item of [
-    'source-backed: confirmed from original source or SWF metadata',
-    'capture-backed: confirmed against archived or runtime captures',
-    'asset-backed: confirmed from extracted image and font assets',
-    'inferred: temporary best guess waiting for stronger evidence',
-  ]) {
-    const row = document.createElement('li');
-    row.textContent = item;
-    list.appendChild(row);
-  }
-  const docs = document.createElement('p');
-  docs.textContent = 'The current canonical notes live in docs/FIDELITY.md and docs/porting/.';
-  page.append(list, docs);
   root.appendChild(createPortalShell(page));
 }
 
@@ -1006,8 +984,6 @@ function route(): void {
     renderScores();
   } else if (id === 'about') {
     renderAbout();
-  } else if (id === 'fidelity') {
-    renderFidelity();
   } else if (id) {
     void renderGame(id);
   } else {

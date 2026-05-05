@@ -43,7 +43,6 @@ Keep:
 
 - `Jouer`: game list and game launch.
 - `Scores`: real leaderboard data from the local API.
-- `Fidelity`: project evidence categories and links to local docs.
 - `About`: preservation scope and non-affiliation context.
 - Per-game `aide`: real controls/objective text.
 - `Record`: real saved leaderboard score where available, with local best as
@@ -57,6 +56,8 @@ Do not ship in v1:
 - Clans, unless a real clan feature exists. Do not show fake clan names.
 - Motion Twin copyright footer or any wording that presents this project as
   Motion Twin.
+- Public fidelity page. Fidelity notes stay in repository documentation, not in
+  the user-facing website shell.
 
 Allowed footer wording should be neutral, for example:
 
