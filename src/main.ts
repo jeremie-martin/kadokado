@@ -9,6 +9,57 @@ if (!rootEl) {
 const root = rootEl;
 const BESTS_STORAGE_KEY = 'motiontwin-ports:v1:bests';
 const PSEUDONYM_STORAGE_KEY = 'motiontwin-ports:v1:pseudonym';
+const SITE_ASSET_BASE = '/assets/site/kadokado';
+
+const MENU_ITEMS = [
+  { label: 'Jouer', href: '#', exact: true },
+  { label: 'Scores', href: '#scores', exact: false },
+  { label: 'Fidelity', href: '#fidelity', exact: false },
+  { label: 'About', href: '#about', exact: false },
+];
+
+const LEGACY_THUMBNAILS: Record<string, string> = {
+  interwheel: `${SITE_ASSET_BASE}/games/30.gif`,
+  pioupiou: `${SITE_ASSET_BASE}/games/8.gif`,
+  manda: `${SITE_ASSET_BASE}/games/7.gif`,
+  killbulle: `${SITE_ASSET_BASE}/games/13.gif`,
+  kslash: `${SITE_ASSET_BASE}/games/22.gif`,
+  'iron-chouquette': `${SITE_ASSET_BASE}/games/35.gif`,
+  linea: '/assets/linea/start.png',
+  alphabounce: '/assets/alphabounce/title.png',
+};
+
+const LEGACY_DESCRIPTIONS: Record<string, string> = {
+  interwheel:
+    "Au secours c'est l'inondation, aidez krakra la petite tache de crasse a s'evader de la salle de bain du temple azteque Tenochtitlan, attention aux mines ancestrales du grand Quetzal !",
+  pioupiou:
+    "Aidez le pauvre Piou-Piou tombe dans cet affreux piege digne des plus machiaveliques ecraseurs de poussins.",
+  manda: 'Tortillez-vous pour ramasser les fruits et les bonus, tentez de survivre longtemps et surtout evitez les murs ! Un grand classique.',
+  killbulle:
+    "Retrouvez Kanji le Ninja dans une nouvelle aventure ! Utilisez le grapin de facon a detruire les bulles bondissantes et gagnez ainsi un max de points.",
+  linea: "Tracez les lignes les plus longues possible, composez les bonus et tentez de garder le rythme jusqu'au dernier point lumineux.",
+  alphabounce: "Rebondissez dans l'espace, cassez les blocs et survivez aux evenements qui transforment chaque niveau en pluie de lettres.",
+  kslash:
+    "Kanji est en infiltration au pays des bambous ! Debarassez vous de ses encombrantes tortues belliqueuses grace a vos shuriken et votre sabre.",
+  'iron-chouquette':
+    "La patrouille des lapins-robots a kidnappe chouquette ! Retrouvez-la avant qu'il ne soit trop tard dans le tournoi interstellaire d'andromede.",
+};
+
+const LEGACY_TITLES: Record<string, string> = {
+  killbulle: 'Kill Bulle',
+  kslash: 'K-Slash !',
+};
+
+const HELP_TEXT: Record<string, string> = {
+  interwheel: 'Use one button to jump from wheel to wheel. Avoid mines and rising water while climbing as high as possible.',
+  pioupiou: 'Move with the arrow keys. Climb falling blocks, collect coins, and avoid getting crushed.',
+  manda: 'Steer with left and right, accelerate with up, collect fruit and bonuses, and avoid the walls and your tail.',
+  killbulle: 'Move with the arrow keys. Fire the grappling hook with space to split bubbles before they touch Kanji.',
+  linea: 'Draw paths through matching dots. Longer lines and multipliers are the key to a strong score.',
+  alphabounce: 'Control the paddle, break letter blocks, catch useful bonuses, and survive each event wave.',
+  kslash: 'Move, jump, slash, and throw kunai to clear enemies while pushing through the bamboo stages.',
+  'iron-chouquette': 'Dodge bullet patterns, collect bonuses, and push through the boss rush without losing control of the arena.',
+};
 
 let active: GameInstance | null = null;
 let renderId = 0;
@@ -157,8 +208,8 @@ function getErrorMessage(err: unknown, fallback: string): string {
   return err instanceof Error && err.message ? err.message : fallback;
 }
 
-async function fetchLeaderboard(gameId: string): Promise<LeaderboardEntry[]> {
-  const response = await fetch(`/api/games/${encodeURIComponent(gameId)}/leaderboard?limit=10`, {
+async function fetchLeaderboard(gameId: string, limit = 10): Promise<LeaderboardEntry[]> {
+  const response = await fetch(`/api/games/${encodeURIComponent(gameId)}/leaderboard?limit=${encodeURIComponent(String(limit))}`, {
     headers: { Accept: 'application/json' },
   });
   const payload = await readApiJson(response);
@@ -215,6 +266,14 @@ function formatMetric(metric: GameMetric): string {
   return metric.unit ? `${value} ${metric.unit}` : value;
 }
 
+function recordText(score: number | undefined): string {
+  return score === undefined ? 'Record: -' : `Record: ${formatNumber(score)}`;
+}
+
+function localBestScore(gameId: string): number | undefined {
+  return readBests()[gameId]?.score;
+}
+
 function destroyActive(): void {
   if (active) {
     try {
@@ -232,36 +291,343 @@ function clear(): void {
   root.replaceChildren();
 }
 
+function legacyTitle(entry: { meta: { id: string; title: string } }): string {
+  return LEGACY_TITLES[entry.meta.id] ?? entry.meta.title;
+}
+
+function createPaneBox(title: string, content: Node[], href?: string): HTMLDivElement {
+  const box = document.createElement('div');
+  box.className = 'paneBox';
+
+  const header = document.createElement('div');
+  header.className = 'paneBoxHeader';
+  if (href) {
+    const link = document.createElement('a');
+    link.href = href;
+    link.textContent = title;
+    header.appendChild(link);
+  } else {
+    header.textContent = title;
+  }
+
+  const body = document.createElement('div');
+  body.className = 'paneBoxContent';
+  body.append(...content);
+
+  const footer = document.createElement('div');
+  footer.className = 'paneBoxFooter';
+  box.append(header, body, footer);
+  return box;
+}
+
+function createMenuBox(): HTMLDivElement {
+  const menu = document.createElement('div');
+  menu.className = 'menuBox';
+  for (const item of MENU_ITEMS) {
+    const link = document.createElement('a');
+    link.href = item.href;
+    link.textContent = item.label;
+    const currentHash = window.location.hash || '#';
+    if ((item.exact && currentHash === '#') || (!item.exact && currentHash === item.href)) {
+      link.className = 'active';
+    }
+    menu.appendChild(link);
+  }
+  return menu;
+}
+
+function createLeftPane(): HTMLDivElement {
+  const pane = document.createElement('div');
+  pane.id = 'leftPane';
+  const content = document.createElement('div');
+  content.id = 'leftContent';
+
+  const buildInfo = document.createElement('div');
+  buildInfo.className = 'sideText';
+  const gameCount = document.createElement('p');
+  gameCount.textContent = `${GAMES.length} games online`;
+  const noAccount = document.createElement('p');
+  noAccount.textContent = 'No account required';
+  buildInfo.append(gameCount, noAccount);
+
+  content.append(createMenuBox(), createPaneBox('Build', [buildInfo]));
+  pane.appendChild(content);
+  return pane;
+}
+
+function createRightPane(): HTMLDivElement {
+  const pane = document.createElement('div');
+  pane.id = 'rightPane';
+  const content = document.createElement('div');
+  content.id = 'rightContent';
+
+  const status = document.createElement('div');
+  status.className = 'sideText';
+  const statusLine = document.createElement('p');
+  statusLine.textContent = 'Ports playable';
+  const statusLink = document.createElement('a');
+  statusLink.href = '#fidelity';
+  statusLink.textContent = 'Fidelity notes';
+  status.append(statusLine, statusLink);
+
+  const scores = document.createElement('div');
+  scores.className = 'sideText';
+  const scoreLine = document.createElement('p');
+  scoreLine.textContent = 'Records use saved scores';
+  const scoreLink = document.createElement('a');
+  scoreLink.href = '#scores';
+  scoreLink.textContent = 'View scores';
+  scores.append(scoreLine, scoreLink);
+
+  content.append(createPaneBox('Status', [status]), createPaneBox('Scores', [scores]));
+  pane.appendChild(content);
+  return pane;
+}
+
+function createInfoBar(): HTMLDivElement {
+  const bar = document.createElement('div');
+  bar.id = 'mainBarInfo';
+  bar.textContent = 'Fan preservation project - play instantly';
+  return bar;
+}
+
+function createPortalShell(content: HTMLElement): HTMLDivElement {
+  const page = document.createElement('div');
+  page.className = 'basicBg';
+
+  const logo = document.createElement('div');
+  logo.id = 'mainLogo';
+  const logoLink = document.createElement('a');
+  logoLink.href = '#';
+  const logoImage = document.createElement('img');
+  logoImage.src = `${SITE_ASSET_BASE}/1_logo.gif`;
+  logoImage.alt = 'KadoKado';
+  logoLink.appendChild(logoImage);
+  logo.appendChild(logoLink);
+
+  const container = document.createElement('div');
+  container.id = 'container';
+  const contentPane = document.createElement('div');
+  contentPane.id = 'contentPane';
+  const contentLarge = document.createElement('div');
+  contentLarge.id = 'contentLarge';
+  contentLarge.appendChild(content);
+  contentPane.appendChild(contentLarge);
+
+  const corporateLinks = document.createElement('div');
+  corporateLinks.id = 'corporateLinks';
+  const links = [
+    { label: 'about', href: '#about' },
+    { label: 'fidelity', href: '#fidelity' },
+    { label: 'scores', href: '#scores' },
+  ];
+  links.forEach((item, index) => {
+    const link = document.createElement('a');
+    link.href = item.href;
+    link.textContent = item.label;
+    corporateLinks.appendChild(link);
+    if (index < links.length - 1) {
+      corporateLinks.append(' - ');
+    }
+  });
+
+  const footer = document.createElement('div');
+  footer.id = 'footer';
+  const footerText = document.createElement('p');
+  footerText.textContent = 'Fan preservation project - original games by Motion Twin';
+  footer.appendChild(footerText);
+
+  container.append(createInfoBar(), createLeftPane(), createRightPane(), contentPane, corporateLinks, footer);
+  page.append(logo, container);
+  return page;
+}
+
+function createGameRow(entry: (typeof GAMES)[number], index: number): DocumentFragment {
+  const fragment = document.createDocumentFragment();
+  const row = document.createElement('div');
+  row.className = `gameBox ${index === 0 ? 'boxNewOpen' : 'boxOpen'}`;
+
+  const record = document.createElement('div');
+  record.className = 'recordBadge';
+  record.dataset.gameRecord = entry.meta.id;
+  record.textContent = recordText(localBestScore(entry.meta.id));
+
+  const caption = document.createElement('div');
+  caption.className = 'gameCaption';
+  const imageLink = document.createElement('a');
+  imageLink.href = `#${entry.meta.id}`;
+  imageLink.title = 'jouer';
+  const image = document.createElement('img');
+  image.src = LEGACY_THUMBNAILS[entry.meta.id] ?? '';
+  image.alt = 'image';
+  imageLink.appendChild(image);
+  caption.appendChild(imageLink);
+
+  const desc = document.createElement('div');
+  desc.className = 'gameDesc';
+  const title = document.createElement('h3');
+  title.textContent = legacyTitle(entry);
+  const text = document.createElement('p');
+  text.textContent = LEGACY_DESCRIPTIONS[entry.meta.id] ?? entry.meta.description;
+  desc.append(title, text);
+
+  const play = document.createElement('div');
+  play.className = 'playLink';
+  const playLink = document.createElement('a');
+  playLink.href = `#${entry.meta.id}`;
+  playLink.textContent = 'jouer';
+  play.appendChild(playLink);
+
+  const help = document.createElement('div');
+  help.className = 'helpLink';
+  const helpLink = document.createElement('a');
+  helpLink.href = `#help-${entry.meta.id}`;
+  helpLink.textContent = 'aide';
+  help.appendChild(helpLink);
+
+  const helpBox = document.createElement('div');
+  helpBox.className = 'helpBox';
+  helpBox.id = `help-${entry.meta.id}`;
+  helpBox.hidden = true;
+  const helpContent = document.createElement('div');
+  helpContent.className = 'help';
+  helpContent.textContent = HELP_TEXT[entry.meta.id] ?? entry.meta.description;
+  helpBox.appendChild(helpContent);
+
+  helpLink.addEventListener('click', (event) => {
+    event.preventDefault();
+    helpBox.hidden = !helpBox.hidden;
+  });
+
+  row.append(record, caption, desc, play, help);
+  fragment.append(row, helpBox);
+  return fragment;
+}
+
+async function refreshLandingRecords(pageRenderId: number): Promise<void> {
+  await Promise.all(
+    GAMES.map(async (entry) => {
+      try {
+        const [top] = await fetchLeaderboard(entry.meta.id, 1);
+        if (pageRenderId !== renderId || !top) return;
+        const node = root.querySelector<HTMLElement>(`[data-game-record="${entry.meta.id}"]`);
+        if (node) {
+          node.textContent = recordText(top.score);
+        }
+      } catch {
+        // Keep the local best already rendered when the shared leaderboard is unavailable.
+      }
+    }),
+  );
+}
+
 function renderLanding(): void {
   clear();
-  const shell = document.createElement('div');
-  shell.className = 'shell';
+  const myId = renderId;
+  const games = document.createElement('div');
+  games.className = 'gameList';
 
-  const title = document.createElement('h1');
-  title.textContent = 'MotionTwin Ports';
-  const lead = document.createElement('p');
-  lead.className = 'lead';
-  lead.textContent = 'TypeScript / PixiJS ports of MotionTwin Flash games.';
-  shell.append(title, lead);
+  const notice = document.createElement('p');
+  notice.className = 'error';
+  notice.textContent = 'Playable ports, rebuilt with original assets where available';
+  games.appendChild(notice);
 
-  const tiles = document.createElement('div');
-  tiles.className = 'tiles';
-  for (const entry of GAMES) {
-    const tile = document.createElement('button');
-    tile.className = 'tile';
-    tile.type = 'button';
-    const heading = document.createElement('h2');
-    heading.textContent = entry.meta.title;
-    const desc = document.createElement('p');
-    desc.textContent = entry.meta.description;
-    tile.append(heading, desc);
-    tile.addEventListener('click', () => {
-      window.location.hash = entry.meta.id;
-    });
-    tiles.appendChild(tile);
+  GAMES.forEach((entry, index) => {
+    games.appendChild(createGameRow(entry, index));
+  });
+  root.appendChild(createPortalShell(games));
+  void refreshLandingRecords(myId);
+}
+
+function createTextPage(title: string): HTMLDivElement {
+  const page = document.createElement('div');
+  page.className = 'textPage';
+  const heading = document.createElement('h1');
+  heading.textContent = title;
+  page.appendChild(heading);
+  return page;
+}
+
+function renderAbout(): void {
+  clear();
+  const page = createTextPage('About');
+  const intro = document.createElement('p');
+  intro.textContent =
+    'This is a fan preservation project for playable Motion Twin and KadoKado-era browser games. The ports use TypeScript and PixiJS, with original extracted assets where available.';
+  const scope = document.createElement('p');
+  scope.textContent =
+    'The website keeps the 2005-2006 portal aesthetic, but avoids fake accounts, prizes, forums, clans, ads, and platform features that are not implemented.';
+  page.append(intro, scope);
+  root.appendChild(createPortalShell(page));
+}
+
+function renderFidelity(): void {
+  clear();
+  const page = createTextPage('Fidelity');
+  const list = document.createElement('ul');
+  for (const item of [
+    'source-backed: confirmed from original source or SWF metadata',
+    'capture-backed: confirmed against archived or runtime captures',
+    'asset-backed: confirmed from extracted image and font assets',
+    'inferred: temporary best guess waiting for stronger evidence',
+  ]) {
+    const row = document.createElement('li');
+    row.textContent = item;
+    list.appendChild(row);
   }
-  shell.appendChild(tiles);
-  root.appendChild(shell);
+  const docs = document.createElement('p');
+  docs.textContent = 'The current canonical notes live in docs/FIDELITY.md and docs/porting/.';
+  page.append(list, docs);
+  root.appendChild(createPortalShell(page));
+}
+
+function renderScores(): void {
+  clear();
+  const myId = renderId;
+  const page = createTextPage('Scores');
+  const list = document.createElement('div');
+  list.className = 'scoresPage';
+
+  for (const entry of GAMES) {
+    const box = document.createElement('section');
+    box.className = 'scoreBox';
+    const heading = document.createElement('h2');
+    heading.textContent = legacyTitle(entry);
+    const rows = document.createElement('ol');
+    rows.className = 'scoreRows';
+    const message = document.createElement('p');
+    message.className = 'scoreMessage';
+    message.textContent = 'Loading scores';
+    box.append(heading, message, rows);
+    list.appendChild(box);
+
+    void fetchLeaderboard(entry.meta.id, 5)
+      .then((entries) => {
+        if (myId !== renderId) return;
+        rows.replaceChildren();
+        if (entries.length === 0) {
+          message.textContent = 'No scores yet';
+          return;
+        }
+        message.hidden = true;
+        for (const leaderboardEntry of entries) {
+          const item = document.createElement('li');
+          const name = document.createElement('span');
+          name.textContent = leaderboardEntry.pseudonym;
+          const score = document.createElement('strong');
+          score.textContent = formatNumber(leaderboardEntry.score);
+          item.append(name, score);
+          rows.appendChild(item);
+        }
+      })
+      .catch((err) => {
+        if (myId !== renderId) return;
+        message.textContent = getErrorMessage(err, 'Scores unavailable.');
+      });
+  }
+
+  page.appendChild(list);
+  root.appendChild(createPortalShell(page));
 }
 
 async function renderGame(id: string): Promise<void> {
@@ -297,7 +663,7 @@ async function renderGame(id: string): Promise<void> {
   const back = document.createElement('button');
   back.className = 'player-back';
   back.type = 'button';
-  back.textContent = 'Back';
+  back.textContent = 'Retour aux jeux';
   back.addEventListener('click', () => {
     window.location.hash = '';
   });
@@ -315,7 +681,7 @@ async function renderGame(id: string): Promise<void> {
 
   const title = document.createElement('h1');
   title.className = 'player-title';
-  title.textContent = entry.meta.title;
+  title.textContent = legacyTitle(entry);
 
   const status = document.createElement('p');
   status.className = 'player-status';
@@ -381,10 +747,10 @@ async function renderGame(id: string): Promise<void> {
   leaderboardMessage.className = 'player-leaderboard-message';
   leaderboardSection.append(leaderboardTitle, leaderboardMessage, leaderboardList);
 
-  panel.append(title, status, currentRow, bestRow, secondaryRow, restart, submitForm, leaderboardSection);
+  panel.append(title, status, currentRow, bestRow, secondaryRow, restart, back, submitForm, leaderboardSection);
   layout.append(stage, panel);
-  player.append(back, layout);
-  root.appendChild(player);
+  player.appendChild(layout);
+  root.appendChild(createPortalShell(player));
 
   function renderPanel(): void {
     currentValue.textContent = formatNumber(currentScore);
@@ -636,7 +1002,13 @@ async function renderGame(id: string): Promise<void> {
 
 function route(): void {
   const id = window.location.hash.replace(/^#/, '');
-  if (id) {
+  if (id === 'scores') {
+    renderScores();
+  } else if (id === 'about') {
+    renderAbout();
+  } else if (id === 'fidelity') {
+    renderFidelity();
+  } else if (id) {
     void renderGame(id);
   } else {
     renderLanding();

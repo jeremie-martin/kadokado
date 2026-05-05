@@ -164,6 +164,21 @@ Flash assets, browser playback makes iteration easy, and the per-game
 renderer, source-to-code extraction, a SWF-assisted runtime, or a native runtime
 for better fidelity, judge that per game.
 
+## Website Shell
+
+- Route: `/`
+- Shell: `src/main.ts`, `src/style.css`
+- Assets: `public/assets/site/kadokado/`
+- Docs: `docs/porting/kadokado-site-assets.md`
+- Status: capture-backed 2005-2006 KadoKado portal shell. The fixed-width logo,
+  top bar, side navigation, sidebar boxes, game rows, record badges, help boxes,
+  and orange/green action links are intentionally modeled after archived pages.
+- Product rule: keep the KadoKado-era visual language, but every visible feature
+  must be functional, truthful, or removed. No fake login, registration, gifts,
+  ads, guestbook, forum, clans, legal pages, or platform rewards in v1.
+- Known gaps: fallback thumbnails for games that do not have a recovered
+  KadoKado list icon yet, and score pages depend on the local leaderboard API.
+
 ## Game Status
 
 All registered games are playable ports using extracted assets. None should be

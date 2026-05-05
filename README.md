@@ -17,7 +17,8 @@ TypeScript/PixiJS is the current implementation route because it is working well
 - K-Slash: `/#kslash`
 - Iron Chouquette: `/#iron-chouquette`
 
-The root route shows the small launcher.
+The root route shows a KadoKado-style launcher shell based on archived 2005-2006
+site captures.
 
 ## Commands
 
