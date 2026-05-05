@@ -299,6 +299,10 @@ export class LeaderboardStore {
     `);
   }
 
+  checkHealth() {
+    this.db.prepare('SELECT 1 AS ok').get();
+  }
+
   addSubmission(submission) {
     const info = this.insertSubmission.run(submission);
     const row = this.selectById.get(info.lastInsertRowid);
@@ -457,7 +461,15 @@ export function createServerApp(options = {}) {
   });
 
   app.get('/api/health', (req, res) => {
-    res.json({ ok: true });
+    try {
+      store.checkHealth();
+      res.json({ ok: true, database: 'ok' });
+    } catch (err) {
+      console.error('[server] health check failed', {
+        message: err instanceof Error ? err.message : String(err),
+      });
+      res.status(503).json({ ok: false, database: 'error' });
+    }
   });
 
   app.get('/api/games/:gameId/leaderboard', (req, res, next) => {

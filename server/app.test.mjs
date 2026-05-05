@@ -61,6 +61,42 @@ test('empty leaderboard returns no entries', async () => {
   });
 });
 
+test('health check reports database availability', async () => {
+  await withServer(async (baseUrl) => {
+    const { response, body } = await requestJson(baseUrl, '/api/health');
+
+    assert.equal(response.status, 200);
+    assert.deepEqual(body, { ok: true, database: 'ok' });
+  });
+});
+
+test('health check reports database failures', async () => {
+  await withServer(
+    async (baseUrl) => {
+      const originalConsoleError = console.error;
+      console.error = () => {};
+      let result;
+      try {
+        result = await requestJson(baseUrl, '/api/health');
+      } finally {
+        console.error = originalConsoleError;
+      }
+      const { response, body } = result;
+
+      assert.equal(response.status, 503);
+      assert.deepEqual(body, { ok: false, database: 'error' });
+    },
+    {
+      store: {
+        checkHealth() {
+          throw new Error('database unavailable');
+        },
+        close() {},
+      },
+    },
+  );
+});
+
 test('valid score submission appears on that game leaderboard', async () => {
   await withServer(async (baseUrl) => {
     const submitted = await postScore(baseUrl, 'interwheel', {

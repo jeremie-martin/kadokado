@@ -30,11 +30,15 @@ npm run build
 npm run preview
 npm start
 npm run test:api
+npm run test:e2e
 ```
 
 For the persistent leaderboard locally, run `npm run dev:api` in one terminal and `npm run dev` in another; Vite proxies `/api` to the Node server. For production, run `npm run build` and then `npm start`.
 
 The leaderboard database defaults to `.data/leaderboard.sqlite`. Override it with `LEADERBOARD_DB_PATH`. Set `IP_HASH_SECRET` in production so stored IP hashes are stable without storing raw IPs. If the app is behind a trusted reverse proxy, set `TRUST_PROXY=1`.
+
+For single-node deployment notes, health checks, and SQLite backup/restore, see
+`docs/ops/single-node-vps.md`.
 
 ## Layout
 
@@ -45,6 +49,7 @@ The leaderboard database defaults to `.data/leaderboard.sqlite`. Override it wit
 - `public/assets/<game>/`: extracted raster assets used by the ports.
 - `server/`: Express + SQLite leaderboard API.
 - `docs/FIDELITY.md`: current fidelity state, validation plan, and next work.
+- `docs/ops/single-node-vps.md`: basic VPS deployment and operations runbook.
 
 ## Current State
 

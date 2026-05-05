@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .data/
+.tmp/
+test-results/
+playwright-report/
 .DS_Store
 *.log
 tools/
