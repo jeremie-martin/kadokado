@@ -23,6 +23,11 @@ const VISUAL_BLOB_JUMP = 12;
 const VISUAL_DEATH_PENALTY = 1_000_000;
 const VISUAL_MAX_NODES = 120;
 const VISUAL_MAX_DEPTH = 90;
+const BONUS_SCORE = [250, 1_000, 5_000];
+const JITTER_EPSILON = 1e-9;
+const LOOKAHEAD_WIDTH = 1;
+const LOOKAHEAD_GRAB_WAIT_STEP = 16;
+const LOOKAHEAD_WALL_WAIT_STEP = 6;
 
 type VisualNode = {
   state: SimSnapshot;
@@ -41,6 +46,8 @@ type Candidate = {
   segment: Segment;
   endState: SimSnapshot;
   score: number;
+  bonusValue: number;
+  waitTicks: number;
 };
 
 export type SegmentKind = 'branch' | 'best' | 'dead';
@@ -65,6 +72,10 @@ export type PlannerConfig = {
   maxNodes?: number;
   maxDepth?: number;
   targetClimb?: number;
+  scoreBias?: number;
+  jumpJitterSigma?: number;
+  jumpJitterClamp?: number;
+  lookahead?: boolean;
 };
 
 export class InterwheelPlanner {
@@ -74,6 +85,7 @@ export class InterwheelPlanner {
   private cachedPlan: boolean[] = [];
   private replanIn = 0;
   private lastResult: PlanResult | null = null;
+  private jitterCounter = 0;
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
@@ -82,6 +94,10 @@ export class InterwheelPlanner {
       maxNodes: cfg.maxNodes ?? 1800,
       maxDepth: cfg.maxDepth ?? 100,
       targetClimb: cfg.targetClimb ?? 400,
+      scoreBias: cfg.scoreBias ?? 1,
+      jumpJitterSigma: cfg.jumpJitterSigma ?? 0.35,
+      jumpJitterClamp: cfg.jumpJitterClamp ?? 1,
+      lookahead: cfg.lookahead ?? false,
     };
   }
 
@@ -91,7 +107,7 @@ export class InterwheelPlanner {
     let result: PlanResult | null = null;
     if (this.cachedPlan.length === 0 || this.replanIn <= 0) {
       result = this.plan();
-      this.cachedPlan = result.plan.slice();
+      this.cachedPlan = this.applyJumpJitter(result.plan, this.sim.clone());
       this.replanIn = Math.min(REPLAN_TICKS, Math.max(1, this.cachedPlan.length));
       this.lastResult = result;
     } else {
@@ -109,6 +125,7 @@ export class InterwheelPlanner {
     this.cachedPlan.length = 0;
     this.replanIn = 0;
     this.lastResult = null;
+    this.jitterCounter = 0;
   }
 
   private plan(): PlanResult {
@@ -127,9 +144,7 @@ export class InterwheelPlanner {
         return { plan: [false], segments: [], startBlobY: startSnap.blob.y };
       }
 
-      const waitLimit = startSnap.blob.state === BLOB_STATE_WALL
-        ? Math.min(MAX_WALL_WAIT, this.cfg.maxDepth)
-        : Math.min(MAX_GRAB_WAIT, Math.max(this.cfg.maxDepth, this.cfg.targetClimb / 4));
+      const waitLimit = this.waitLimitFor(startSnap);
       const candidates: Candidate[] = [];
 
       for (let wait = 0; wait <= waitLimit && candidates.length < this.cfg.maxNodes; wait += 1) {
@@ -141,11 +156,7 @@ export class InterwheelPlanner {
         return { plan: [false], segments: [], startBlobY: startSnap.blob.y };
       }
 
-      let best = candidates[0];
-      for (let i = 1; i < candidates.length; i += 1) {
-        if (candidates[i].score > best.score) best = candidates[i];
-      }
-
+      const best = this.chooseBestCandidate(startSnap, candidates);
       const segments = [
         ...this.buildTickSearchSegments(startSnap),
         ...this.buildPlanSegments(startSnap, best.plan),
@@ -216,7 +227,79 @@ export class InterwheelPlanner {
       kind: isDead ? 'dead' : 'branch',
     };
 
-    return { plan, segment, endState, score };
+    return {
+      plan,
+      segment,
+      endState,
+      score,
+      bonusValue: this.bonusValue(startSnap, endState),
+      waitTicks,
+    };
+  }
+
+  private chooseBestCandidate(startSnap: SimSnapshot, candidates: Candidate[]): Candidate {
+    let best = candidates[0];
+    let bestScore = best.score;
+
+    for (let i = 1; i < candidates.length; i += 1) {
+      if (candidates[i].score > bestScore) {
+        best = candidates[i];
+        bestScore = candidates[i].score;
+      }
+    }
+
+    if (!this.cfg.lookahead) return best;
+
+    const pool = this.lookaheadPool(candidates);
+
+    for (const candidate of pool) {
+      const lookaheadScore = this.scoreWithLookahead(startSnap, candidate);
+      if (lookaheadScore > bestScore) {
+        best = candidate;
+        bestScore = lookaheadScore;
+      }
+    }
+
+    return best;
+  }
+
+  private lookaheadPool(candidates: Candidate[]): Candidate[] {
+    const pool = new Set<Candidate>();
+    const addTop = (sorted: Candidate[]) => {
+      for (let i = 0; i < Math.min(LOOKAHEAD_WIDTH, sorted.length); i += 1) pool.add(sorted[i]);
+    };
+    addTop(candidates.slice().sort((a, b) => b.score - a.score));
+    addTop(candidates.slice().sort((a, b) => b.bonusValue - a.bonusValue));
+    return [...pool];
+  }
+
+  private scoreWithLookahead(startSnap: SimSnapshot, candidate: Candidate): number {
+    if (candidate.endState.blob.state !== BLOB_STATE_GRAB && candidate.endState.blob.state !== BLOB_STATE_WALL) {
+      return candidate.score;
+    }
+    if (this.waterUrgency(candidate.endState.waterY - candidate.endState.blob.y) > 0.35) {
+      return candidate.score;
+    }
+
+    let bestScore = candidate.score;
+    const waitLimit = this.waitLimitFor(candidate.endState);
+    const waitStep = candidate.endState.blob.state === BLOB_STATE_WALL
+      ? LOOKAHEAD_WALL_WAIT_STEP
+      : LOOKAHEAD_GRAB_WAIT_STEP;
+
+    for (let wait = 0; wait <= waitLimit; wait += waitStep) {
+      const next = this.evaluateLaunch(candidate.endState, wait);
+      if (!next) continue;
+      const score = this.scoreCandidate(
+        startSnap,
+        next.endState,
+        candidate.plan.length + next.plan.length,
+        candidate.waitTicks + next.waitTicks,
+      );
+      if (score > bestScore) bestScore = score;
+    }
+
+    return bestScore;
   }
 
   private buildTickSearchSegments(startSnap: SimSnapshot): Segment[] {
@@ -336,6 +419,7 @@ export class InterwheelPlanner {
     const heightGain = end.maxHeight - start.maxHeight;
     const yGain = start.blob.y - end.blob.y;
     const waterMargin = end.waterY - end.blob.y;
+    const waterUrgency = this.waterUrgency(waterMargin);
     const waterPenalty = waterMargin < WATER_SAFETY_MARGIN
       ? (WATER_SAFETY_MARGIN - waterMargin) * 30
       : 0;
@@ -346,18 +430,129 @@ export class InterwheelPlanner {
     const backtrackPenalty = end.blob.y > start.blob.y + 20
       ? (end.blob.y - start.blob.y) * 25
       : 0;
-
-    return (
+    const heightPolicy =
       end.maxHeight +
       heightGain * 9 +
       yGain * 4 +
       wheelGain * 900 +
-      endWheel * 10 +
+      endWheel * 10;
+    const scorePolicy =
+      this.creditedBonusScore(start, end) * 3 +
+      this.pickedBonusValue(start, end) * 1.5 +
+      this.pendingSparkValue(start, end) * 0.5;
+    const scoreTerm = Math.min(
+      scorePolicy * this.cfg.scoreBias,
+      Math.max(1_250, heightPolicy * 0.35),
+    ) * (1 - waterUrgency * 0.85);
+
+    return (
+      heightPolicy * (1 + waterUrgency * 1.2) +
+      scoreTerm +
       stateBonus -
       totalTicks * 4 -
       waitTicks * 1.5 -
       waterPenalty -
       backtrackPenalty
     );
+  }
+
+  private waitLimitFor(snap: SimSnapshot): number {
+    return snap.blob.state === BLOB_STATE_WALL
+      ? Math.min(MAX_WALL_WAIT, this.cfg.maxDepth)
+      : Math.min(MAX_GRAB_WAIT, Math.max(this.cfg.maxDepth, this.cfg.targetClimb / 4));
+  }
+
+  private bonusValue(start: SimSnapshot, end: SimSnapshot): number {
+    return (
+      this.creditedBonusScore(start, end) +
+      this.pickedBonusValue(start, end) +
+      this.pendingSparkValue(start, end)
+    );
+  }
+
+  private creditedBonusScore(start: SimSnapshot, end: SimSnapshot): number {
+    const heightScore = Math.max(0, Math.floor(end.maxHeight - start.maxHeight));
+    return Math.max(0, end.score - start.score - heightScore);
+  }
+
+  private pickedBonusValue(start: SimSnapshot, end: SimSnapshot): number {
+    let value = 0;
+    for (const pastille of start.pastilles) {
+      const stillPresent = end.pastilles.some((p) =>
+        p.type === pastille.type &&
+        p.x === pastille.x &&
+        p.y === pastille.y
+      );
+      if (!stillPresent) value += BONUS_SCORE[pastille.type] ?? BONUS_SCORE[0];
+    }
+    return value;
+  }
+
+  private pendingSparkValue(start: SimSnapshot, end: SimSnapshot): number {
+    const startValue = start.sparks.reduce((sum, spark) => sum + spark.score, 0);
+    const endValue = end.sparks.reduce((sum, spark) => sum + spark.score, 0);
+    return Math.max(0, endValue - startValue);
+  }
+
+  private waterUrgency(waterMargin: number): number {
+    if (waterMargin >= 320) return 0;
+    if (waterMargin <= WATER_SAFETY_MARGIN) return 1;
+    return (320 - waterMargin) / (320 - WATER_SAFETY_MARGIN);
+  }
+
+  private applyJumpJitter(plan: boolean[], snap: SimSnapshot): boolean[] {
+    const jumpIdx = plan.indexOf(true);
+    if (jumpIdx < 0 || this.cfg.jumpJitterSigma <= 0 || this.cfg.jumpJitterClamp <= 0) {
+      return plan.slice();
+    }
+
+    const offset = this.sampleJumpJitter(snap);
+    if (offset === 0) return plan.slice();
+
+    const jittered = plan.slice();
+    jittered.splice(jumpIdx, 1);
+    const shiftedIdx = Math.max(0, Math.min(jittered.length, jumpIdx + offset));
+    jittered.splice(shiftedIdx, 0, true);
+    return jittered;
+  }
+
+  private sampleJumpJitter(snap: SimSnapshot): number {
+    const base = this.hashSnapshot(snap, this.jitterCounter);
+    this.jitterCounter += 1;
+    const u1 = Math.max(JITTER_EPSILON, this.hashUnit(base));
+    const u2 = this.hashUnit(base ^ 0x9e3779b9);
+    const z = Math.sqrt(-2 * Math.log(u1)) * Math.cos(Math.PI * 2 * u2);
+    const raw = Math.round(z * this.cfg.jumpJitterSigma);
+    const clamp = Math.max(0, Math.round(this.cfg.jumpJitterClamp));
+    return Math.max(-clamp, Math.min(clamp, raw));
+  }
+
+  private hashSnapshot(snap: SimSnapshot, salt: number): number {
+    let h = 2166136261;
+    h = this.mixHash(h, snap.tick);
+    h = this.mixHash(h, Math.round(snap.blob.x * 100));
+    h = this.mixHash(h, Math.round(snap.blob.y * 100));
+    h = this.mixHash(h, Math.round(snap.blob.angle * 10_000));
+    h = this.mixHash(h, snap.blob.cwIdx);
+    h = this.mixHash(h, snap.score);
+    h = this.mixHash(h, salt);
+    return h >>> 0;
+  }
+
+  private mixHash(h: number, value: number): number {
+    let v = value | 0;
+    v ^= v >>> 16;
+    h ^= v;
+    return Math.imul(h, 16777619) >>> 0;
+  }
+
+  private hashUnit(seed: number): number {
+    let x = seed >>> 0;
+    x ^= x >>> 16;
+    x = Math.imul(x, 0x7feb352d);
+    x ^= x >>> 15;
+    x = Math.imul(x, 0x846ca68b);
+    x ^= x >>> 16;
+    return ((x >>> 0) + 1) / 4294967297;
   }
 }
