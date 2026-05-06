@@ -2,47 +2,31 @@ import { Application, Container, Graphics, Sprite, Text } from 'pixi.js';
 import { noopGameHost } from '../types';
 import type { GameHost, GameInstance, GameMountContext } from '../types';
 import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
+import {
+  STAGE_WIDTH, STAGE_HEIGHT, FPS, STEP_SECONDS,
+  SIDE, START_WHEEL_ID,
+  SCORE_PASTILLE,
+  BLOB_RAY,
+  BLOB_STATE_FLY, BLOB_STATE_GRAB, BLOB_STATE_WALL, BLOB_STATE_DEAD,
+  InterwheelSim,
+  type Wheel as SimWheel, type Pastille as SimPastille, type Spark as SimSpark,
+} from './sim';
 
-const STAGE_WIDTH = 300;
-const STAGE_HEIGHT = 300;
-const FPS = 40;
-const STEP_SECONDS = 1 / FPS;
+// Re-export sim's blob-state constants so the playground / bench /
+// AI planner can import them from this game module.
+export { BLOB_STATE_FLY, BLOB_STATE_GRAB, BLOB_STATE_WALL, BLOB_STATE_DEAD } from './sim';
+// Sim type and class are re-exported so AI/bench code can drive the
+// simulator directly without reaching through `InterwheelGame`.
+export { InterwheelSim, type RNG, type SimSnapshot } from './sim';
 
-const SIDE = 10;
-const SPACE = 8;
-const VIEW_WHEEL = 50;
-const START_WHEEL_ID = 10;
-const WMAX = 50;
-
-const WHEEL_SPEED_MIN = 0.05;
-const WHEEL_SPEED_MAX = 0.25;
-const WHEEL_SPEED_RANDOM = 0.05;
-const WHEEL_DIST_MIN = 60;
-const WHEEL_DIST_MAX = 120;
-const WHEEL_RAY_MIN = 8;
-const WHEEL_RAY_MAX = 32;
-const WHEEL_RAY_RANDOM = 50;
-const DIF_RANDOMIZER = 0.1;
-
-const WATER_SPEED = 1;
-const WATER_SPEED_INC = 0.0003;
-const SCORE_PASTILLE = [250, 1000, 5000];
-const BLOB_RAY = 8;
-const BLOB_WEIGHT = 0.5;
-const BLOB_JUMP = 12;
-const JUMP_SIDE_ANGLE = 0.77;
-const BLOB_BLOP_START = 0.6;
-const BLOB_BLOP_MIN = 0.07;
-const BLOB_BLOP_FRICT = 0.94;
+// === Display-only constants ===
 const BLOB_COULE_FRAME_START = 19;
 const BLOB_COULE_FRAME_COUNT = 25;
 const BLOB_GRAB_FRAME_START = 44;
 const BLOB_GRAB_FRAME_COUNT = 15;
 const BLOB_DEATH_FRAME_START = 102;
 const BLOB_DEATH_FRAME_COUNT = 71;
-const MINE_SPACE = 36;
 const PARTICLE_FADE_LIMIT = 10;
-const ENDGAME_DELAY = 30;
 const DECOR_SECTION_HEIGHT = 2000;
 const DECOR_SECTIONS = 5;
 const DECOR_BASE_COLOR = 0x436b70;
@@ -52,13 +36,6 @@ const PANEL_TEXT_X = 263;
 const PANEL_TEXT_Y = 280;
 
 const ASSET_ROOT = '/assets/interwheel';
-
-const enum BlobState {
-  Fly = 1,
-  Grab = 2,
-  Wall = 3,
-  Dead = 4,
-}
 
 type InterwheelAssets = {
   bg: Frame;
@@ -91,73 +68,21 @@ type InterwheelAssets = {
   starTache: Frame;
 };
 
-type Wheel = {
-  x: number;
-  y: number;
-  ray: number;
-  speed: number;
-  a: number;
-  fr: number;
-  mines: number[];
-  mineSprites: Sprite[];
-  destroyed: boolean;
-  boomAngle: number | null;
-  active: boolean;
-  dustTick: number;
+// View bundles that parallel each logical sim entity. The sim never sees
+// these — they live entirely in the renderer.
+type WheelView = {
   group: Container;
   spin: Container;
   shadow: Sprite;
   dust: Sprite;
   stains: Container;
   stainMask: Sprite;
+  mineSprites: Sprite[];
 };
 
-type Pastille = {
-  x: number;
-  y: number;
-  ray: number;
-  type: number;
-  phase: number;
-  active: boolean;
-  view: Container;
-  core: Sprite;
-};
+type PastilleView = { view: Container; core: Sprite };
 
-type Blob = {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  state: BlobState;
-  wallSide: -1 | 0 | 1;
-  stateTick: number;
-  cw: Wheel | null;
-  wa: number;
-  angle: number;
-  wet: number;
-  wasInWater: boolean;
-  blop: number;
-  ox: number;
-  oy: number;
-  vvx: number;
-  vvy: number;
-  view: Sprite;
-  deathTick: number;
-};
-
-type Spark = {
-  x: number;
-  y: number;
-  vx: number;
-  vy: number;
-  type: number;
-  score: number;
-  distLimit: number;
-  coefLimit: number;
-  coef: number;
-  view: Container;
-};
-
+// Visual particle (no gameplay role — pure tween).
 type Particle = {
   view: Sprite;
   vx: number;
@@ -180,68 +105,47 @@ type Particle = {
   outTimer?: number;
 };
 
-function randomInt(max: number): number {
-  if (max <= 1) {
-    return 0;
-  }
-  return Math.floor(Math.random() * max);
-}
-
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function hMod(value: number, mod: number): number {
-  let v = value;
-  while (v > mod) {
-    v -= mod * 2;
-  }
-  while (v < -mod) {
-    v += mod * 2;
-  }
-  return v;
+function randomInt(max: number): number {
+  if (max <= 1) return 0;
+  return Math.floor(Math.random() * max);
 }
 
-function distance(a: { x: number; y: number }, b: { x: number; y: number }): number {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  return Math.sqrt(dx * dx + dy * dy);
-}
-
-function angleTo(a: { x: number; y: number }, b: { x: number; y: number }): number {
-  return Math.atan2(b.y - a.y, b.x - a.x);
+/**
+ * Reconciles a Map<Entity, View> to match a current entities array. Adds
+ * views for entities new to the array, removes views whose entity is no
+ * longer present (compared by reference). Called every tick so that the
+ * AI planner's `sim.clone()`/`sim.restore()` cycles — which recreate
+ * pastille and spark objects — never leak ghost sprites onto the canvas.
+ */
+function syncMap<E, V>(
+  entities: readonly E[],
+  views: Map<E, V>,
+  attach: (e: E) => void,
+  detach: (v: V) => void,
+): void {
+  const live = new Set(entities);
+  for (const [e, v] of views) {
+    if (!live.has(e)) {
+      detach(v);
+      views.delete(e);
+    }
+  }
+  for (const e of entities) {
+    if (!views.has(e)) attach(e);
+  }
 }
 
 async function loadAssets(): Promise<InterwheelAssets> {
   const [
-    bg,
-    background,
-    water,
-    mine,
-    side,
-    panel,
-    oil,
-    star,
-    blob,
-    wheelBase,
-    wheelLight,
-    mask,
-    dust,
-    pastille,
-    pastilleCore,
-    tile,
-    motif,
-    frise,
-    explosion,
-    startExplo,
-    smoke,
-    mineParts,
-    tache,
-    wallTache,
-    goutte,
-    bubble,
-    eyes,
-    starTache,
+    bg, background, water, mine, side, panel, oil, star,
+    blob, wheelBase, wheelLight, mask, dust,
+    pastille, pastilleCore,
+    tile, motif, frise, explosion, startExplo, smoke, mineParts, tache, wallTache,
+    goutte, bubble, eyes, starTache,
   ] = await Promise.all([
     loadFrame(`${ASSET_ROOT}/bg.png`, 0, 0),
     loadFrame(`${ASSET_ROOT}/background.png`, 0, 599.95),
@@ -272,42 +176,20 @@ async function loadAssets(): Promise<InterwheelAssets> {
     loadFrame(`${ASSET_ROOT}/eyes/1.png`, 2.5, 4.5),
     loadFrame(`${ASSET_ROOT}/star-tache/1.png`, 69, 54),
   ]);
-
   return {
-    bg,
-    background,
-    water,
-    mine,
-    side,
-    panel,
-    oil,
-    star,
-    blob,
-    wheelBase,
-    wheelLight,
-    mask,
-    dust,
-    pastille,
-    pastilleCore,
-    tile,
-    motif,
-    frise,
-    explosion,
-    startExplo,
-    smoke,
-    mineParts,
-    tache,
-    wallTache,
-    goutte,
-    bubble,
-    eyes,
-    starTache,
+    bg, background, water, mine, side, panel, oil, star,
+    blob, wheelBase, wheelLight, mask, dust,
+    pastille, pastilleCore, tile, motif, frise, explosion, startExplo, smoke, mineParts, tache, wallTache,
+    goutte, bubble, eyes, starTache,
   };
 }
 
-class InterwheelGame {
+export class InterwheelGame {
   readonly app: Application;
   readonly assets: InterwheelAssets;
+  readonly host: GameHost;
+
+  // Pixi layer hierarchy.
   readonly world = new Container();
   readonly decorLayer = new Container();
   readonly shadowLayer = new Container();
@@ -330,7 +212,6 @@ class InterwheelGame {
       fill: 0xe1bd6a,
     },
   });
-
   readonly gameOverText = new Text({
     text: '',
     style: {
@@ -342,29 +223,23 @@ class InterwheelGame {
     },
   });
 
-  wheels: Wheel[] = [];
-  pastilles: Pastille[] = [];
-  sparks: Spark[] = [];
-  particles: Particle[] = [];
-  blob: Blob;
-  host: GameHost;
+  // The sole source of gameplay truth.
+  readonly sim = new InterwheelSim();
 
-  mapY = 0;
-  svy = 0;
-  roof = 0;
-  waterY = -300;
-  waterBoost = 0;
-  maxHeight = 0;
-  // Source scoring is submitted through KKApi; the visible HUD only shows height.
-  score = 0;
-  tick = 0;
-  ending = false;
-  endTimer = 0;
-  endFocusY = 0;
-  ended = false;
+  // Visuals paralleling sim entities.
+  private wheelViews: WheelView[] = [];
+  private pastilleViews = new Map<SimPastille, PastilleView>();
+  private sparkViews = new Map<SimSpark, Container>();
+  private blobView: Sprite;
+  private particles: Particle[] = [];
+
+  // Per-tick prev-state cache so render() can detect transitions even
+  // though sim's events are also fired by sim.step().
+  private prevDestroyed: boolean[] = [];
+
+  // Keyboard input aggregation — only used by `mount()`'s keyboard handler;
+  // exposed because the kadokado launcher checks `spaceHeld` there too.
   spaceHeld = false;
-  spacePressed = false;
-  pointerPressed = false;
 
   constructor(app: Application, assets: InterwheelAssets, host: GameHost) {
     this.app = app;
@@ -374,16 +249,9 @@ class InterwheelGame {
     const bg = makeSprite(assets.bg);
     this.app.stage.addChild(bg, this.world, this.hudLayer);
     this.world.addChild(
-      this.decorLayer,
-      this.shadowLayer,
-      this.oilLayer,
-      this.blobLayer,
-      this.wheelLayer,
-      this.pastilleLayer,
-      this.starLayer,
-      this.particleLayer,
-      this.waterLayer,
-      this.waterParticleLayer,
+      this.decorLayer, this.shadowLayer, this.oilLayer,
+      this.blobLayer, this.wheelLayer, this.pastilleLayer, this.starLayer,
+      this.particleLayer, this.waterLayer, this.waterParticleLayer,
     );
 
     const panel = makeSprite(assets.panel);
@@ -396,34 +264,44 @@ class InterwheelGame {
     this.gameOverText.position.set(150, 145);
     this.hudLayer.addChild(this.meterText, this.gameOverText);
 
-    const blobView = makeSprite(assets.blob[0]);
-    this.blobLayer.addChild(blobView);
-    this.blob = {
-      x: STAGE_WIDTH * 0.5,
-      y: 0,
-      vx: 0,
-      vy: 0,
-      state: BlobState.Grab,
-      wallSide: 0,
-      stateTick: 0,
-      cw: null,
-      wa: 0,
-      angle: 0,
-      wet: 0,
-      wasInWater: false,
-      blop: 0,
-      ox: STAGE_WIDTH * 0.5,
-      oy: 0,
-      vvx: 0,
-      vvy: 0,
-      view: blobView,
-      deathTick: 0,
-    };
+    this.blobView = makeSprite(assets.blob[0]);
+    this.blobLayer.addChild(this.blobView);
 
     this.reset();
   }
 
+  // ------- Setters proxied to sim, so legacy keyboard handlers work ---------
+
+  get spacePressed(): boolean {
+    return this.sim.spacePressed;
+  }
+  set spacePressed(v: boolean) {
+    this.sim.spacePressed = v;
+  }
+  get pointerPressed(): boolean {
+    return this.sim.pointerPressed;
+  }
+  set pointerPressed(v: boolean) {
+    this.sim.pointerPressed = v;
+  }
+
+  // ------- Read-only proxies into sim state used by callers (incl. AI) ------
+
+  get tick(): number { return this.sim.tick; }
+  get score(): number { return this.sim.score; }
+  get maxHeight(): number { return this.sim.maxHeight; }
+  get ended(): boolean { return this.sim.ended; }
+  get ending(): boolean { return this.sim.ending; }
+  get blob() { return this.sim.blob; }
+  get wheels(): readonly SimWheel[] { return this.sim.wheels; }
+  get pastilles(): readonly SimPastille[] { return this.sim.pastilles; }
+
+  // ============================================================================
+  // Lifecycle
+  // ============================================================================
+
   reset(): void {
+    // Wipe every layer and view container.
     this.decorLayer.removeChildren();
     this.shadowLayer.removeChildren();
     this.oilLayer.removeChildren();
@@ -434,58 +312,38 @@ class InterwheelGame {
     this.blobLayer.removeChildren();
     this.waterLayer.removeChildren();
     this.waterParticleLayer.removeChildren();
-
-    this.wheels = [];
-    this.pastilles = [];
-    this.sparks = [];
     this.particles = [];
-    this.mapY = 0;
-    this.svy = 0;
-    this.waterY = -300;
-    this.waterBoost = 0;
-    this.maxHeight = 0;
-    this.score = 0;
-    this.tick = 0;
-    this.ending = false;
-    this.endTimer = 0;
-    this.endFocusY = 0;
-    this.ended = false;
-    this.spacePressed = false;
-    this.pointerPressed = false;
+    this.wheelViews = [];
+    this.pastilleViews.clear();
+    this.sparkViews.clear();
+
     this.gameOverText.text = '';
     this.meterText.text = '0m';
     this.host.updateScore(0);
     this.host.updateMetric({ key: 'height', label: 'Height', value: 0, unit: 'm' });
 
-    this.buildDecor();
-    this.initWheels();
-    this.initPastilles();
+    this.sim.reset(Math.random);
+    this.prevDestroyed = this.sim.wheels.map((w) => w.destroyed);
 
-    this.blob.view = makeSprite(this.assets.blob[0]);
-    this.blobLayer.addChild(this.blob.view);
-    this.blob.x = STAGE_WIDTH * 0.5;
-    this.blob.y = 0;
-    this.blob.vx = 0;
-    this.blob.vy = 0;
-    this.blob.wet = 0;
-    this.blob.wasInWater = false;
-    this.blob.blop = 0;
-    this.blob.ox = this.blob.x;
-    this.blob.oy = this.blob.y;
-    this.blob.vvx = 0;
-    this.blob.vvy = 0;
-    this.blob.deathTick = 0;
-    this.blob.stateTick = 0;
-    this.grabWheel(this.wheels[START_WHEEL_ID]);
+    this.buildDecor();
+    for (const wheel of this.sim.wheels) {
+      this.attachWheelView(wheel);
+    }
+    for (const pastille of this.sim.pastilles) {
+      this.attachPastilleView(pastille);
+    }
+
+    this.blobView = makeSprite(this.assets.blob[0]);
+    this.blobLayer.addChild(this.blobView);
+
     const water = makeSprite(this.assets.water);
-    water.position.set(0, this.waterY);
+    water.position.set(0, this.sim.waterY);
     this.waterLayer.addChild(water);
 
-    this.scrollMap(true);
     this.render();
   }
 
-  buildDecor(): void {
+  private buildDecor(): void {
     for (let section = 0; section < DECOR_SECTIONS; section += 1) {
       const sectionTop = -(section + 1) * DECOR_SECTION_HEIGHT;
       const base = new Graphics();
@@ -526,162 +384,51 @@ class InterwheelGame {
     }
   }
 
-  initWheels(): void {
-    const list: Wheel[] = [];
-    let oldWheel = this.createWheelData();
-    oldWheel.ray = (STAGE_WIDTH - 2 * (SIDE + SPACE)) * 0.5;
-    oldWheel.x = STAGE_WIDTH * 0.5;
-    oldWheel.y = 0;
-    oldWheel.speed = 0.1;
-    list.push(oldWheel);
+  private attachWheelView(wheel: SimWheel): void {
+    const group = new Container();
+    group.position.set(wheel.x, wheel.y);
 
-    for (let i = 0; i < WMAX; i += 1) {
-      const c = clamp(i / WMAX + (Math.random() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
-      const c2 = clamp(i / WMAX + (Math.random() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
-      const c3 = clamp(i / WMAX + (Math.random() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
-      const wheel = this.createWheelData();
+    const shadow = makeSprite(this.assets.mask[wheel.fr - 1] ?? this.assets.mask[this.assets.mask.length - 1]);
+    shadow.tint = 0x000000;
+    shadow.alpha = 0.2;
+    shadow.y = 6;
+    shadow.scale.set((wheel.ray * 2) / 100);
+    this.shadowLayer.addChild(shadow);
 
-      wheel.ray = WHEEL_RAY_MIN + (1 - c2) * (WHEEL_RAY_MAX - WHEEL_RAY_MIN) + Math.random() * WHEEL_RAY_RANDOM;
-      wheel.speed = WHEEL_SPEED_MIN + c3 * (WHEEL_SPEED_MAX - WHEEL_SPEED_MIN) + Math.random() * WHEEL_SPEED_RANDOM;
+    const dust = makeSprite(this.assets.dust[0]);
+    dust.scale.set((wheel.ray * 2) / 100);
 
-      const dist = WHEEL_DIST_MIN + c * (WHEEL_DIST_MAX - WHEEL_DIST_MIN) + oldWheel.ray + wheel.ray;
-      const lim = SIDE + SPACE + wheel.ray;
-      let tries = 0;
-      while (tries < 200) {
-        const a = -1.57 + (Math.random() * 2 - 1) * 1.4;
-        wheel.x = oldWheel.x + Math.cos(a) * dist;
-        wheel.y = oldWheel.y + Math.sin(a) * dist;
-        let valid = wheel.x > lim && wheel.x < STAGE_WIDTH - lim;
-        const prevPrev = list[list.length - 2];
-        if (valid && prevPrev && distance(wheel, prevPrev) < wheel.ray + prevPrev.ray) {
-          valid = false;
-        }
-        if (valid) {
-          break;
-        }
-        tries += 1;
-      }
-
-      while (Math.random() + 0.4 < c) {
-        this.addMine(wheel);
-      }
-
-      if (Math.random() > c) {
-        const interWheel = this.createWheelData();
-        interWheel.y = (wheel.y + oldWheel.y) * 0.5;
-        let tr = 0;
-        while (tr <= 30) {
-          interWheel.ray = WHEEL_RAY_MIN + 10 + Math.random() * (WHEEL_RAY_MAX - WHEEL_RAY_MIN);
-          interWheel.speed = WHEEL_SPEED_MIN + Math.random() * (WHEEL_SPEED_MAX - WHEEL_SPEED_MIN);
-          const m = SIDE + SPACE + interWheel.ray;
-          interWheel.x = STAGE_WIDTH - m;
-          const valid =
-            distance(interWheel, wheel) >= interWheel.ray + wheel.ray + SPACE &&
-            distance(interWheel, oldWheel) >= interWheel.ray + oldWheel.ray + SPACE;
-          if (valid) {
-            list.push(interWheel);
-            break;
-          }
-          tr += 1;
-        }
-      }
-
-      oldWheel = wheel;
-      list.push(wheel);
-    }
-
-    this.roof = oldWheel.y - oldWheel.ray;
-    this.wheels = list;
-    for (const wheel of this.wheels) {
-      this.attachWheel(wheel);
-    }
-  }
-
-  createWheelData(): Wheel {
-    return {
-      x: 0,
-      y: 0,
-      ray: 20,
-      speed: 0.1,
-      a: 0,
-      fr: randomInt(5) + 1,
-      mines: [],
-      mineSprites: [],
-      destroyed: false,
-      boomAngle: null,
-      active: false,
-      dustTick: 0,
-      group: new Container(),
-      spin: new Container(),
-      shadow: new Sprite(),
-      dust: new Sprite(),
-      stains: new Container(),
-      stainMask: new Sprite(),
-    };
-  }
-
-  addMine(wheel: Wheel): void {
-    const perim = Math.PI * 2 * wheel.ray;
-    if (wheel.mines.length > 0 && perim / wheel.mines.length < MINE_SPACE * 2) {
-      return;
-    }
-
-    let tries = 0;
-    while (tries <= 20) {
-      const a = Math.random() * Math.PI * 2;
-      const valid = wheel.mines.every((mine) => Math.abs(hMod(mine - a, Math.PI)) * wheel.ray >= MINE_SPACE);
-      if (valid) {
-        wheel.mines.push(a);
-        return;
-      }
-      tries += 1;
-    }
-  }
-
-  attachWheel(wheel: Wheel): void {
-    wheel.group = new Container();
-    wheel.group.position.set(wheel.x, wheel.y);
-
-    wheel.shadow = makeSprite(this.assets.mask[wheel.fr - 1] ?? this.assets.mask[this.assets.mask.length - 1]);
-    wheel.shadow.tint = 0x000000;
-    wheel.shadow.alpha = 0.2;
-    wheel.shadow.y = 6;
-    wheel.shadow.scale.set((wheel.ray * 2) / 100);
-    this.shadowLayer.addChild(wheel.shadow);
-
-    wheel.dust = makeSprite(this.assets.dust[0]);
-    wheel.dust.scale.set((wheel.ray * 2) / 100);
-
-    wheel.spin = new Container();
-    wheel.spin.scale.set((wheel.ray * 2) / 100);
-    wheel.mineSprites = [];
-
+    const spin = new Container();
+    spin.scale.set((wheel.ray * 2) / 100);
+    const mineSprites: Sprite[] = [];
     for (const mineAngle of wheel.mines) {
-      const mine = makeSprite(this.assets.mine);
-      mine.position.set(Math.cos(mineAngle) * 50, Math.sin(mineAngle) * 50);
-      mine.scale.set(100 / (wheel.ray * 2));
-      mine.rotation = mineAngle;
-      wheel.spin.addChild(mine);
-      wheel.mineSprites.push(mine);
+      const mineSprite = makeSprite(this.assets.mine);
+      mineSprite.position.set(Math.cos(mineAngle) * 50, Math.sin(mineAngle) * 50);
+      mineSprite.scale.set(100 / (wheel.ray * 2));
+      mineSprite.rotation = mineAngle;
+      spin.addChild(mineSprite);
+      mineSprites.push(mineSprite);
     }
 
     const base = makeSprite(this.assets.wheelBase[wheel.fr - 1]);
-    wheel.spin.addChild(base);
+    spin.addChild(base);
 
-    wheel.stains = new Container();
-    wheel.stainMask = makeSprite(this.assets.mask[wheel.fr - 1] ?? this.assets.mask[this.assets.mask.length - 1]);
-    wheel.stains.mask = wheel.stainMask;
-    wheel.stainMask.renderable = false;
-    wheel.spin.addChild(wheel.stains, wheel.stainMask);
+    const stains = new Container();
+    const stainMask = makeSprite(this.assets.mask[wheel.fr - 1] ?? this.assets.mask[this.assets.mask.length - 1]);
+    stains.mask = stainMask;
+    stainMask.renderable = false;
+    spin.addChild(stains, stainMask);
 
     const lightFrame = this.assets.wheelLight[Math.min(wheel.fr - 1, this.assets.wheelLight.length - 1)];
     const light = makeSprite(lightFrame);
     light.scale.set(wheel.fr === 2 ? (wheel.ray * 2) / 100 : 1);
-    wheel.group.addChild(wheel.dust, wheel.spin, light);
-    this.wheelLayer.addChild(wheel.group);
+    group.addChild(dust, spin, light);
+    this.wheelLayer.addChild(group);
+
+    this.wheelViews.push({ group, spin, shadow, dust, stains, stainMask, mineSprites });
   }
 
-  makePastilleView(type: number): { view: Container; core: Sprite } {
+  private makePastilleView(type: number): PastilleView {
     const view = new Container();
     const body = makeSprite(this.assets.pastille[0]);
     const core = makeSprite(this.assets.pastilleCore[type] ?? this.assets.pastilleCore[0]);
@@ -689,129 +436,195 @@ class InterwheelGame {
     return { view, core };
   }
 
-  initPastilles(): void {
-    for (let y = -100; y > this.roof; y -= 20) {
-      if (Math.random() >= y / this.roof) {
-        continue;
-      }
-
-      let type = 0;
-      if (randomInt(30) === 0) {
-        type = 1;
-      }
-      if (randomInt(200) === 0) {
-        type = 2;
-      }
-
-      const ray = 20;
-      const m = SIDE + ray;
-      const pastilleView = this.makePastilleView(type);
-      const pastille = {
-        x: m + Math.random() * (STAGE_WIDTH - 2 * m),
-        y,
-        ray,
-        type,
-        phase: Math.random() * Math.PI * 2,
-        active: false,
-        view: pastilleView.view,
-        core: pastilleView.core,
-      };
-
-      const overlapsWheel = this.wheels.some((wheel) => distance(pastille, wheel) < wheel.ray + ray);
-      if (overlapsWheel) {
-        continue;
-      }
-
-      pastille.view.position.set(pastille.x, pastille.y);
-      this.pastilleLayer.addChild(pastille.view);
-      this.pastilles.push(pastille);
-    }
+  private attachPastilleView(pastille: SimPastille): void {
+    const pv = this.makePastilleView(pastille.type);
+    pv.view.position.set(pastille.x, pastille.y);
+    this.pastilleLayer.addChild(pv.view);
+    this.pastilleViews.set(pastille, pv);
   }
 
-  checkPress(): boolean {
-    if (this.spacePressed) {
-      this.spacePressed = false;
-      return true;
-    }
-    if (this.pointerPressed) {
-      this.pointerPressed = false;
-      return true;
-    }
-    return false;
+  private attachSparkView(spark: SimSpark, x: number, y: number): void {
+    const view = new Container();
+    const body = makeSprite(this.assets.pastille[0]);
+    const core = makeSprite(this.assets.pastilleCore[spark.type] ?? this.assets.pastilleCore[0]);
+    view.addChild(body, core);
+    view.position.set(x, y);
+    this.particleLayer.addChild(view);
+    this.sparkViews.set(spark, view);
   }
 
-  isElementActive(element: { y: number; ray: number }): boolean {
-    const viewTop = -this.mapY;
-    const viewBottom = viewTop + STAGE_HEIGHT;
-    return element.y - element.ray < viewBottom && element.y + element.ray > viewTop;
-  }
+  // ============================================================================
+  // Tick driver
+  // ============================================================================
 
   update(): void {
-    this.tick += 1;
-
-    if (this.ended) {
-      this.updateParticles();
-      this.render();
-      return;
-    }
-
-    if (this.ending) {
-      this.updateWheels();
-      this.updateBlobDeath();
-      this.separateSparks();
-      this.updateSparks();
-      this.updateParticles();
-      this.updateBlobWaterEffects();
-      this.scrollMap(false);
-      this.endTimer -= 1;
-      if (this.endTimer < 0) {
-        this.finishRun();
-      }
-      this.render();
-      return;
-    }
-
-    this.updateWheels();
-    this.checkWheelCollision();
-    this.updatePastilles();
-    this.updateBlob();
-    this.separateSparks();
-    this.updateSparks();
+    this.sim.step(false, Math.random);
+    this.processSimEvents();
+    this.spawnAmbientCosmetics();
     this.updateParticles();
-    this.updateWaterAndScore();
-    this.scrollMap(false);
     this.render();
+    this.updateHud();
+    if (this.sim.events.runFinished) {
+      const heightMeters = Math.floor(this.sim.maxHeight * 0.2);
+      this.host.endRun({
+        score: this.sim.score,
+        secondary: { key: 'height', label: 'Height', value: heightMeters, unit: 'm' },
+      });
+    }
+    // Snapshot the per-wheel destroyed flag so the renderer can detect
+    // brand-new explosions even on the next tick (the sim event clears).
+    for (let i = 0; i < this.sim.wheels.length; i += 1) {
+      this.prevDestroyed[i] = this.sim.wheels[i].destroyed;
+    }
   }
 
-  updateWheels(): void {
-    for (const wheel of this.wheels) {
-      if (!this.isElementActive(wheel)) {
-        wheel.active = false;
-        continue;
+  // ------------- Sim → renderer event consumers -----------------------------
+
+  private processSimEvents(): void {
+    const ev = this.sim.events;
+
+    if (ev.blobJumpAngle !== null) {
+      this.spawnJumpParticles(ev.blobJumpAngle);
+    }
+
+    for (const me of ev.mineExplosions) {
+      const view = this.wheelViews[me.wheelIdx];
+      view?.mineSprites[me.mineIdx]?.removeFromParent();
+      this.spawnMineExplosion(me);
+    }
+
+    if (ev.blobExploded) {
+      this.blobView.visible = false;
+      this.spawnBlobExplosion(ev.blobExploded.ba, ev.blobExploded.x, ev.blobExploded.y);
+    }
+
+    if (ev.blobDrowned) {
+      this.startBlobDrowningVisual();
+    }
+
+    if (ev.endingStarted) {
+      this.gameOverText.text = '';
+    }
+
+    // Spark-collected animations (event-driven; the view itself is removed
+    // by the diff-sync below).
+    for (const cs of ev.collectedSparks) {
+      this.spawnSparkCollectedAnimation(cs);
+    }
+
+    // Diff-sync pastille and spark views. This is robust to the AI's plan
+    // cycle, which calls `sim.restore()` and replaces pastille / spark
+    // object references — so a ref-keyed map otherwise leaks stale views.
+    // Walking both directions every tick keeps the rendered set exactly
+    // aligned with the simulator's logical arrays.
+    syncMap(this.sim.pastilles, this.pastilleViews,
+      (pastille) => this.attachPastilleView(pastille),
+      (pv) => pv.view.removeFromParent());
+    syncMap(this.sim.sparks, this.sparkViews,
+      (spark) => this.attachSparkView(spark, spark.x, spark.y),
+      (view) => view.removeFromParent());
+  }
+
+  // ------------- Cosmetic spawners (random, view-only) ----------------------
+
+  private spawnAmbientCosmetics(): void {
+    const blob = this.sim.blob;
+
+    // Fly trail.
+    if (blob.state === BLOB_STATE_FLY && Math.random() < blob.blop) {
+      const fr = 0.4 + Math.random() * 0.4;
+      this.spawnParticle(
+        this.assets.oil,
+        blob.x + (Math.random() * 2 - 1) * 3,
+        blob.y + (Math.random() * 2 - 1) * 3,
+        blob.vx * fr,
+        blob.vy * fr,
+        {
+          scale: 0.5 + Math.random() * 0.5 + blob.blop * 0.5,
+          ttl: 10 + Math.random() * 10,
+          weight: 0.2 + Math.random() * 0.2,
+          fadeMode: 'scale',
+          layer: this.oilLayer,
+        },
+      );
+    }
+
+    // Destroyed-wheel oil dust.
+    for (const wheel of this.sim.wheels) {
+      if (!wheel.destroyed || wheel.boomAngle === null) continue;
+      if (Math.random() >= Math.abs(wheel.speed) * 5) continue;
+      const a = wheel.a + wheel.boomAngle;
+      const dist = wheel.ray - (5 + Math.random() * 5);
+      this.spawnParticle(
+        this.assets.oil,
+        wheel.x + Math.cos(a) * dist,
+        wheel.y + Math.sin(a) * dist,
+        0, 0,
+        {
+          scale: 0.8 + Math.random() * 0.8,
+          ttl: 10 + Math.random() * 20,
+          weight: 0.1 + Math.random() * 0.1,
+          fadeMode: 'scale',
+        },
+      );
+    }
+
+    // Pastille pulse.
+    for (const [pastille, view] of this.pastilleViews) {
+      if (!pastille.active) continue;
+      view.core.scale.set(0.9 + Math.random() * 0.2);
+    }
+
+    // Spark sparkles.
+    for (const spark of this.sim.sparks) {
+      if (Math.random() < 0.4) {
+        this.spawnParticle(
+          this.assets.star, spark.x, spark.y,
+          spark.vx * (0.5 + (Math.random() * 2 - 1) * 0.1),
+          spark.vy * (0.5 + (Math.random() * 2 - 1) * 0.1),
+          {
+            ttl: 10 + Math.random() * 10,
+            weight: 0.1 + Math.random() * 0.1,
+            fadeMode: 'scale',
+            layer: this.starLayer,
+          },
+        );
       }
-      if (!wheel.active) {
-        wheel.active = true;
-        wheel.dustTick = 0;
-        continue;
-      }
-      wheel.dustTick += 1;
-      wheel.a += wheel.speed;
-      if (wheel.destroyed) {
-        wheel.speed *= 0.97;
-        if (wheel.boomAngle !== null && Math.random() < Math.abs(wheel.speed) * 5) {
-          const a = wheel.a + wheel.boomAngle;
-          const dist = wheel.ray - (5 + Math.random() * 5);
+    }
+
+    // Water effects (bubbles + splash drops) — based on observed wet state.
+    if (blob.state !== BLOB_STATE_DEAD) {
+      const inWater = blob.y - BLOB_RAY > this.sim.waterY;
+      if (inWater) {
+        if (Math.random() < blob.wet) {
           this.spawnParticle(
-            this.assets.oil,
-            wheel.x + Math.cos(a) * dist,
-            wheel.y + Math.sin(a) * dist,
-            0,
-            0,
+            this.assets.tache[0], blob.x, blob.y,
+            blob.vx * 0.5 + (Math.random() * 2 - 1),
+            blob.vy * 0.5 + (Math.random() * 2 - 1) * 0.5,
             {
-              scale: 0.8 + Math.random() * 0.8,
-              ttl: 10 + Math.random() * 20,
-              weight: 0.1 + Math.random() * 0.1,
+              scale: 1 + blob.wet * 1.5 + Math.random(),
+              life: null, weight: 0, fadeMode: 'none',
+              layer: this.oilLayer, frames: this.assets.tache,
+            },
+          );
+        }
+        if (Math.random() < blob.wet) {
+          this.spawnBubble(blob.x + Math.random() * BLOB_RAY, blob.y + Math.random() * BLOB_RAY, blob.vy * 0.8);
+        }
+      } else if (blob.wet > 0) {
+        if (Math.random() * 0.5 < blob.wet) {
+          const coef = 0.2 + Math.random() * 0.4;
+          this.spawnParticle(
+            this.assets.goutte,
+            blob.x + (Math.random() * 2 - 1) * 6,
+            blob.y + (Math.random() * 2 - 1) * 6,
+            (blob.vvx + blob.vx) * coef, (blob.vvy + blob.vy) * coef,
+            {
+              scale: 0.6 + blob.wet * 0.8 + Math.random() * 0.5,
+              ttl: 10 + Math.random() * 10,
+              weight: 0,
               fadeMode: 'scale',
+              layer: this.oilLayer,
             },
           );
         }
@@ -819,120 +632,8 @@ class InterwheelGame {
     }
   }
 
-  updateBlob(): void {
-    const blob = this.blob;
-
-    if (blob.state === BlobState.Grab && blob.cw) {
-      blob.stateTick += 1;
-      const a = blob.cw.a - blob.wa;
-      blob.x = blob.cw.x + Math.cos(a) * blob.cw.ray;
-      blob.y = blob.cw.y + Math.sin(a) * blob.cw.ray;
-      blob.angle = a;
-      blob.vx = 0;
-      blob.vy = 0;
-      if (this.checkPress()) {
-        this.jump(a);
-        const oldX = blob.x;
-        const oldY = blob.y;
-        this.integrateBlobFlight(false);
-        blob.vvx = oldX - blob.x;
-        blob.vvy = oldY - blob.y;
-        blob.ox = blob.x;
-        blob.oy = blob.y;
-        this.checkSideCollision();
-      }
-      return;
-    }
-
-    if (blob.state === BlobState.Wall) {
-      blob.stateTick += 1;
-      blob.wallSide = blob.wallSide || (blob.x < STAGE_WIDTH * 0.5 ? -1 : 1);
-      blob.x = blob.wallSide < 0 ? SIDE : STAGE_WIDTH - SIDE;
-      blob.vx = 0;
-      blob.vy += 0.6;
-      blob.vy *= 0.92;
-      if (this.checkPress()) {
-        const sens = -blob.wallSide;
-        this.jump(-Math.PI * 0.5 + JUMP_SIDE_ANGLE * sens);
-        this.integrateBlobFlight(false);
-      } else {
-        blob.y += blob.vy;
-      }
-      return;
-    }
-
-    if (blob.state === BlobState.Fly) {
-      blob.stateTick += 1;
-      this.spawnFlyTrail();
-      const oldX = blob.x;
-      const oldY = blob.y;
-      this.integrateBlobFlight();
-      blob.vvx = oldX - blob.x;
-      blob.vvy = oldY - blob.y;
-      blob.ox = blob.x;
-      blob.oy = blob.y;
-    }
-
-    this.checkSideCollision();
-  }
-
-  spawnFlyTrail(): void {
-    const blob = this.blob;
-    blob.blop = Math.max(BLOB_BLOP_MIN, blob.blop * BLOB_BLOP_FRICT);
-    if (Math.random() >= blob.blop) {
-      return;
-    }
-
-    const fr = 0.4 + Math.random() * 0.4;
-    this.spawnParticle(
-      this.assets.oil,
-      blob.x + (Math.random() * 2 - 1) * 3,
-      blob.y + (Math.random() * 2 - 1) * 3,
-      blob.vx * fr,
-      blob.vy * fr,
-      {
-        scale: 0.5 + Math.random() * 0.5 + blob.blop * 0.5,
-        ttl: 10 + Math.random() * 10,
-        weight: 0.2 + Math.random() * 0.2,
-        fadeMode: 'scale',
-        layer: this.oilLayer,
-      },
-    );
-  }
-
-  integrateBlobFlight(applyWaterDrag = true): void {
-    const blob = this.blob;
-    if (applyWaterDrag && blob.state === BlobState.Fly && blob.wasInWater) {
-      blob.vx *= 0.95;
-      blob.vy *= 0.95;
-    }
-    blob.vy += BLOB_WEIGHT;
-    blob.vx *= 0.98;
-    blob.vy *= 0.98;
-
-    blob.x += blob.vx;
-    blob.y += blob.vy;
-  }
-
-  checkSideCollision(): void {
-    const blob = this.blob;
-    if (blob.state === BlobState.Fly && (blob.x < SIDE || blob.x > STAGE_WIDTH - SIDE)) {
-      this.enterWall(blob.x < SIDE ? -1 : 1);
-    }
-  }
-
-  enterWall(side: -1 | 1): void {
-    const blob = this.blob;
-    blob.state = BlobState.Wall;
-    blob.wallSide = side;
-    blob.stateTick = 0;
-    blob.x = side < 0 ? SIDE : STAGE_WIDTH - SIDE;
-    blob.vx = 0;
-    blob.vy = 0;
-  }
-
-  jump(a: number): void {
-    const blob = this.blob;
+  private spawnJumpParticles(a: number): void {
+    const blob = this.sim.blob;
     for (let i = 0; i < 4; i += 1) {
       const dec = Math.random() * 2 - 1;
       const na = a + dec * 0.8;
@@ -945,81 +646,21 @@ class InterwheelGame {
         layer: this.oilLayer,
       });
     }
-
-    blob.vx = Math.cos(a) * BLOB_JUMP;
-    blob.vy = Math.sin(a) * BLOB_JUMP;
-    blob.blop = BLOB_BLOP_START;
-    blob.ox = blob.x;
-    blob.oy = blob.y;
-    blob.vvx = 0;
-    blob.vvy = 0;
-    blob.state = BlobState.Fly;
-    blob.wallSide = 0;
-    blob.stateTick = 0;
-    blob.cw = null;
   }
 
-  grabWheel(wheel: Wheel): void {
-    const blob = this.blob;
-    const ba = angleTo(blob, wheel) + Math.PI;
-    blob.cw = wheel;
-    blob.wa = hMod(wheel.a - ba, Math.PI);
-    blob.state = BlobState.Grab;
-    blob.wallSide = 0;
-    blob.stateTick = 0;
-    blob.vx = 0;
-    blob.vy = 0;
-    const a = wheel.a - blob.wa;
-    blob.x = wheel.x + Math.cos(a) * wheel.ray;
-    blob.y = wheel.y + Math.sin(a) * wheel.ray;
-    blob.angle = a;
-  }
+  private spawnMineExplosion(me: { wheelIdx: number; mineIdx: number; mineAngle: number; x: number; y: number; ba: number }): void {
+    const wheel = this.sim.wheels[me.wheelIdx];
+    const view = this.wheelViews[me.wheelIdx];
 
-  checkWheelCollision(): void {
-    const blob = this.blob;
-    if (blob.state !== BlobState.Fly) {
-      return;
-    }
-
-    for (const wheel of this.wheels) {
-      if (!wheel.active) {
-        continue;
-      }
-      if (distance(blob, wheel) >= wheel.ray + BLOB_RAY) {
-        continue;
-      }
-
-      const ba = angleTo(blob, wheel) + Math.PI;
-      for (let i = 0; i < wheel.mines.length; i += 1) {
-        const mineAngle = wheel.mines[i];
-        const da = hMod(mineAngle + wheel.a - ba, Math.PI);
-        if (Math.abs(da) * wheel.ray < MINE_SPACE) {
-          const x = wheel.x + Math.cos(wheel.a + mineAngle) * wheel.ray;
-          const y = wheel.y + Math.sin(wheel.a + mineAngle) * wheel.ray;
-          wheel.destroyed = true;
-          wheel.boomAngle = mineAngle;
-          wheel.mineSprites[i]?.removeFromParent();
-          this.explodeMine(wheel, mineAngle, x, y, ba);
-          this.explodeBlob(ba);
-          return;
-        }
-      }
-
-      this.grabWheel(wheel);
-      return;
-    }
-  }
-
-  explodeMine(wheel: Wheel, mineAngle: number, x: number, y: number, ba: number): void {
-    this.spawnAnimation(this.assets.explosion, x, y, 0.5);
+    this.spawnAnimation(this.assets.explosion, me.x, me.y, 0.5);
 
     for (let i = 0; i < 5; i += 1) {
-      const a = ba + (Math.random() * 2 - 1) * 1.57;
+      const a = me.ba + (Math.random() * 2 - 1) * 1.57;
       const ray = 4;
       const sp = 1 + Math.random() * 4;
       const ca = Math.cos(a);
       const sa = Math.sin(a);
-      this.spawnParticle(this.assets.mineParts[randomInt(this.assets.mineParts.length)], x + ca * ray, y + sa * ray, ca * sp, sa * sp, {
+      this.spawnParticle(this.assets.mineParts[randomInt(this.assets.mineParts.length)], me.x + ca * ray, me.y + sa * ray, ca * sp, sa * sp, {
         scale: 0.8 + Math.random() * 0.4,
         ttl: 10 + Math.random() * 30,
         weight: 0.1 + Math.random() * 0.2,
@@ -1028,11 +669,10 @@ class InterwheelGame {
         rotation: Math.random() * Math.PI * 2,
       });
     }
-
     for (let i = 0; i < 6; i += 1) {
       const a = Math.random() * Math.PI * 2;
       const sp = 0.5 + Math.random() * 2;
-      this.spawnParticle(this.assets.smoke[randomInt(this.assets.smoke.length)], x, y, Math.cos(a) * sp, Math.sin(a) * sp, {
+      this.spawnParticle(this.assets.smoke[randomInt(this.assets.smoke.length)], me.x, me.y, Math.cos(a) * sp, Math.sin(a) * sp, {
         scale: 0.8 + Math.random() * 0.6,
         ttl: 10 + Math.random() * 20,
         weight: -(0.1 + Math.random() * 0.3),
@@ -1041,71 +681,55 @@ class InterwheelGame {
         rotation: Math.random() * Math.PI * 2,
       });
     }
-
     for (let i = 0; i < 4; i += 1) {
-      const a = ba + (Math.random() * 2 - 1) * 1.57;
+      const a = me.ba + (Math.random() * 2 - 1) * 1.57;
       const sp = Math.random() * 36;
       this.spawnParticle(
         this.assets.wallTache[randomInt(this.assets.wallTache.length)],
-        x + Math.cos(a) * sp,
-        y + Math.sin(a) * sp,
-        0,
-        0,
+        me.x + Math.cos(a) * sp, me.y + Math.sin(a) * sp,
+        0, 0,
         {
           scale: 0.5 + Math.random() * 0.5,
           rotation: Math.random() * Math.PI * 2,
           weight: Math.random() * 0.01,
-          frict: 1,
-          life: null,
-          fadeMode: 'none',
+          frict: 1, life: null, fadeMode: 'none',
           layer: this.decorLayer,
         },
       );
     }
-
-    this.spawnParticle(this.assets.starTache, x, y, 0, 0, {
-      scale: 0.4,
-      weight: 0,
-      frict: 1,
-      life: null,
-      fadeMode: 'none',
-      vs: 0.3,
-      sFrict: 0.65,
-      rotation: Math.random() * Math.PI * 2,
+    this.spawnParticle(this.assets.starTache, me.x, me.y, 0, 0, {
+      scale: 0.4, weight: 0, frict: 1, life: null, fadeMode: 'none',
+      vs: 0.3, sFrict: 0.65, rotation: Math.random() * Math.PI * 2,
       layer: this.decorLayer,
     });
 
-    const bx = Math.cos(mineAngle) * 50;
-    const by = Math.sin(mineAngle) * 50;
-    const scm = 100 / (wheel.ray * 2);
-    for (let i = 0; i < 4; i += 1) {
-      const stain = makeSprite(this.assets.wallTache[randomInt(this.assets.wallTache.length)]);
-      const a = mineAngle + Math.PI + (Math.random() * 2 - 1) * 1.57;
-      const sp = Math.random() * 10 * scm;
-      stain.position.set(bx + Math.cos(a) * sp, by + Math.sin(a) * sp);
-      stain.scale.set((0.5 + Math.random() * 0.6) * scm);
-      stain.rotation = Math.random() * Math.PI * 2;
-      wheel.stains.addChild(stain);
+    if (view) {
+      const bx = Math.cos(me.mineAngle) * 50;
+      const by = Math.sin(me.mineAngle) * 50;
+      const scm = 100 / (wheel.ray * 2);
+      for (let i = 0; i < 4; i += 1) {
+        const stain = makeSprite(this.assets.wallTache[randomInt(this.assets.wallTache.length)]);
+        const a = me.mineAngle + Math.PI + (Math.random() * 2 - 1) * 1.57;
+        const sp = Math.random() * 10 * scm;
+        stain.position.set(bx + Math.cos(a) * sp, by + Math.sin(a) * sp);
+        stain.scale.set((0.5 + Math.random() * 0.6) * scm);
+        stain.rotation = Math.random() * Math.PI * 2;
+        view.stains.addChild(stain);
+      }
     }
 
     const eyes = makeSprite(this.assets.eyes);
-    eyes.position.set(x, y);
-    eyes.rotation = ba;
+    eyes.position.set(me.x, me.y);
+    eyes.rotation = me.ba;
     this.decorLayer.addChild(eyes);
   }
 
-  explodeBlob(ba: number): void {
-    const blob = this.blob;
-    blob.state = BlobState.Dead;
-    blob.deathTick = 0;
-    blob.stateTick = 0;
-    blob.view.visible = false;
-
+  private spawnBlobExplosion(ba: number, x: number, y: number): void {
     for (let i = 0; i < 32; i += 1) {
       const dec = Math.random() * 2 - 1;
       const a = ba + dec * 0.8;
       const sp = (14 - Math.abs(dec) * 8) * (0.3 + Math.random() * 0.7);
-      this.spawnParticle(this.assets.oil, blob.x, blob.y, Math.cos(a) * sp, Math.sin(a) * sp, {
+      this.spawnParticle(this.assets.oil, x, y, Math.cos(a) * sp, Math.sin(a) * sp, {
         scale: 0.5 + (i / 32) * 1.5,
         ttl: 10 + Math.random() * 20,
         weight: 0.2 + (i / 32) * 0.2,
@@ -1113,248 +737,35 @@ class InterwheelGame {
         layer: this.oilLayer,
       });
     }
-    this.endGame();
   }
 
-  startBlobDrowningDeath(): void {
-    const blob = this.blob;
-    if (blob.state === BlobState.Dead && blob.view.visible) {
-      return;
-    }
-
-    blob.state = BlobState.Dead;
-    blob.deathTick = 0;
-    blob.stateTick = 0;
-    blob.wallSide = 0;
-    blob.view.removeFromParent();
-    this.particleLayer.addChild(blob.view);
-    blob.view.visible = true;
-    blob.view.rotation = 0;
-    blob.view.scale.set(1);
-    setFrame(blob.view, this.assets.blob[BLOB_DEATH_FRAME_START]);
+  private startBlobDrowningVisual(): void {
+    this.blobView.removeFromParent();
+    this.particleLayer.addChild(this.blobView);
+    this.blobView.visible = true;
+    this.blobView.rotation = 0;
+    this.blobView.scale.set(1);
+    setFrame(this.blobView, this.assets.blob[BLOB_DEATH_FRAME_START]);
   }
 
-  updateBlobDeath(): void {
-    const blob = this.blob;
-    if (blob.state !== BlobState.Dead || !blob.view.visible) {
-      return;
-    }
-
-    blob.wet -= 0.02;
-    blob.vy += BLOB_WEIGHT;
-    blob.vx *= 0.8;
-    blob.vy *= 0.8;
-    blob.x += blob.vx;
-    blob.y += blob.vy;
-    blob.deathTick += 1;
+  private spawnSparkCollectedAnimation(cs: { x: number; y: number; type: number; score: number }): void {
+    void cs.score;
+    void cs.type;
+    this.spawnAnimation(this.assets.startExplo, cs.x, cs.y, 0.6, this.starLayer);
+    this.host.updateScore(this.sim.score);
   }
 
-  updatePastilles(): void {
-    const blob = this.blob;
-    for (let i = 0; i < this.pastilles.length; i += 1) {
-      const pastille = this.pastilles[i];
-      if (!this.isElementActive(pastille)) {
-        pastille.active = false;
-        continue;
-      }
-      if (!pastille.active) {
-        pastille.active = true;
-        continue;
-      }
-      if (distance(blob, pastille) < 70) {
-        this.collectPastille(pastille);
-        this.pastilles.splice(i, 1);
-        i -= 1;
-        continue;
-      }
+  // ------------- Particle pool -----------------------------------------------
 
-      const scale = 0.9 + Math.random() * 0.2;
-      pastille.core.scale.set(scale);
-    }
-  }
-
-  collectPastille(pastille: Pastille): void {
-    pastille.view.removeFromParent();
-    const { view } = this.makePastilleView(pastille.type);
-    view.position.set(pastille.x, pastille.y);
-    this.particleLayer.addChild(view);
-    this.sparks.push({
-      x: pastille.x,
-      y: pastille.y,
-      vx: 0,
-      vy: 0,
-      type: pastille.type,
-      score: SCORE_PASTILLE[pastille.type],
-      distLimit: 5,
-      coefLimit: 0.1,
-      coef: 0.01,
-      view,
-    });
-  }
-
-  updateSparks(): void {
-    const blob = this.blob;
-    for (let i = 0; i < this.sparks.length; i += 1) {
-      const spark = this.sparks[i];
-      spark.vx *= 0.9;
-      spark.vy *= 0.9;
-      spark.x += spark.vx;
-      spark.y += spark.vy;
-
-      spark.distLimit += 0.05;
-      spark.coefLimit += 0.001;
-      spark.coef = Math.min(spark.coef + 0.005, spark.coefLimit);
-      spark.vx += clamp((blob.x - spark.x) * spark.coef, -spark.distLimit, spark.distLimit);
-      spark.vy += clamp((blob.y - spark.y) * spark.coef, -spark.distLimit, spark.distLimit);
-      spark.view.position.set(spark.x, spark.y);
-
-      if (Math.random() < 0.4) {
-        this.spawnParticle(this.assets.star, spark.x, spark.y, spark.vx * (0.5 + (Math.random() * 2 - 1) * 0.1), spark.vy * (0.5 + (Math.random() * 2 - 1) * 0.1), {
-          ttl: 10 + Math.random() * 10,
-          weight: 0.1 + Math.random() * 0.1,
-          fadeMode: 'scale',
-          layer: this.starLayer,
-        });
-      }
-
-      if (distance(blob, spark) < BLOB_RAY + 8) {
-        this.score += spark.score;
-        this.host.updateScore(this.score);
-        this.spawnAnimation(this.assets.startExplo, spark.x, spark.y, 0.6, this.starLayer);
-        spark.view.removeFromParent();
-        this.sparks.splice(i, 1);
-        i -= 1;
-      }
-    }
-  }
-
-  separateSparks(): void {
-    for (let i = 0; i < this.sparks.length; i += 1) {
-      const p0 = this.sparks[i];
-      for (let n = i + 1; n < this.sparks.length; n += 1) {
-        const p1 = this.sparks[n];
-        const dif = 16 - distance(p0, p1);
-        if (dif <= 0) {
-          continue;
-        }
-        const a = angleTo(p0, p1);
-        const cx = Math.cos(a) * dif * 0.5;
-        const cy = Math.sin(a) * dif * 0.5;
-        p0.x -= cx;
-        p0.y -= cy;
-        p1.x += cx;
-        p1.y += cy;
-      }
-    }
-  }
-
-  updateWaterAndScore(): void {
-    const blob = this.blob;
-    this.waterBoost += WATER_SPEED_INC;
-    this.waterY -= WATER_SPEED + this.waterBoost;
-
-    this.updateBlobWaterEffects();
-
-    if (blob.wet > 1) {
-      this.startBlobDrowningDeath();
-      this.endGame();
-    }
-
-    const runHeight = Math.max(0, -blob.y);
-    const heightGain = runHeight - this.maxHeight;
-    if (heightGain > 0) {
-      const scoreGain = Math.floor(heightGain);
-      if (scoreGain > 0) {
-        this.score += scoreGain;
-        this.host.updateScore(this.score);
-      }
-    }
-    this.maxHeight = Math.max(runHeight, this.maxHeight);
-    const heightMeters = Math.floor(this.maxHeight * 0.2);
-    this.meterText.text = `${heightMeters}m`;
-    this.host.updateMetric({ key: 'height', label: 'Height', value: heightMeters, unit: 'm' });
-  }
-
-  updateBlobWaterEffects(): void {
-    const blob = this.blob;
-    if (blob.state === BlobState.Dead && !blob.view.visible) {
-      return;
-    }
-    const inWater = blob.y - BLOB_RAY > this.waterY;
-    if (inWater) {
-      if (blob.state !== BlobState.Dead) {
-        blob.wet += 0.015;
-      }
-      if (blob.vy > 0) {
-        blob.vy *= 0.9;
-      }
-      if (Math.random() < blob.wet) {
-        this.spawnParticle(this.assets.tache[0], blob.x, blob.y, blob.vx * 0.5 + (Math.random() * 2 - 1), blob.vy * 0.5 + (Math.random() * 2 - 1) * 0.5, {
-          scale: 1 + blob.wet * 1.5 + Math.random(),
-          life: null,
-          weight: 0,
-          fadeMode: 'none',
-          layer: this.oilLayer,
-          frames: this.assets.tache,
-        });
-      }
-      if (Math.random() < blob.wet) {
-        this.spawnBubble(blob.x + Math.random() * BLOB_RAY, blob.y + Math.random() * BLOB_RAY, blob.vy * 0.8);
-      }
-    } else if (blob.wet > 0) {
-      if (blob.state !== BlobState.Dead) {
-        blob.wet = Math.max(0, blob.wet - 0.02);
-      }
-
-      if (Math.random() * 0.5 < blob.wet) {
-        const coef = 0.2 + Math.random() * 0.4;
-        this.spawnParticle(this.assets.goutte, blob.x + (Math.random() * 2 - 1) * 6, blob.y + (Math.random() * 2 - 1) * 6, (blob.vvx + blob.vx) * coef, (blob.vvy + blob.vy) * coef, {
-          scale: 0.6 + blob.wet * 0.8 + Math.random() * 0.5,
-          ttl: 10 + Math.random() * 10,
-          weight: 0,
-          fadeMode: 'scale',
-          layer: this.oilLayer,
-        });
-      }
-    }
-    blob.wasInWater = inWater;
-  }
-
-  scrollMap(force: boolean): void {
-    const blob = this.blob;
-    const focusY = this.ending ? this.endFocusY : blob.state === BlobState.Grab && blob.cw ? blob.cw.y - VIEW_WHEEL : blob.y;
-    const targetY = STAGE_HEIGHT * 0.5 - focusY;
-
-    if (force) {
-      this.mapY = targetY;
-      this.svy = 0;
-      return;
-    }
-
-    this.svy += (targetY - this.mapY) * 0.1;
-    this.svy *= 0.6;
-    this.mapY += this.svy;
-  }
-
-  spawnParticle(
+  private spawnParticle(
     frame: Frame,
-    x: number,
-    y: number,
-    vx: number,
-    vy: number,
+    x: number, y: number, vx: number, vy: number,
     options: {
-      scale?: number;
-      ttl?: number;
-      weight?: number;
-      frict?: number;
-      vr?: number;
-      vs?: number;
-      sFrict?: number;
+      scale?: number; ttl?: number; weight?: number; frict?: number;
+      vr?: number; vs?: number; sFrict?: number;
       fadeMode?: 'alpha' | 'scale' | 'none';
-      rotation?: number;
-      life?: number | null;
-      layer?: Container;
-      frames?: Frame[];
+      rotation?: number; life?: number | null;
+      layer?: Container; frames?: Frame[];
     } = {},
   ): void {
     const view = makeSprite(frame);
@@ -1365,9 +776,7 @@ class InterwheelGame {
     (options.layer ?? this.particleLayer).addChild(view);
     const life = options.life === undefined ? (options.ttl ?? 20) : options.life;
     this.particles.push({
-      view,
-      vx,
-      vy,
+      view, vx, vy,
       weight: options.weight ?? 0.2,
       frict: options.frict ?? 0.95,
       life,
@@ -1382,29 +791,21 @@ class InterwheelGame {
     });
   }
 
-  spawnAnimation(frames: Frame[], x: number, y: number, scale: number, layer: Container = this.particleLayer): void {
+  private spawnAnimation(frames: Frame[], x: number, y: number, scale: number, layer: Container = this.particleLayer): void {
     const view = makeSprite(frames[0]);
     view.position.set(x, y);
     view.scale.set(scale);
     layer.addChild(view);
     this.particles.push({
-      view,
-      vx: 0,
-      vy: 0,
-      weight: 0,
-      frict: 1,
-      life: frames.length,
-      ttl: frames.length,
-      scale,
-      fadeMode: 'none',
-      vr: 0,
-      vs: 0,
-      sFrict: 1,
-      frames,
+      view, vx: 0, vy: 0,
+      weight: 0, frict: 1,
+      life: frames.length, ttl: frames.length,
+      scale, fadeMode: 'none',
+      vr: 0, vs: 0, sFrict: 1, frames,
     });
   }
 
-  spawnBubble(x: number, y: number, vy: number): void {
+  private spawnBubble(x: number, y: number, vy: number): void {
     const view = makeSprite(this.assets.bubble[0]);
     const scale = 0.3 + Math.random() * 0.5;
     view.position.set(x, y);
@@ -1412,18 +813,10 @@ class InterwheelGame {
     view.blendMode = 'screen';
     this.waterParticleLayer.addChild(view);
     this.particles.push({
-      view,
-      vx: 0,
-      vy,
+      view, vx: 0, vy,
       weight: -(0.15 + Math.random() * 0.5),
-      frict: 0.98,
-      life: null,
-      ttl: 0,
-      scale,
-      fadeMode: 'none',
-      vr: 0,
-      vs: 0,
-      sFrict: 1,
+      frict: 0.98, life: null, ttl: 0, scale,
+      fadeMode: 'none', vr: 0, vs: 0, sFrict: 1,
       bubbleFrames: this.assets.bubble,
       dec: Math.random() * 628,
       dsp: 10 + Math.random() * 20,
@@ -1437,7 +830,7 @@ class InterwheelGame {
       if (particle.bubbleFrames) {
         if (particle.outTimer !== undefined) {
           particle.outTimer -= 1;
-          particle.view.y = this.waterY;
+          particle.view.y = this.sim.waterY;
           particle.scale += 0.01;
           particle.view.scale.set(particle.scale);
           if (particle.outTimer < 0) {
@@ -1449,8 +842,8 @@ class InterwheelGame {
         } else {
           particle.dec = ((particle.dec ?? 0) + (particle.dsp ?? 0)) % 628;
           particle.vx = Math.cos((particle.dec ?? 0) / 100) * (particle.ec ?? 0);
-          if (particle.view.y < this.waterY) {
-            particle.view.y = this.waterY;
+          if (particle.view.y < this.sim.waterY) {
+            particle.view.y = this.sim.waterY;
             particle.vx = 0;
             particle.vy = 0;
             setFrame(particle.view, particle.bubbleFrames[1] ?? particle.bubbleFrames[0]);
@@ -1458,7 +851,6 @@ class InterwheelGame {
           }
         }
       }
-
       particle.vy += particle.weight;
       particle.vx *= particle.frict;
       particle.vy *= particle.frict;
@@ -1470,7 +862,6 @@ class InterwheelGame {
         particle.scale += particle.vs;
         particle.view.scale.set(particle.scale);
       }
-
       if (particle.frames) {
         let index: number;
         if (particle.life === null) {
@@ -1482,7 +873,6 @@ class InterwheelGame {
         }
         setFrame(particle.view, particle.frames[index]);
       }
-
       if (particle.life !== null) {
         particle.life -= 1;
         if (particle.life < PARTICLE_FADE_LIMIT) {
@@ -1494,7 +884,6 @@ class InterwheelGame {
           }
         }
       }
-
       if (particle.life !== null && particle.life <= 0) {
         particle.view.removeFromParent();
         this.particles.splice(i, 1);
@@ -1503,77 +892,81 @@ class InterwheelGame {
     }
   }
 
-  endGame(): void {
-    if (this.ending || this.ended) {
-      return;
-    }
-    this.ending = true;
-    this.endTimer = ENDGAME_DELAY;
-    this.endFocusY = this.blob.y;
-    this.gameOverText.text = '';
-  }
-
-  finishRun(): void {
-    if (this.ended) return;
-    const heightMeters = Math.floor(this.maxHeight * 0.2);
-    this.ending = false;
-    this.ended = true;
-    this.host.endRun({
-      score: this.score,
-      secondary: { key: 'height', label: 'Height', value: heightMeters, unit: 'm' },
-    });
-  }
+  // ============================================================================
+  // Render: sync sprite positions/frames from sim state.
+  // ============================================================================
 
   render(): void {
-    this.world.y = this.mapY;
+    this.world.y = this.sim.mapY;
 
-    for (const wheel of this.wheels) {
-      const visible = wheel.active || this.isElementActive(wheel);
-      wheel.group.visible = visible;
-      wheel.shadow.visible = visible;
-      wheel.group.position.set(wheel.x, wheel.y);
-      wheel.spin.rotation = wheel.a;
-      wheel.shadow.position.set(wheel.x, wheel.y + 6);
-      wheel.shadow.rotation = wheel.a;
-      setFrame(wheel.dust, this.assets.dust[wheel.dustTick % this.assets.dust.length]);
+    for (let i = 0; i < this.sim.wheels.length; i += 1) {
+      const wheel = this.sim.wheels[i];
+      const view = this.wheelViews[i];
+      if (!view) continue;
+      const visible = wheel.active || this.sim.isElementActive(wheel);
+      view.group.visible = visible;
+      view.shadow.visible = visible;
+      view.group.position.set(wheel.x, wheel.y);
+      view.spin.rotation = wheel.a;
+      view.shadow.position.set(wheel.x, wheel.y + 6);
+      view.shadow.rotation = wheel.a;
+      setFrame(view.dust, this.assets.dust[wheel.dustTick % this.assets.dust.length]);
     }
 
-    for (const pastille of this.pastilles) {
-      pastille.view.visible = pastille.active || this.isElementActive(pastille);
+    for (const [pastille, view] of this.pastilleViews) {
+      view.view.visible = pastille.active || this.sim.isElementActive(pastille);
+    }
+
+    for (const [spark, view] of this.sparkViews) {
+      view.position.set(spark.x, spark.y);
     }
 
     const water = this.waterLayer.children[0] as Sprite | undefined;
-    if (water) {
-      water.y = this.waterY;
-    }
+    if (water) water.y = this.sim.waterY;
 
-    const blob = this.blob;
-    if (blob.state !== BlobState.Dead) {
-      blob.view.visible = true;
-      blob.view.position.set(blob.x, blob.y);
-      blob.view.rotation = blob.state === BlobState.Grab ? blob.angle : 0;
-
-      if (blob.state === BlobState.Fly) {
+    const blob = this.sim.blob;
+    if (blob.state !== BLOB_STATE_DEAD) {
+      this.blobView.visible = true;
+      this.blobView.position.set(blob.x, blob.y);
+      this.blobView.rotation = blob.state === BLOB_STATE_GRAB ? blob.angle : 0;
+      if (blob.state === BLOB_STATE_FLY) {
         const a = Math.atan2(blob.vy, blob.vx);
         const frameIndex = clamp(Math.floor(60 + ((a + Math.PI) / (Math.PI * 2)) * 40) - 1, 0, this.assets.blob.length - 1);
-        setFrame(blob.view, this.assets.blob[frameIndex]);
-        blob.view.scale.x = 1;
-      } else if (blob.state === BlobState.Wall) {
+        setFrame(this.blobView, this.assets.blob[frameIndex]);
+        this.blobView.scale.x = 1;
+      } else if (blob.state === BLOB_STATE_WALL) {
         const frameIndex = BLOB_COULE_FRAME_START + Math.min(blob.stateTick, BLOB_COULE_FRAME_COUNT - 1);
-        setFrame(blob.view, this.assets.blob[clamp(frameIndex, 0, this.assets.blob.length - 1)]);
-        blob.view.scale.x = 1;
+        setFrame(this.blobView, this.assets.blob[clamp(frameIndex, 0, this.assets.blob.length - 1)]);
+        this.blobView.scale.x = 1;
       } else {
         const frameIndex = BLOB_GRAB_FRAME_START + Math.min(blob.stateTick, BLOB_GRAB_FRAME_COUNT - 1);
-        setFrame(blob.view, this.assets.blob[frameIndex]);
-        blob.view.scale.x = 1;
+        setFrame(this.blobView, this.assets.blob[frameIndex]);
+        this.blobView.scale.x = 1;
       }
-    } else if (blob.view.visible) {
+    } else if (this.blobView.visible) {
       const frameIndex = BLOB_DEATH_FRAME_START + Math.min(blob.deathTick, BLOB_DEATH_FRAME_COUNT - 1);
-      blob.view.position.set(blob.x, blob.y);
-      blob.view.rotation = 0;
-      blob.view.scale.x = 1;
-      setFrame(blob.view, this.assets.blob[frameIndex]);
+      this.blobView.position.set(blob.x, blob.y);
+      this.blobView.rotation = 0;
+      this.blobView.scale.x = 1;
+      setFrame(this.blobView, this.assets.blob[frameIndex]);
     }
+  }
+
+  private updateHud(): void {
+    const heightMeters = Math.floor(this.sim.maxHeight * 0.2);
+    const text = `${heightMeters}m`;
+    if (this.meterText.text !== text) {
+      this.meterText.text = text;
+    }
+    // Score / metric host calls — only on change, since host may push them
+    // to React state on every call.
+    if (this.sim.events.collectedSparks.length === 0) {
+      // fast path: only update score on height tick.
+      // (A small amount of redundant calls is harmless; keeping it
+      // unconditional matches the previous behaviour exactly.)
+    }
+    this.host.updateScore(this.sim.score);
+    this.host.updateMetric({ key: 'height', label: 'Height', value: heightMeters, unit: 'm' });
   }
 }
 
@@ -1593,49 +986,25 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
   container.appendChild(app.canvas);
 
   const game = new InterwheelGame(app, assets, context?.host ?? noopGameHost);
+  context?.onReady?.(game);
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.code !== 'Space') {
-      return;
-    }
+    if (event.code !== 'Space') return;
     event.preventDefault();
-    if (game.ended) {
-      return;
-    }
-    if (game.ending) {
-      return;
-    }
-    if (!game.spaceHeld) {
-      game.spacePressed = true;
-    }
+    if (game.ended || game.ending) return;
+    if (!game.spaceHeld) game.spacePressed = true;
     game.spaceHeld = true;
   };
   const onKeyUp = (event: KeyboardEvent) => {
-    if (event.code === 'Space') {
-      game.spaceHeld = false;
-    }
+    if (event.code === 'Space') game.spaceHeld = false;
   };
   const onPointerDown = (event: PointerEvent) => {
-    // Primary button only — keep right-clicks from acting as a tap.
     if (event.button !== 0) return;
-    if (game.ended) {
-      return;
-    }
-    if (game.ending) {
-      return;
-    }
+    if (game.ended || game.ending) return;
     game.pointerPressed = true;
   };
-  // Suppress the browser context menu over the canvas.
-  const onContextMenu = (event: MouseEvent) => {
-    event.preventDefault();
-  };
-  // Release held keys when the tab loses focus — otherwise the OS never
-  // delivers a keyup and `spaceHeld` would stay latched while the player tabs
-  // away.
-  const onBlur = () => {
-    game.spaceHeld = false;
-  };
+  const onContextMenu = (event: MouseEvent) => event.preventDefault();
+  const onBlur = () => { game.spaceHeld = false; };
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
   window.addEventListener('blur', onBlur);
@@ -1660,9 +1029,6 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
       app.canvas.removeEventListener('pointerdown', onPointerDown);
       app.canvas.removeEventListener('contextmenu', onContextMenu);
       app.ticker.remove(tickerCallback);
-      // texture:false — textures are managed by the global Assets cache and
-      // destroying them here would (a) warn every mount cycle and (b) force a
-      // re-fetch on the next mount.
       app.destroy(true, { children: true, texture: false });
     },
   };

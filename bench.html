@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Interwheel — AI Benchmark</title>
+    <style>
+      :root { color-scheme: dark; }
+      html, body { margin: 0; padding: 16px; background: #0e1418; color: #c8d6dc; font-family: 'Trebuchet MS', sans-serif; }
+      h1 { font-size: 18px; margin: 0 0 12px; color: #e1bd6a; }
+      pre { font-family: monospace; font-size: 12px; line-height: 1.5; background: #1c2c34; padding: 12px; border-radius: 4px; max-width: 900px; }
+      #hidden-stage { display: none; }
+      button { background: #2a3a44; color: #c8d6dc; border: 1px solid #4a5a64; padding: 6px 12px; cursor: pointer; font-family: inherit; }
+      button:hover { background: #3a4a54; }
+      .controls { margin-bottom: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>Interwheel A* — fast benchmark harness</h1>
+    <div class="controls">
+      <button id="run">Run 20 trials</button>
+      <button id="run100">Run 100 trials</button>
+      <button id="determinism">Parity check (render on vs off)</button>
+    </div>
+    <pre id="out">Booting…</pre>
+    <div id="hidden-stage"></div>
+    <script type="module" src="/src/playground/bench.ts"></script>
+  </body>
+</html>

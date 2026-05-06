@@ -30,6 +30,7 @@ export type GameHost = {
 
 export type GameMountContext = {
   host?: GameHost;
+  onReady?: (game: unknown) => void;
 };
 
 export const noopGameHost: GameHost = {
