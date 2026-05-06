@@ -19,7 +19,7 @@ export const SIDE = 10;
 export const SPACE = 8;
 export const VIEW_WHEEL = 50;
 export const START_WHEEL_ID = 10;
-export const WMAX = 50;
+export const WMAX = 180;
 
 // Wheel generation
 export const WHEEL_SPEED_MIN = 0.05;

@@ -28,7 +28,8 @@ const BLOB_DEATH_FRAME_START = 102;
 const BLOB_DEATH_FRAME_COUNT = 71;
 const PARTICLE_FADE_LIMIT = 10;
 const DECOR_SECTION_HEIGHT = 2000;
-const DECOR_SECTIONS = 5;
+const DECOR_MIN_SECTIONS = 5;
+const DECOR_EXTRA_SECTIONS = 2;
 const DECOR_BASE_COLOR = 0x436b70;
 const PANEL_X = 238;
 const PANEL_Y = 265;
@@ -344,7 +345,11 @@ export class InterwheelGame {
   }
 
   private buildDecor(): void {
-    for (let section = 0; section < DECOR_SECTIONS; section += 1) {
+    const sectionCount = Math.max(
+      DECOR_MIN_SECTIONS,
+      Math.ceil(-this.sim.roof / DECOR_SECTION_HEIGHT) + DECOR_EXTRA_SECTIONS,
+    );
+    for (let section = 0; section < sectionCount; section += 1) {
       const sectionTop = -(section + 1) * DECOR_SECTION_HEIGHT;
       const base = new Graphics();
       base.rect(0, sectionTop, STAGE_WIDTH, DECOR_SECTION_HEIGHT).fill(DECOR_BASE_COLOR);
@@ -352,7 +357,7 @@ export class InterwheelGame {
 
       for (let y = 0; y < DECOR_SECTION_HEIGHT; y += 40) {
         for (let x = 0; x < STAGE_WIDTH; x += 40) {
-          const frameIndex = Math.min(section * 10 + randomInt(10), this.assets.tile.length - 1);
+          const frameIndex = (section * 10 + randomInt(10)) % this.assets.tile.length;
           const tile = makeSprite(this.assets.tile[frameIndex]);
           tile.position.set(x, sectionTop + y);
           this.decorLayer.addChild(tile);
