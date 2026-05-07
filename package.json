@@ -12,6 +12,7 @@
     "test:api": "node --test server/*.test.mjs",
     "test:e2e": "playwright test",
     "bench": "node scripts/bench.mjs",
+    "bench:quick": "node scripts/bench.mjs --quick",
     "capture:interwheel": "node scripts/capture-interwheel.mjs"
   },
   "dependencies": {

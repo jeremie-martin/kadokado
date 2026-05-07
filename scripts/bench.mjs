@@ -6,6 +6,8 @@
 //   npm run bench -- --trials=20       # 20 trials
 //   npm run bench -- --seed=42         # 5 trials with seedBase=42 (deterministic levels)
 //   npm run bench -- --trials=10 --seed=42
+//   npm run bench -- --quick           # 1 seeded trial, capped at 30 in-game seconds
+//   npm run bench -- --max-seconds=30  # cap each trial's simulated duration
 //   npm run bench -- --json            # machine-readable JSON output
 //   npm run bench -- --help            # show this help text
 //
@@ -20,13 +22,24 @@
 import { createServer } from 'vite';
 import { chromium } from '@playwright/test';
 
+const GAME_FPS = 40;
+const DEFAULT_MAX_TICKS = 24_000;
+const QUICK_MAX_SECONDS = 30;
+
 function parseArgs(argv) {
-  const args = { trials: 5, seedBase: null, json: false, help: false };
+  const args = { trials: 5, seedBase: null, maxTicks: null, json: false, help: false };
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
     else if (raw === '--json') args.json = true;
+    else if (raw === '--quick') {
+      args.trials = 1;
+      args.seedBase = 42;
+      args.maxTicks = QUICK_MAX_SECONDS * GAME_FPS;
+    }
     else if (raw.startsWith('--trials=')) args.trials = Number(raw.slice('--trials='.length));
     else if (raw.startsWith('--seed=')) args.seedBase = Number(raw.slice('--seed='.length));
+    else if (raw.startsWith('--max-ticks=')) args.maxTicks = Number(raw.slice('--max-ticks='.length));
+    else if (raw.startsWith('--max-seconds=')) args.maxTicks = Math.ceil(Number(raw.slice('--max-seconds='.length)) * GAME_FPS);
     else {
       console.error(`Unknown argument: ${raw}`);
       args.help = true;
@@ -40,6 +53,10 @@ function parseArgs(argv) {
     console.error('--seed must be an integer');
     args.help = true;
   }
+  if (args.maxTicks !== null && (!Number.isFinite(args.maxTicks) || args.maxTicks < 1)) {
+    console.error('--max-ticks/--max-seconds must produce a positive tick count');
+    args.help = true;
+  }
   return args;
 }
 
@@ -50,11 +67,15 @@ USAGE:
   npm run bench                       5 trials, random levels
   npm run bench -- --trials=N         set trial count
   npm run bench -- --seed=S           seed level generation (deterministic)
+  npm run bench -- --quick            1 seed=42 trial, max 30 in-game seconds
+  npm run bench -- --max-seconds=N    cap each trial to N in-game seconds
+  npm run bench -- --max-ticks=N      cap each trial to N game ticks
   npm run bench -- --json             emit machine-readable JSON
   npm run bench -- --help             this help
 
 The primary metric is height (median, in meters). Higher is better. The
-human player record we are calibrating against is ~2000m.
+human player record we are calibrating against is ~2000m. The default cap is
+${DEFAULT_MAX_TICKS} ticks (= ${(DEFAULT_MAX_TICKS / GAME_FPS).toFixed(0)} in-game seconds).
 `);
 }
 
@@ -137,12 +158,13 @@ async function main() {
     await page.waitForFunction(() => Boolean(window.__bench__), null, { timeout: 30_000 });
 
     const result = await page.evaluate(
-      ([trials, seedBase]) =>
+      ([trials, seedBase, maxTicks]) =>
         window.__bench__.runBenchmark({
           trials,
           seedBase: seedBase === null ? undefined : seedBase,
+          maxTicks: maxTicks === null ? undefined : maxTicks,
         }),
-      [args.trials, args.seedBase],
+      [args.trials, args.seedBase, args.maxTicks],
     );
 
     if (args.json) {

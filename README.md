@@ -31,9 +31,13 @@ npm run preview
 npm start
 npm run test:api
 npm run test:e2e
+npm run bench:quick
+npm run bench -- --max-seconds=30 --trials=3 --seed=42
 ```
 
 For the persistent leaderboard locally, run `npm run dev:api` in one terminal and `npm run dev` in another; Vite proxies `/api` to the Node server. For production, run `npm run build` and then `npm start`.
+
+For fast Interwheel AI sanity checks before committing, prefer `npm run bench:quick`: it runs one deterministic seed with a 30-second in-game cap. Use `npm run bench -- --max-seconds=N --trials=M --seed=S` when a broader capped comparison is useful.
 
 The leaderboard database defaults to `.data/leaderboard.sqlite`. Override it with `LEADERBOARD_DB_PATH`. Set `IP_HASH_SECRET` in production so stored IP hashes are stable without storing raw IPs. If the app is behind a trusted reverse proxy, set `TRUST_PROXY=1`.
 
