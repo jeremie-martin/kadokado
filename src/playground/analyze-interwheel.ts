@@ -8,7 +8,7 @@ import {
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/index';
-import { FPS, type SimEvents } from '../games/interwheel/sim';
+import { FPS, InterwheelSim as PureInterwheelSim, type SimEvents } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
 import { InterwheelPlanner, type PlannerStats } from './interwheel-planner';
 
@@ -35,6 +35,13 @@ const runBtn = document.getElementById('run') as HTMLButtonElement;
 const run100Btn = document.getElementById('run100') as HTMLButtonElement;
 const detBtn = document.getElementById('determinism') as HTMLButtonElement;
 const stage = document.getElementById('hidden-stage') as HTMLDivElement;
+const ANALYTICS_PLANNER_CONFIG = {
+  budgetMs: 5,
+  maxEdgeRollouts: 240,
+  maxStableDepth: 3,
+  targetClimb: 400,
+  collectSegments: false,
+} as const;
 
 let game: InterwheelGame;
 let planner: InterwheelPlanner;
@@ -45,6 +52,8 @@ let recordedPresses: boolean[] = [];
 let recording = false;
 let currentPlannerRun: PlannerRunStats | null = null;
 let currentAnalytics: InterwheelRunAnalytics | null = null;
+
+type DeepDiff = { path: string; a: unknown; b: unknown };
 
 type PlannerRunStats = {
   plans: number;
@@ -260,13 +269,17 @@ function freshPlannerRunStats(): PlannerRunStats {
 
 function recordPlannerStats(stats: PlannerStats): void {
   if (!currentPlannerRun) return;
-  currentPlannerRun.plans += 1;
-  currentPlannerRun.totalPlanMs += stats.planMs;
-  currentPlannerRun.maxPlanMs = Math.max(currentPlannerRun.maxPlanMs, stats.planMs);
-  currentPlannerRun.totalEdges += stats.edgesEvaluated;
-  currentPlannerRun.totalSegments += stats.segments;
-  currentPlannerRun.totalWheels += stats.perceivedWheels;
-  currentPlannerRun.totalPastilles += stats.perceivedPastilles;
+  addPlannerStats(currentPlannerRun, stats);
+}
+
+function addPlannerStats(run: PlannerRunStats, stats: PlannerStats): void {
+  run.plans += 1;
+  run.totalPlanMs += stats.planMs;
+  run.maxPlanMs = Math.max(run.maxPlanMs, stats.planMs);
+  run.totalEdges += stats.edgesEvaluated;
+  run.totalSegments += stats.segments;
+  run.totalWheels += stats.perceivedWheels;
+  run.totalPastilles += stats.perceivedPastilles;
 }
 
 function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
@@ -323,6 +336,33 @@ function statsOf(values: number[]): Stats {
     p95: at(0.95),
     stdev: Math.sqrt(variance),
   };
+}
+
+function findDiff(a: unknown, b: unknown, path: string): DeepDiff | null {
+  if (a === b) return null;
+  if (typeof a === 'number' && typeof b === 'number') {
+    if (Math.abs(a - b) < 1e-9) return null;
+    return { path, a, b };
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) return { path: `${path}.length`, a: a.length, b: b.length };
+    for (let i = 0; i < a.length; i += 1) {
+      const sub = findDiff(a[i], b[i], `${path}[${i}]`);
+      if (sub) return sub;
+    }
+    return null;
+  }
+  if (a && b && typeof a === 'object' && typeof b === 'object') {
+    const ka = Object.keys(a as object).sort();
+    const kb = Object.keys(b as object).sort();
+    if (ka.join('|') !== kb.join('|')) return { path: `${path}.keys`, a: ka, b: kb };
+    for (const k of ka) {
+      const sub = findDiff((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k], `${path}.${k}`);
+      if (sub) return sub;
+    }
+    return null;
+  }
+  return { path, a, b };
 }
 
 class InterwheelRunAnalytics {
@@ -688,7 +728,7 @@ async function setup(): Promise<void> {
       // Halt the RAF-paced ticker; we drive ticks by hand.
       game.app.ticker.stop();
 
-      planner = new InterwheelPlanner(game.sim); // production defaults — no tweaks.
+      planner = new InterwheelPlanner(game.sim, ANALYTICS_PLANNER_CONFIG);
       originalUpdate = game.update.bind(game);
       game.update = () => {
         const before = currentAnalytics ? game.sim.clone() : null;
@@ -773,6 +813,50 @@ async function runTrial(seed: number | null = null, maxTicks = 24_000): Promise<
   }
 }
 
+async function runPureTrial(seed: number | null = null, maxTicks = 24_000): Promise<TrialResult> {
+  const sim = new PureInterwheelSim();
+  sim.reset(seed !== null ? makeSeededRng(seed) : Math.random);
+  const purePlanner = new InterwheelPlanner(sim, ANALYTICS_PLANNER_CONFIG);
+  const plannerRun = freshPlannerRunStats();
+  const analytics = new InterwheelRunAnalytics();
+  analytics.start(seed, sim.clone());
+  const startCpu = performance.now();
+  let ticks = 0;
+  while (!sim.ended && ticks < maxTicks) {
+    const before = sim.clone();
+    let press = false;
+    let plannerStats: PlannerStats | null = null;
+    if (!sim.ended && !sim.ending) {
+      const resultWithPress = purePlanner.step();
+      press = resultWithPress.press;
+      const { result } = resultWithPress;
+      if (result) {
+        plannerStats = result.stats;
+        addPlannerStats(plannerRun, result.stats);
+      }
+    }
+    sim.step(press, () => 0.5);
+    analytics.recordTick({
+      before,
+      after: sim.clone(),
+      press,
+      plannerStats,
+      events: sim.events,
+    });
+    ticks += 1;
+    if ((ticks & 511) === 0) await new Promise<void>((r) => setTimeout(r, 0));
+  }
+  return {
+    score: sim.score,
+    heightMeters: Math.floor(sim.maxHeight * 0.2),
+    ticks,
+    cpuMs: performance.now() - startCpu,
+    planner: summarizePlannerStats(plannerRun),
+    analytics: analytics.finish(sim.clone(), !sim.ended && ticks >= maxTicks),
+    seed,
+  };
+}
+
 function summarize(label: string, results: TrialResult[]): string {
   const scores = statsOf(results.map((r) => r.score));
   const heights = statsOf(results.map((r) => r.heightMeters));
@@ -828,7 +912,7 @@ export type AnalyzeInterwheelResult = {
     trials: number;
     seedBase: number | null;
     maxTicks: number;
-    plannerConfig: { budgetMs: number; maxEdgeRollouts: number; maxStableDepth: number; targetClimb: number };
+    plannerConfig: typeof ANALYTICS_PLANNER_CONFIG;
   };
   wallMs: number;
   cpuMs: number;
@@ -838,9 +922,7 @@ async function runAnalyze(opts: AnalyzeInterwheelOpts = {}): Promise<AnalyzeInte
   const trials = Math.max(1, opts.trials ?? 5);
   const seedBase = opts.seedBase ?? null;
   const maxTicks = opts.maxTicks ?? 24_000;
-  const plannerCfg = {
-    budgetMs: 5, maxEdgeRollouts: 240, maxStableDepth: 3, targetClimb: 400,
-  };
+  const plannerCfg = ANALYTICS_PLANNER_CONFIG;
 
   log(`analytics: ${trials} trials  seedBase=${seedBase ?? 'random'}  maxTicks=${maxTicks}\n`);
 
@@ -878,10 +960,79 @@ async function runAnalyze(opts: AnalyzeInterwheelOpts = {}): Promise<AnalyzeInte
   };
 }
 
+async function runPureAnalyze(opts: AnalyzeInterwheelOpts = {}): Promise<AnalyzeInterwheelResult> {
+  const trials = Math.max(1, opts.trials ?? 5);
+  const seedBase = opts.seedBase ?? null;
+  const maxTicks = opts.maxTicks ?? 24_000;
+
+  const results: TrialResult[] = [];
+  const wallStart = performance.now();
+  for (let i = 0; i < trials; i += 1) {
+    const seed = seedBase !== null ? seedBase + i : null;
+    results.push(await runPureTrial(seed, maxTicks));
+  }
+  const wallMs = performance.now() - wallStart;
+  const cpuMs = results.reduce((s, r) => s + r.cpuMs, 0);
+
+  return {
+    trials: results,
+    stats: {
+      height_m: statsOf(results.map((r) => r.heightMeters)),
+      score: statsOf(results.map((r) => r.score)),
+      ticks: statsOf(results.map((r) => r.ticks)),
+      cpuMs: statsOf(results.map((r) => r.cpuMs)),
+    },
+    config: { trials, seedBase, maxTicks, plannerConfig: ANALYTICS_PLANNER_CONFIG },
+    wallMs,
+    cpuMs,
+  };
+}
+
 type TickSample = {
   tick: number;
   state: ReturnType<InterwheelSim['clone']>;
 };
+
+type TranscriptSample = {
+  tick: number;
+  press: boolean;
+  state: SimSnapshot;
+};
+
+type TranscriptResult = {
+  seed: number;
+  maxTicks: number;
+  samples: TranscriptSample[];
+  final: { score: number; heightMeters: number; ticks: number; ended: boolean };
+  cpuMs: number;
+};
+
+type PureReplayEquivalenceResult = {
+  seed: number;
+  maxTicks: number;
+  equal: boolean;
+  mounted: Omit<TranscriptResult, 'samples'> & { sampleCount: number };
+  pure: Omit<TranscriptResult, 'samples'> & { sampleCount: number };
+  firstDivergence?: {
+    index: number;
+    tick: number;
+    path: string;
+    mounted: unknown;
+    pure: unknown;
+  };
+};
+
+type PureReplayCorpusResult = {
+  trials: number;
+  seedBase: number;
+  maxTicks: number;
+  equal: boolean;
+  results: PureReplayEquivalenceResult[];
+  firstFailure?: PureReplayEquivalenceResult;
+};
+
+type PurePlannerEquivalenceResult = PureReplayEquivalenceResult;
+type PurePlannerCorpusResult = PureReplayCorpusResult;
 
 // Tiny seeded RNG (mulberry32) so we can `game.reset()` deterministically
 // to the same level twice. Used only in parityCheck — production code uses
@@ -894,6 +1045,224 @@ function makeSeededRng(seed: number): () => number {
     t = Math.imul(t ^ (t >>> 15), t | 1);
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function resetMountedGame(seed: number): void {
+  const savedRandom = Math.random;
+  Math.random = makeSeededRng(seed);
+  try {
+    game.reset();
+  } finally {
+    Math.random = savedRandom;
+  }
+}
+
+async function runMountedTranscript(seed: number, maxTicks: number): Promise<TranscriptResult> {
+  resetMountedGame(seed);
+  planner.invalidate();
+  recordedPresses = [];
+  recording = true;
+  const samples: TranscriptSample[] = [];
+  const startCpu = performance.now();
+  try {
+    let ticks = 0;
+    while (!game.ended && ticks < maxTicks) {
+      game.update();
+      const press = recordedPresses[samples.length] ?? false;
+      samples.push({ tick: game.tick, press, state: game.sim.clone() });
+      ticks += 1;
+      if ((ticks & 511) === 0) await new Promise<void>((r) => setTimeout(r, 0));
+    }
+  } finally {
+    recording = false;
+  }
+  return {
+    seed,
+    maxTicks,
+    samples,
+    final: {
+      score: game.score,
+      heightMeters: Math.floor(game.maxHeight * 0.2),
+      ticks: game.tick,
+      ended: game.ended,
+    },
+    cpuMs: performance.now() - startCpu,
+  };
+}
+
+function runPureReplayTranscript(seed: number, maxTicks: number, presses: readonly boolean[]): TranscriptResult {
+  const sim = new PureInterwheelSim();
+  sim.reset(makeSeededRng(seed));
+  const samples: TranscriptSample[] = [];
+  const startCpu = performance.now();
+  let ticks = 0;
+  while (!sim.ended && ticks < maxTicks) {
+    const press = presses[ticks] ?? false;
+    sim.step(press, () => 0.5);
+    samples.push({ tick: sim.tick, press, state: sim.clone() });
+    ticks += 1;
+  }
+  return {
+    seed,
+    maxTicks,
+    samples,
+    final: {
+      score: sim.score,
+      heightMeters: Math.floor(sim.maxHeight * 0.2),
+      ticks: sim.tick,
+      ended: sim.ended,
+    },
+    cpuMs: performance.now() - startCpu,
+  };
+}
+
+function runPurePlannedTranscript(seed: number, maxTicks: number): TranscriptResult {
+  const sim = new PureInterwheelSim();
+  sim.reset(makeSeededRng(seed));
+  const purePlanner = new InterwheelPlanner(sim, ANALYTICS_PLANNER_CONFIG);
+  const samples: TranscriptSample[] = [];
+  const startCpu = performance.now();
+  let ticks = 0;
+  while (!sim.ended && ticks < maxTicks) {
+    let press = false;
+    if (!sim.ended && !sim.ending) {
+      press = purePlanner.step().press;
+    }
+    sim.step(press, () => 0.5);
+    samples.push({ tick: sim.tick, press, state: sim.clone() });
+    ticks += 1;
+  }
+  return {
+    seed,
+    maxTicks,
+    samples,
+    final: {
+      score: sim.score,
+      heightMeters: Math.floor(sim.maxHeight * 0.2),
+      ticks: sim.tick,
+      ended: sim.ended,
+    },
+    cpuMs: performance.now() - startCpu,
+  };
+}
+
+function summarizeTranscript(result: TranscriptResult): Omit<TranscriptResult, 'samples'> & { sampleCount: number } {
+  return {
+    seed: result.seed,
+    maxTicks: result.maxTicks,
+    sampleCount: result.samples.length,
+    final: result.final,
+    cpuMs: result.cpuMs,
+  };
+}
+
+function compareTranscripts(
+  mounted: TranscriptResult,
+  pure: TranscriptResult,
+): PureReplayEquivalenceResult {
+  let firstDivergence: PureReplayEquivalenceResult['firstDivergence'];
+  const minLen = Math.min(mounted.samples.length, pure.samples.length);
+  for (let i = 0; i < minLen; i += 1) {
+    const m = mounted.samples[i];
+    const p = pure.samples[i];
+    if (m.press !== p.press) {
+      firstDivergence = { index: i, tick: m.tick, path: 'press', mounted: m.press, pure: p.press };
+      break;
+    }
+    const tickDiff = findDiff(m.tick, p.tick, 'tick');
+    if (tickDiff) {
+      firstDivergence = { index: i, tick: m.tick, path: tickDiff.path, mounted: tickDiff.a, pure: tickDiff.b };
+      break;
+    }
+    const stateDiff = findDiff(m.state, p.state, 'state');
+    if (stateDiff) {
+      firstDivergence = { index: i, tick: m.tick, path: stateDiff.path, mounted: stateDiff.a, pure: stateDiff.b };
+      break;
+    }
+  }
+  if (!firstDivergence && mounted.samples.length !== pure.samples.length) {
+    firstDivergence = {
+      index: minLen,
+      tick: mounted.samples[minLen - 1]?.tick ?? pure.samples[minLen - 1]?.tick ?? 0,
+      path: 'samples.length',
+      mounted: mounted.samples.length,
+      pure: pure.samples.length,
+    };
+  }
+  if (!firstDivergence) {
+    const finalDiff = findDiff(mounted.final, pure.final, 'final');
+    if (finalDiff) {
+      firstDivergence = {
+        index: minLen,
+        tick: mounted.final.ticks,
+        path: finalDiff.path,
+        mounted: finalDiff.a,
+        pure: finalDiff.b,
+      };
+    }
+  }
+  return {
+    seed: mounted.seed,
+    maxTicks: mounted.maxTicks,
+    equal: !firstDivergence,
+    mounted: summarizeTranscript(mounted),
+    pure: summarizeTranscript(pure),
+    firstDivergence,
+  };
+}
+
+async function comparePureReplay(seed = 42, maxTicks = 1_200): Promise<PureReplayEquivalenceResult> {
+  const mounted = await runMountedTranscript(seed, maxTicks);
+  const pure = runPureReplayTranscript(seed, maxTicks, mounted.samples.map((sample) => sample.press));
+  return compareTranscripts(mounted, pure);
+}
+
+async function comparePurePlanner(seed = 42, maxTicks = 1_200): Promise<PurePlannerEquivalenceResult> {
+  const mounted = await runMountedTranscript(seed, maxTicks);
+  const pure = runPurePlannedTranscript(seed, maxTicks);
+  return compareTranscripts(mounted, pure);
+}
+
+async function comparePureReplayCorpus(opts: { trials?: number; seedBase?: number; maxTicks?: number } = {}): Promise<PureReplayCorpusResult> {
+  const trials = Math.max(1, opts.trials ?? 5);
+  const seedBase = opts.seedBase ?? 42;
+  const maxTicks = opts.maxTicks ?? 1_200;
+  const results: PureReplayEquivalenceResult[] = [];
+  for (let i = 0; i < trials; i += 1) {
+    const result = await comparePureReplay(seedBase + i, maxTicks);
+    results.push(result);
+    if (!result.equal) break;
+  }
+  const firstFailure = results.find((result) => !result.equal);
+  return {
+    trials,
+    seedBase,
+    maxTicks,
+    equal: !firstFailure && results.length === trials,
+    results,
+    firstFailure,
+  };
+}
+
+async function comparePurePlannerCorpus(opts: { trials?: number; seedBase?: number; maxTicks?: number } = {}): Promise<PurePlannerCorpusResult> {
+  const trials = Math.max(1, opts.trials ?? 5);
+  const seedBase = opts.seedBase ?? 42;
+  const maxTicks = opts.maxTicks ?? 1_200;
+  const results: PurePlannerEquivalenceResult[] = [];
+  for (let i = 0; i < trials; i += 1) {
+    const result = await comparePurePlanner(seedBase + i, maxTicks);
+    results.push(result);
+    if (!result.equal) break;
+  }
+  const firstFailure = results.find((result) => !result.equal);
+  return {
+    trials,
+    seedBase,
+    maxTicks,
+    equal: !firstFailure && results.length === trials,
+    results,
+    firstFailure,
   };
 }
 
@@ -1073,9 +1442,26 @@ async function parityCheck(): Promise<{
       runBatch: typeof runBatch;
       runTrial: typeof runTrial;
       runAnalyze: typeof runAnalyze;
+      runPureTrial: typeof runPureTrial;
+      runPureAnalyze: typeof runPureAnalyze;
+      comparePureReplay: typeof comparePureReplay;
+      comparePureReplayCorpus: typeof comparePureReplayCorpus;
+      comparePurePlanner: typeof comparePurePlanner;
+      comparePurePlannerCorpus: typeof comparePurePlannerCorpus;
       parityCheck: typeof parityCheck;
     };
-  }).__interwheelAnalytics__ = { runBatch, runTrial, runAnalyze, parityCheck };
+  }).__interwheelAnalytics__ = {
+    runBatch,
+    runTrial,
+    runAnalyze,
+    runPureTrial,
+    runPureAnalyze,
+    comparePureReplay,
+    comparePureReplayCorpus,
+    comparePurePlanner,
+    comparePurePlannerCorpus,
+    parityCheck,
+  };
 })().catch((err) => {
   log(`Boot failed: ${err}`);
   console.error(err);

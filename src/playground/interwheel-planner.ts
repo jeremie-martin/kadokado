@@ -3,10 +3,12 @@ import {
   BLOB_STATE_FLY,
   BLOB_STATE_GRAB,
   BLOB_STATE_WALL,
+  InterwheelSim as ScratchInterwheelSim,
+  SCORE_PASTILLE,
+  STAGE_HEIGHT,
   type InterwheelSim,
   type SimSnapshot,
-} from '../games/interwheel/index';
-import { InterwheelSim as ScratchInterwheelSim, SCORE_PASTILLE, STAGE_HEIGHT } from '../games/interwheel/sim';
+} from '../games/interwheel/sim';
 
 // Constant RNG used during search. The simulator may consume an RNG draw for
 // cosmetic-but-stateful parity cases, but search outcomes do not depend on the
@@ -114,6 +116,7 @@ export type PlannerConfig = {
   longWaitPenalty?: number;
   revealScreensAbove?: number;
   memoryScreensBelow?: number;
+  collectSegments?: boolean;
 };
 
 export class InterwheelPlanner {
@@ -143,6 +146,7 @@ export class InterwheelPlanner {
       longWaitPenalty: cfg.longWaitPenalty ?? DEFAULT_LONG_WAIT_PENALTY,
       revealScreensAbove: cfg.revealScreensAbove ?? 1,
       memoryScreensBelow: cfg.memoryScreensBelow ?? 2,
+      collectSegments: cfg.collectSegments ?? true,
     };
   }
 
@@ -246,7 +250,7 @@ export class InterwheelPlanner {
     const targetNode = bestNode ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
-    const segments = this.segmentsForEdges(edges, bestEdgeIds);
+    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds) : [];
     return {
       plan: plan.length > 0 ? plan : [false],
       segments,
@@ -282,7 +286,7 @@ export class InterwheelPlanner {
       sim.step(false, constantRng);
       plan.push(false);
       ticks += 1;
-      if ((ticks % TRAJECTORY_SAMPLE_TICKS) === 0 || sim.blob.state !== BLOB_STATE_FLY) {
+      if (this.cfg.collectSegments && ((ticks % TRAJECTORY_SAMPLE_TICKS) === 0 || sim.blob.state !== BLOB_STATE_FLY)) {
         const dead = sim.ending || sim.ended || (sim.blob.state as number) === BLOB_STATE_DEAD;
         segments.push({
           edgeId: 0,
@@ -331,6 +335,10 @@ export class InterwheelPlanner {
       sim.step(press, constantRng);
       plan.push(press);
       this.collectStepReward(sim, reward);
+      if (!this.cfg.collectSegments) {
+        if (press) launched = true;
+        return;
+      }
       const terminal = sim.blob.state !== BLOB_STATE_GRAB && sim.blob.state !== BLOB_STATE_WALL && sim.blob.state !== BLOB_STATE_FLY;
       const phase: SegmentPhase =
         terminal || sim.ending || sim.ended ? 'terminal' :
@@ -382,7 +390,7 @@ export class InterwheelPlanner {
     }
 
     const endState = sim.clone();
-    if (segments.length === 0 || segments[segments.length - 1].x1 !== endState.blob.x || segments[segments.length - 1].y1 !== endState.blob.y) {
+    if (this.cfg.collectSegments && (segments.length === 0 || segments[segments.length - 1].x1 !== endState.blob.x || segments[segments.length - 1].y1 !== endState.blob.y)) {
       segments.push({
         x0: sx,
         y0: sy,

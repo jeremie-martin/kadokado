@@ -111,4 +111,23 @@ test('analytics harness is faithful to live game and records movement stats', as
   expect(results[0].analytics.summary.phaseTime.classifiedPercent).toBeGreaterThan(90);
   expect(results[0].analytics.summary.planner.plans).toBeGreaterThan(0);
   expect(results[0].analytics.summary.planner.planMs.p95).toBeGreaterThanOrEqual(0);
+
+  const replayEquivalence = await page.evaluate(async () => {
+    const w = window as unknown as {
+      __interwheelAnalytics__: {
+        comparePureReplay: (seed: number, maxTicks: number) => Promise<{
+          equal: boolean;
+          firstDivergence?: { tick: number; path: string; mounted: unknown; pure: unknown };
+          mounted: { sampleCount: number; final: { score: number; heightMeters: number; ticks: number } };
+          pure: { sampleCount: number; final: { score: number; heightMeters: number; ticks: number } };
+        }>;
+      };
+    };
+    return await w.__interwheelAnalytics__.comparePureReplay(42, 1200);
+  });
+  expect(
+    replayEquivalence.equal,
+    `pure sim replay must match mounted headless transcript. firstDivergence=${JSON.stringify(replayEquivalence.firstDivergence)}`,
+  ).toBe(true);
+  expect(replayEquivalence.pure.final).toEqual(replayEquivalence.mounted.final);
 });

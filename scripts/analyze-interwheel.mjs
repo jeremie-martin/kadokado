@@ -6,8 +6,13 @@
 //   npm run analyze:interwheel -- --trials=20       # 20 trials
 //   npm run analyze:interwheel -- --seed=42         # 5 trials with seedBase=42 (deterministic levels)
 //   npm run analyze:interwheel -- --trials=10 --seed=42
+//   npm run analyze:interwheel -- --runner=pure     # browser pure sim/planner runner
+//   npm run analyze:interwheel -- --runner=pure --concurrency=8
 //   npm run analyze:interwheel -- --quick           # 1 seeded trial, capped at 30 in-game seconds
 //   npm run analyze:interwheel -- --max-seconds=30  # cap each trial's simulated duration
+//   npm run analyze:interwheel -- --verify-pure     # compare pure sim replay against mounted headless
+//   npm run analyze:interwheel -- --verify-pure-planner
+//                                                   # compare independently planned pure sim
 //   npm run analyze:interwheel -- --json            # machine-readable JSON output
 //   npm run analyze:interwheel -- --help            # show this help text
 //
@@ -27,10 +32,24 @@ const DEFAULT_MAX_TICKS = 24_000;
 const QUICK_MAX_SECONDS = 30;
 
 function parseArgs(argv) {
-  const args = { trials: 5, seedBase: null, maxTicks: null, json: false, help: false };
+  const args = {
+    trials: 5,
+    seedBase: null,
+    maxTicks: null,
+    json: false,
+    verifyPure: false,
+    verifyPurePlanner: false,
+    runner: 'mounted',
+    concurrency: 1,
+    help: false,
+  };
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
     else if (raw === '--json') args.json = true;
+    else if (raw === '--verify-pure') args.verifyPure = true;
+    else if (raw === '--verify-pure-planner') args.verifyPurePlanner = true;
+    else if (raw.startsWith('--runner=')) args.runner = raw.slice('--runner='.length);
+    else if (raw.startsWith('--concurrency=')) args.concurrency = Number(raw.slice('--concurrency='.length));
     else if (raw === '--quick') {
       args.trials = 1;
       args.seedBase = 42;
@@ -57,6 +76,14 @@ function parseArgs(argv) {
     console.error('--max-ticks/--max-seconds must produce a positive tick count');
     args.help = true;
   }
+  if (!['mounted', 'pure'].includes(args.runner)) {
+    console.error('--runner must be "mounted" or "pure"');
+    args.help = true;
+  }
+  if (!Number.isInteger(args.concurrency) || args.concurrency < 1) {
+    console.error('--concurrency must be a positive integer');
+    args.help = true;
+  }
   return args;
 }
 
@@ -67,9 +94,14 @@ USAGE:
   npm run analyze:interwheel                       5 trials, random levels
   npm run analyze:interwheel -- --trials=N         set trial count
   npm run analyze:interwheel -- --seed=S           seed level generation (deterministic)
+  npm run analyze:interwheel -- --runner=pure      use browser pure sim/planner runner
+  npm run analyze:interwheel -- --concurrency=N    parallel pure-runner pages
   npm run analyze:interwheel -- --quick            1 seed=42 trial, max 30 in-game seconds
   npm run analyze:interwheel -- --max-seconds=N    cap each trial to N in-game seconds
   npm run analyze:interwheel -- --max-ticks=N      cap each trial to N game ticks
+  npm run analyze:interwheel -- --verify-pure      compare mounted headless to pure sim replay
+  npm run analyze:interwheel -- --verify-pure-planner
+                                                    compare mounted headless to independently planned pure sim
   npm run analyze:interwheel -- --json             emit machine-readable JSON
   npm run analyze:interwheel -- --help             this help
 
@@ -77,6 +109,27 @@ The primary metric is height (median, in meters). Higher is better. The
 human player record we are calibrating against is ~2000m. The default cap is
 ${DEFAULT_MAX_TICKS} ticks (= ${(DEFAULT_MAX_TICKS / GAME_FPS).toFixed(0)} in-game seconds).
 `);
+}
+
+function prettyPrintPureVerification(result, label) {
+  console.log(`Interwheel ${label} verification`);
+  console.log('=======================================');
+  console.log(`config: trials=${result.trials}  seedBase=${result.seedBase}  maxTicks=${result.maxTicks}`);
+  console.log(`equal:  ${result.equal}`);
+  for (let i = 0; i < result.results.length; i += 1) {
+    const r = result.results[i];
+    const speedup = r.pure.cpuMs > 0 ? r.mounted.cpuMs / r.pure.cpuMs : 0;
+    console.log(
+      `  #${String(i + 1).padStart(2)} seed=${r.seed} equal=${r.equal}` +
+        ` mounted=${Math.round(r.mounted.cpuMs)}ms pure=${Math.round(r.pure.cpuMs)}ms` +
+        ` speedup=${speedup.toFixed(1)}x ticks=${r.mounted.final.ticks}`,
+    );
+    if (r.firstDivergence) {
+      console.log(`     first divergence: tick=${r.firstDivergence.tick} path=${r.firstDivergence.path}`);
+      console.log(`     mounted=${JSON.stringify(r.firstDivergence.mounted)}`);
+      console.log(`     pure=${JSON.stringify(r.firstDivergence.pure)}`);
+    }
+  }
 }
 
 function fmt(stats, unit = '') {
@@ -241,7 +294,7 @@ function prettyPrint(result) {
   const { config, stats, trials, wallMs, cpuMs } = result;
   console.log('Interwheel A* analytics');
   console.log('=======================');
-  console.log(`config:    trials=${config.trials}  seedBase=${config.seedBase ?? 'random'}  maxTicks=${config.maxTicks}`);
+  console.log(`config:    trials=${config.trials}  seedBase=${config.seedBase ?? 'random'}  maxTicks=${config.maxTicks}  runner=${config.runner ?? 'mounted'}`);
   console.log(`planner:   ${JSON.stringify(config.plannerConfig)}`);
   console.log('');
   console.log('trials:');
@@ -272,6 +325,93 @@ function prettyPrint(result) {
   console.log(`wall: ${(wallMs / 1000).toFixed(1)}s   cpu: ${(cpuMs / 1000).toFixed(1)}s`);
 }
 
+function combineAnalyzeResults(partials, config, wallMs) {
+  const trials = partials.flatMap((partial) => partial.trials);
+  const first = partials[0];
+  return {
+    trials,
+    stats: {
+      height_m: statsOf(trials.map((trial) => trial.heightMeters)),
+      score: statsOf(trials.map((trial) => trial.score)),
+      ticks: statsOf(trials.map((trial) => trial.ticks)),
+      cpuMs: statsOf(trials.map((trial) => trial.cpuMs)),
+    },
+    config: {
+      ...first.config,
+      trials: config.trials,
+      seedBase: config.seedBase,
+      maxTicks: config.maxTicks,
+      runner: config.runner,
+      concurrency: config.concurrency,
+    },
+    wallMs,
+    cpuMs: partials.reduce((sum, partial) => sum + partial.cpuMs, 0),
+  };
+}
+
+function trialChunks(args) {
+  const workers = Math.min(args.concurrency, args.trials);
+  const chunks = [];
+  let offset = 0;
+  for (let i = 0; i < workers; i += 1) {
+    const count = Math.floor(args.trials / workers) + (i < args.trials % workers ? 1 : 0);
+    chunks.push({
+      trials: count,
+      seedBase: args.seedBase === null ? null : args.seedBase + offset,
+      offset,
+    });
+    offset += count;
+  }
+  return chunks;
+}
+
+async function openAnalyticsPage(browser, url, onFailure) {
+  const page = await browser.newPage();
+  page.on('pageerror', (err) => {
+    console.error('Page error:', err.message);
+    onFailure();
+  });
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') {
+      console.error('Console error:', msg.text());
+      onFailure();
+    }
+  });
+  await page.goto(url);
+  await page.waitForFunction(() => Boolean(window.__interwheelAnalytics__), null, { timeout: 30_000 });
+  return page;
+}
+
+async function evaluateAnalytics(page, opts) {
+  return await page.evaluate(
+    ([trials, seedBase, maxTicks, verifyPure, verifyPurePlanner, runner]) => {
+      if (verifyPure) {
+        return window.__interwheelAnalytics__.comparePureReplayCorpus({
+          trials,
+          seedBase: seedBase === null ? 42 : seedBase,
+          maxTicks: maxTicks === null ? undefined : maxTicks,
+        });
+      }
+      if (verifyPurePlanner) {
+        return window.__interwheelAnalytics__.comparePurePlannerCorpus({
+          trials,
+          seedBase: seedBase === null ? 42 : seedBase,
+          maxTicks: maxTicks === null ? undefined : maxTicks,
+        });
+      }
+      const run = runner === 'pure'
+        ? window.__interwheelAnalytics__.runPureAnalyze
+        : window.__interwheelAnalytics__.runAnalyze;
+      return run({
+        trials,
+        seedBase: seedBase === null ? undefined : seedBase,
+        maxTicks: maxTicks === null ? undefined : maxTicks,
+      });
+    },
+    [opts.trials, opts.seedBase, opts.maxTicks, opts.verifyPure, opts.verifyPurePlanner, opts.runner],
+  );
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
@@ -298,37 +438,59 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   let exitCode = 0;
   try {
-    const page = await browser.newPage();
+    let result;
+    const canRunParallel = args.runner === 'pure' &&
+      args.concurrency > 1 &&
+      !args.verifyPure &&
+      !args.verifyPurePlanner &&
+      args.trials > 1;
 
-    page.on('pageerror', (err) => {
-      console.error('Page error:', err.message);
-      exitCode = 1;
-    });
-    page.on('console', (msg) => {
-      if (msg.type() === 'error') {
-        console.error('Console error:', msg.text());
-        exitCode = 1;
+    if (canRunParallel) {
+      const chunks = trialChunks(args);
+      const wallStart = performance.now();
+      const partials = await Promise.all(chunks.map(async (chunk) => {
+        const page = await openAnalyticsPage(browser, url, () => { exitCode = 1; });
+        try {
+          return await evaluateAnalytics(page, {
+            ...args,
+            trials: chunk.trials,
+            seedBase: chunk.seedBase,
+          });
+        } finally {
+          await page.close();
+        }
+      }));
+      result = combineAnalyzeResults(partials, {
+        trials: args.trials,
+        seedBase: args.seedBase,
+        maxTicks: args.maxTicks ?? partials[0]?.config.maxTicks ?? null,
+        runner: args.runner,
+        concurrency: chunks.length,
+      }, performance.now() - wallStart);
+    } else {
+      const page = await openAnalyticsPage(browser, url, () => { exitCode = 1; });
+      try {
+        result = await evaluateAnalytics(page, args);
+      } finally {
+        await page.close();
       }
-    });
-
-    await page.goto(url);
-    await page.waitForFunction(() => Boolean(window.__interwheelAnalytics__), null, { timeout: 30_000 });
-
-    const result = await page.evaluate(
-      ([trials, seedBase, maxTicks]) =>
-        window.__interwheelAnalytics__.runAnalyze({
-          trials,
-          seedBase: seedBase === null ? undefined : seedBase,
-          maxTicks: maxTicks === null ? undefined : maxTicks,
-        }),
-      [args.trials, args.seedBase, args.maxTicks],
-    );
+      if (!args.verifyPure && !args.verifyPurePlanner) {
+        result.config.runner = args.runner;
+        result.config.concurrency = 1;
+      }
+    }
 
     if (args.json) {
       process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+    } else if (args.verifyPure || args.verifyPurePlanner) {
+      prettyPrintPureVerification(
+        result,
+        args.verifyPurePlanner ? 'pure-planner' : 'pure-sim replay',
+      );
     } else {
       prettyPrint(result);
     }
+    if ((args.verifyPure || args.verifyPurePlanner) && !result.equal) exitCode = 1;
   } catch (err) {
     console.error('Analytics failed:', err);
     exitCode = 1;

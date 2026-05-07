@@ -33,11 +33,15 @@ npm run test:api
 npm run test:e2e
 npm run analyze:interwheel:quick
 npm run analyze:interwheel -- --max-seconds=30 --trials=3 --seed=42
+npm run analyze:interwheel -- --runner=pure --concurrency=4 --trials=20 --seed=42 --max-seconds=30
+npm run analyze:interwheel -- --verify-pure-planner --trials=3 --seed=42 --max-seconds=30
 ```
 
 For the persistent leaderboard locally, run `npm run dev:api` in one terminal and `npm run dev` in another; Vite proxies `/api` to the Node server. For production, run `npm run build` and then `npm start`.
 
 For fast Interwheel AI sanity checks before committing, prefer `npm run analyze:interwheel:quick`: it runs one deterministic seed with a 30-second in-game cap and records movement analytics. Use `npm run analyze:interwheel -- --max-seconds=N --trials=M --seed=S` when a broader capped comparison is useful.
+
+Interwheel analytics has two trusted execution modes. The default `mounted` runner uses the browser-mounted game with rendering and particles disabled. The `pure` runner uses the same simulator and planner without Pixi game updates, and can run multiple browser pages in parallel with `--concurrency=N` for larger seed batches. Before relying on the pure runner after planner/gameplay changes, run `npm run analyze:interwheel -- --verify-pure-planner --trials=N --seed=S --max-seconds=M`; it compares the pure runner against mounted headless tick by tick.
 
 The leaderboard database defaults to `.data/leaderboard.sqlite`. Override it with `LEADERBOARD_DB_PATH`. Set `IP_HASH_SECRET` in production so stored IP hashes are stable without storing raw IPs. If the app is behind a trusted reverse proxy, set `TRUST_PROXY=1`.
 
