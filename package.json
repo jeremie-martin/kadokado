@@ -16,6 +16,7 @@
     "analyze:interwheel:policies": "node scripts/interwheel/sweep-policies.mjs",
     "analyze:interwheel:policies:summary": "node scripts/interwheel/summarize-policy-sweep.mjs",
     "analyze:interwheel:climb": "node scripts/interwheel/validate-climb-agent.mjs",
+    "analyze:interwheel:edges": "node scripts/interwheel/validate-edges.mjs",
     "capture:interwheel": "node scripts/capture-interwheel.mjs"
   },
   "dependencies": {

@@ -19,6 +19,12 @@ populations.
 
 ## Analytical Reachability
 
+Current experimental command:
+
+```sh
+npm run analyze:interwheel:edges -- --seed=42 --max-height=4000
+```
+
 Current wheel generation is finite and mostly geometric. It spaces wheels and
 mines, but it does not prove that the climb remains possible once mine arcs,
 wheel rotation, wall routes, and timing are considered.
@@ -40,6 +46,12 @@ Promising shape:
   reachable.
 - Report failed bands with the blocking wheel/mine layout and candidate route
   traces so generator changes can be debugged.
+
+The current implementation is deliberately approximate: it samples local jump
+trajectories from wheel anchors, treats mines as forbidden landing-angle arcs,
+and includes wall-assisted wheel-to-wall-to-wheel edges. It does not mutate
+generation and should be calibrated against empirical climb-agent runs before
+we trust its pass/fail signal.
 
 Once the analytical validator identifies reliable failure modes, generation can
 retry local choices, reduce mine count, move mine angles, insert an alternate
