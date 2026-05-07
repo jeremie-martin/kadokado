@@ -29,7 +29,8 @@ const OVERLAY_PARAM_DEFAULTS = {
   lineageGamma: LINEAGE_DEFAULTS.gamma,
   alphaGamma: OVERLAY_DEFAULTS.alphaGamma,
   minDrawAlpha: OVERLAY_DEFAULTS.minDrawAlpha,
-  segmentWidth: OVERLAY_DEFAULTS.segmentWidth,
+  widthMin: OVERLAY_DEFAULTS.widthMin,
+  widthMax: OVERLAY_DEFAULTS.widthMax,
 };
 type OverlayParamKey = keyof typeof OVERLAY_PARAM_DEFAULTS;
 const OVERLAY_PARAM_KEYS = Object.keys(OVERLAY_PARAM_DEFAULTS) as OverlayParamKey[];
@@ -38,12 +39,15 @@ const OVERLAY_PARAM_PRECISION: Record<OverlayParamKey, number> = {
   lineageGamma: 1,
   alphaGamma: 1,
   minDrawAlpha: 2,
-  segmentWidth: 1,
+  widthMin: 2,
+  widthMax: 1,
 };
 const overlayParamInputs = new Map<OverlayParamKey, HTMLInputElement>();
 const overlayParamOutputs = new Map<OverlayParamKey, HTMLOutputElement>();
 const overlayReset = document.getElementById('overlay-reset') as HTMLButtonElement | null;
+const colorInput = document.getElementById('overlay-color') as HTMLInputElement | null;
 let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
+let overlayColor: number = OVERLAY_DEFAULTS.color;
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -169,13 +173,31 @@ function applyOverlayParam(key: OverlayParamKey, value: number): void {
       overlay?.draw(planner?.lastSegments() ?? []);
       refreshOverlayStats();
       break;
-    case 'segmentWidth':
-      overlay?.setSegmentWidth(value);
+    case 'widthMin':
+      overlay?.setWidthMin(value);
+      overlay?.draw(planner?.lastSegments() ?? []);
+      refreshOverlayStats();
+      break;
+    case 'widthMax':
+      overlay?.setWidthMax(value);
       overlay?.draw(planner?.lastSegments() ?? []);
       refreshOverlayStats();
       break;
   }
   syncOverlayParamControls();
+  refreshStats();
+}
+
+function colorToHex(color: number): string {
+  return `#${(color & 0xffffff).toString(16).padStart(6, '0')}`;
+}
+
+function applyOverlayColor(color: number): void {
+  overlayColor = color;
+  overlay?.setColor(color);
+  overlay?.draw(planner?.lastSegments() ?? []);
+  refreshOverlayStats();
+  if (colorInput) colorInput.value = colorToHex(color);
   refreshStats();
 }
 
@@ -193,10 +215,18 @@ function setupOverlayParamControls(): void {
     });
   });
 
+  colorInput?.addEventListener('input', () => {
+    const raw = colorInput.value;
+    if (!/^#[0-9a-f]{6}$/i.test(raw)) return;
+    const num = parseInt(raw.slice(1), 16);
+    if (Number.isFinite(num)) applyOverlayColor(num);
+  });
+
   overlayReset?.addEventListener('click', () => {
     for (const key of OVERLAY_PARAM_KEYS) {
       applyOverlayParam(key, OVERLAY_PARAM_DEFAULTS[key]);
     }
+    applyOverlayColor(OVERLAY_DEFAULTS.color);
   });
 
   // Push current values into the planner/overlay so HTML defaults that
@@ -204,6 +234,7 @@ function setupOverlayParamControls(): void {
   for (const key of OVERLAY_PARAM_KEYS) {
     applyOverlayParam(key, overlayParams[key]);
   }
+  applyOverlayColor(overlayColor);
   syncOverlayParamControls();
 }
 

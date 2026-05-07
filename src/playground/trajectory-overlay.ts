@@ -3,7 +3,6 @@ import type { Segment } from './interwheel-planner';
 
 export type OverlayMode = 'on' | 'off';
 
-const SEGMENT_COLOR = 0x9be8ff;
 
 // Visual defaults. The instance fields below mirror these and can be
 // overridden at runtime via the playground sliders.
@@ -19,12 +18,35 @@ const SEGMENT_COLOR = 0x9be8ff;
 // minDrawAlpha: below this alpha, skip drawing entirely. Avoids a "carpet"
 //   of near-invisible lines accumulating into visible noise.
 //
-// segmentWidth: stroke width in world pixels.
-export const OVERLAY_DEFAULTS: { alphaGamma: number; minDrawAlpha: number; segmentWidth: number } = {
+// widthMin / widthMax: stroke width is interpolated by *support magnitude*
+//   (not alpha) — width = lerp(min, max, clamp(support / p95Support, 0, 1)).
+//   This is Option B from docs/interwheel-ai-overlay.md §5: alpha and width
+//   encode different things. Alpha says "is this worth showing" (rank-based,
+//   distribution-stable); width says "how much search effort flowed through
+//   this edge" (magnitude-based, Mario-like additive overdraw). The chosen-
+//   prefix root reads thick AND opaque; the chosen-plan tip reads thin-but-
+//   fully-opaque (forced alpha=1, low own support), like a tree branch
+//   tapering. Equal min/max gives uniform width.
+export const OVERLAY_DEFAULTS: {
+  alphaGamma: number;
+  minDrawAlpha: number;
+  widthMin: number;
+  widthMax: number;
+  color: number;
+} = {
   alphaGamma: 4,
   minDrawAlpha: 0.05,
-  segmentWidth: 1,
+  widthMin: 1,
+  widthMax: 3,
+  color: 0x9be8ff,
 };
+
+// Saturation percentile for the support → width mapping. p95 makes the top
+// 5% of edges (= chosen-prefix root and a handful of near-top expanded
+// prefixes) saturate at widthMax, while the rest scale linearly. p100 (max)
+// would let the chosen-prefix outlier dominate and crush everything else
+// to widthMin.
+const WIDTH_NORM_PERCENTILE = 0.95;
 
 export type OverlayStats = {
   segments: number;
@@ -50,7 +72,9 @@ export class TrajectoryOverlay {
   private stats: OverlayStats = { ...EMPTY_STATS };
   private alphaGamma = OVERLAY_DEFAULTS.alphaGamma;
   private minDrawAlpha = OVERLAY_DEFAULTS.minDrawAlpha;
-  private segmentWidth = OVERLAY_DEFAULTS.segmentWidth;
+  private widthMin = OVERLAY_DEFAULTS.widthMin;
+  private widthMax = OVERLAY_DEFAULTS.widthMax;
+  private color = OVERLAY_DEFAULTS.color;
 
   constructor(parent: Container) {
     parent.addChild(this.graphics);
@@ -82,8 +106,16 @@ export class TrajectoryOverlay {
     this.minDrawAlpha = Math.max(0, Math.min(1, a));
   }
 
-  setSegmentWidth(w: number): void {
-    this.segmentWidth = Math.max(0.1, w);
+  setWidthMin(w: number): void {
+    this.widthMin = Math.max(0.1, w);
+  }
+
+  setWidthMax(w: number): void {
+    this.widthMax = Math.max(0.1, w);
+  }
+
+  setColor(c: number): void {
+    this.color = c & 0xffffff;
   }
 
   lastDrawnStats(): OverlayStats {
@@ -111,6 +143,9 @@ export class TrajectoryOverlay {
     for (let i = 0; i < sorted.length; i += 1) {
       rankByEdge.set(sorted[i][0], sorted.length <= 1 ? 1 : i / denom);
     }
+    const pivotIdx = Math.min(sorted.length - 1, Math.floor(sorted.length * WIDTH_NORM_PERCENTILE));
+    const widthPivot = Math.max(sorted[pivotIdx][1], Number.EPSILON);
+    const widthSpan = this.widthMax - this.widthMin;
 
     let hi = 0;
     let mid = 0;
@@ -124,9 +159,11 @@ export class TrajectoryOverlay {
       else if (alpha >= 0.15) mid++;
       else lo++;
       if (alpha < this.minDrawAlpha) continue;
+      const widthFactor = Math.min(1, s.support / widthPivot);
+      const width = this.widthMin + widthSpan * widthFactor;
       g.moveTo(s.x0, s.y0);
       g.lineTo(s.x1, s.y1);
-      g.stroke({ color: SEGMENT_COLOR, width: this.segmentWidth, alpha });
+      g.stroke({ color: this.color, width, alpha });
       drawnEdges.add(s.edgeId);
       drawnSegments++;
     }

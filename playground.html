@@ -93,9 +93,18 @@
             <input id="overlay-minDrawAlpha" type="range" min="0" max="0.3" step="0.01" value="0.05" data-overlay-key="minDrawAlpha">
           </div>
           <div class="control">
-            <label for="overlay-segmentWidth">Line width</label>
-            <output id="overlay-segmentWidth-value">1.0</output>
-            <input id="overlay-segmentWidth" type="range" min="0.5" max="4" step="0.5" value="1" data-overlay-key="segmentWidth">
+            <label for="overlay-widthMin">Width min (low support)</label>
+            <output id="overlay-widthMin-value">1.00</output>
+            <input id="overlay-widthMin" type="range" min="0.25" max="5" step="0.05" value="1" data-overlay-key="widthMin">
+          </div>
+          <div class="control">
+            <label for="overlay-widthMax">Width max (high support)</label>
+            <output id="overlay-widthMax-value">3.0</output>
+            <input id="overlay-widthMax" type="range" min="0.5" max="5" step="0.5" value="3" data-overlay-key="widthMax">
+          </div>
+          <div class="control">
+            <label for="overlay-color">Line color</label>
+            <input id="overlay-color" type="color" value="#9be8ff" style="grid-column: auto; width: 60px; height: 24px; padding: 0; border: 1px solid #365866; background: transparent;">
           </div>
         </div>
         <div class="actions">

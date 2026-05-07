@@ -110,9 +110,16 @@ The rule:
   best = 1) and `γ = 4`.
 - Below `MIN_DRAW_ALPHA = 0.05` segments are culled outright (no draw call)
   so the long tail doesn't accumulate into a noise carpet.
+- Stroke width is interpolated by **support magnitude** (not alpha):
+  `width = widthMin + (widthMax − widthMin) × clamp(support / p95Support, 0, 1)`.
+  This decouples width from alpha so they encode different things — see §5
+  for the framing. The chosen-prefix root reads thick + opaque; the chosen-
+  plan tip reads thin + opaque (low own support but `onChosenChain`); off-
+  chain prefixes that the search explored read medium-width + faded; off-
+  chain leaves read thin + faded.
 
-One color (`0x9be8ff`), one line width (`1`). All edges drawn in a single
-pass — no kind layering, no per-segment color.
+One color (`0x9be8ff`). All edges drawn in a single pass — no kind
+layering, no per-segment color.
 
 Why rank rather than support magnitude directly: the lineage recurrence has
 factor `branching × decay` typically > 1, so support grows roughly
@@ -134,7 +141,9 @@ respective source files (`LINEAGE_DEFAULTS`, `OVERLAY_DEFAULTS`):
 | `ALPHA_GAMMA`             | `4`     | rank-curve steepness; raise → fewer bright lines |
 | `MIN_DRAW_ALPHA`          | `0.05`  | cull threshold; raise → cleaner long tail   |
 | `SEGMENT_COLOR`           | cyan    | uniform stroke color                        |
-| `SEGMENT_WIDTH`           | `1`     | uniform stroke width                        |
+| `widthMin`                | `1`     | stroke width at low support (off-chain leaves) |
+| `widthMax`                | `3`     | stroke width at p95 support (chosen-prefix root and near-top expanded prefixes) |
+| `WIDTH_NORM_PERCENTILE`   | `0.95`  | percentile of support distribution that saturates at widthMax |
 | `LINEAGE_SUPPORT_GAMMA`   | `3`     | raw-score rank → seed support; γ=3 means only top descendants pull a parent up |
 | `LINEAGE_SUPPORT_DECAY`   | `0.65`  | fraction of child support a parent inherits |
 
@@ -278,7 +287,91 @@ once the tree's branching structure is folded in.
 
 ---
 
-## 5. Side-by-side reference
+## 5. Visual channel mapping — design space
+
+The renderer has two visual channels per segment (alpha and width), and the
+search produces three usable underlying signals (raw value, lineage support,
+rank-of-X). How each channel maps to a signal is a design choice with real
+visual consequences. Captured here so future iterations don't relitigate
+ground.
+
+### What we want each channel to communicate
+
+Three distinct things, ideally on independent visual channels:
+
+1. **The chosen plan** — should pop. The user needs to see where the blob
+   is going.
+2. **Search effort distribution** — where the planner's compute went. Mario's
+   ring-buffer naturally encoded this: branches the search expanded deeply
+   got more pixels overplotted; thin/abandoned branches got few. This is the
+   "leader looks thick" effect.
+3. **Alternative competitiveness** — among non-chosen edges, which were
+   near-tied with the winner vs. obvious losers. Useful for understanding
+   the search's reasoning ("there were two viable routes here, the planner
+   picked X").
+
+### Underlying signals available
+
+| Signal      | What it is                              | Property                                   |
+|-------------|-----------------------------------------|--------------------------------------------|
+| `value`     | edge's own immediate score              | per-edge, raw                              |
+| `support`   | own + decayed Σ descendants' support    | per-edge, magnitude (Mario-like, blows up with depth) |
+| `rank-of-X` | position in sorted distribution         | per-edge, distribution-stable, max=1       |
+
+### Mapping options considered
+
+**Option A: One signal, both channels.**
+`alpha = rank(support)^γ`, `width = lerp(min, max, alpha)`. Width and alpha
+co-vary perfectly. *Critique:* alpha is overloaded — it encodes both "is
+this visible" and "how prominent" — and rank discards magnitude that the
+additive-overdraw intuition cared about.
+
+**Option B: Decoupled — alpha = rank, width = support magnitude.** *(current direction)*
+- `alpha = rank(support)^γ` (chosen-chain forced to 1) — distribution-
+  stable visibility, cull-friendly.
+- `width = lerp(widthMin, widthMax, normalize(support))` — Mario-like
+  additive overdraw.
+
+Each channel encodes a distinct concept: alpha = "is this worth showing,"
+width = "how much search effort flowed through this edge." The chosen-prefix
+root reads thick *and* opaque; the chosen-plan **tip** reads thin-but-fully-
+opaque (low own support but `onChosenChain`), like a tree branch tapering —
+visually mirroring "this is where the planner thinks the action is going
+next." Off-chain prefixes that the search explored get medium width even at
+low alpha. Off-chain leaves get widthMin and faded — barely visible noise.
+Recurrence blow-up handled by normalizing against a percentile (p95), not by
+max.
+
+**Option C: Pure magnitude, both channels.**
+Both `alpha` and `width` driven by `normalize(support)`. Magnitude info
+preserved everywhere. *Critique:* outliers (the chosen-prefix root with
+support ~25) crush the long tail unless you pick a good pivot percentile.
+Loses the distribution-stable nice-spread property of rank.
+
+**Option D: Drop the chosen-chain shortcut.**
+The chosen prefix already has the highest support, so it'd naturally be
+brightest+widest. *Critique:* loses guaranteed visual primacy — if a near-
+tied alternative exists, the chosen plan might not visually pop.
+
+### Decision and current state
+
+Going with **Option B, in two steps**:
+
+- **Step 1 (current):** width = `lerp(widthMin, widthMax, support/p95Support)`
+  with p95-percentile saturation. Alpha unchanged. Tunable widthMin/widthMax
+  in the playground; default widthMax > widthMin so the tapering shows on
+  first load.
+- **Step 2 (after playtest):** if Option B's tapering reads well, ship. If
+  the chosen-leaf-thin effect is confusing, fall back to width tied to alpha
+  (Option A) and rely on cranking widthMax for chosen-plan prominence.
+
+The decision is "what should width *mean* — same thing as alpha, or
+something complementary?" Option B says complementary; Step 2 will confirm
+or revert.
+
+---
+
+## 6. Side-by-side reference
 
 | Aspect              | Mario A*                              | Interwheel today                       |
 |---------------------|---------------------------------------|----------------------------------------|
