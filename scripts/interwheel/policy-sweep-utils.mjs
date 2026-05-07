@@ -18,6 +18,11 @@ export const DEFAULT_SWEEP_FIELDS = [
   'scoreWallTerm',
   'scorePaceCost',
   'scoreTotal',
+  'pastilles',
+  'sparks',
+  'uniquePerceivedPastilles',
+  'captureRate',
+  'missedPerceived',
 ];
 
 export function stats(values) {

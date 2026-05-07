@@ -27,6 +27,15 @@ const DEEP_WALL_WAIT_STEP = 2;
 const DEFAULT_WAIT_PENALTY = 0.75;
 const DEFAULT_WAIT_GRACE_TICKS = 24;
 const DEFAULT_LONG_WAIT_PENALTY = 0.08;
+// "Miss" detection: how close does the trajectory get to an uncollected
+// pastille before we count it as a foregone opportunity? Pickup radius is
+// 70px, so anything <70 was either grabbed or barely missed; out to ~300
+// covers what a different wait-tick choice could plausibly have reached.
+const MISS_PROXIMITY_PX = 300;
+const MISS_PROXIMITY_PX_SQ = MISS_PROXIMITY_PX * MISS_PROXIMITY_PX;
+const MISS_PENALTY_FACTOR = 1.0;
+const NODE_BIAS_DECAY_PX = 400;
+const NODE_BIAS_FACTOR = 1.5;
 const STATE_BONUS: Record<number, number> = {
   [BLOB_STATE_GRAB]: 850,
   [BLOB_STATE_WALL]: 600,
@@ -36,6 +45,11 @@ const STATE_BONUS_FALLBACK = -1_000;
 type EdgeReward = {
   pickedValue: number;
   sparkScore: number;
+  collectedKeys: Set<string>;
+  // Parallel to currentPerceived.snap.pastilles; squared min distance from
+  // any sampled blob position along the edge to that pastille. Used to
+  // penalize routes that bypass nearby uncollected pastilles.
+  minDistSq: Float64Array;
 };
 
 type EdgeRoute = {
@@ -58,6 +72,7 @@ type SearchNode = {
   depth: number;
   totalTicks: number;
   value: number;
+  collectibleBias: number;
 };
 
 type SearchEdge = {
@@ -142,6 +157,7 @@ export type PlannerPolicy = {
 export type CandidateScoreBreakdown = {
   height: number;
   collectibles: number;
+  missedCollect: number;
   wallRoute: number;
   stability: number;
   paceCost: number;
@@ -169,6 +185,7 @@ export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
   return {
     height: 0,
     collectibles: 0,
+    missedCollect: 0,
     wallRoute: 0,
     stability: 0,
     paceCost: 0,
@@ -188,6 +205,7 @@ export class InterwheelPlanner {
   private knownWheelIdx = new Set<number>();
   private knownPastilleKeys = new Set<string>();
   private lastSeenTick = -1;
+  private currentPerceived: PerceivedSnapshot | null = null;
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
@@ -244,12 +262,18 @@ export class InterwheelPlanner {
     this.lastSeenTick = -1;
   }
 
+  /** Number of unique pastilles that have entered perception over this planner's lifetime. */
+  uniquePerceivedPastilles(): number {
+    return this.knownPastilleKeys.size;
+  }
+
   private plan(): PlanResult {
     const fullSnap = this.sim.clone();
     if (fullSnap.tick < this.lastSeenTick) this.invalidate();
     this.lastSeenTick = fullSnap.tick;
     this.updatePerception(fullSnap);
     const perceived = this.buildPerceivedSnapshot(fullSnap);
+    this.currentPerceived = perceived;
 
     if (fullSnap.blob.state === BLOB_STATE_DEAD || fullSnap.ending || fullSnap.ended) {
       return this.emptyResult(fullSnap.blob.y, perceived, 'dead');
@@ -274,7 +298,7 @@ export class InterwheelPlanner {
       rootState,
       0,
       0,
-      { pickedValue: 0, sparkScore: 0 },
+      { pickedValue: 0, sparkScore: 0, collectedKeys: new Set<string>(), minDistSq: new Float64Array(0) },
       this.emptyRoute(rootState),
       false,
     );
@@ -286,6 +310,7 @@ export class InterwheelPlanner {
       depth: 0,
       totalTicks: 0,
       value: rootScore.total,
+      collectibleBias: this.collectibleBias(rootState),
     };
 
     const nodes: SearchNode[] = [root];
@@ -315,6 +340,7 @@ export class InterwheelPlanner {
           depth: node.depth + 1,
           totalTicks: node.totalTicks + edge.plan.length,
           value: edge.value,
+          collectibleBias: this.collectibleBias(edge.endState),
         };
         edge.childId = child.id;
         nodes.push(child);
@@ -407,7 +433,14 @@ export class InterwheelPlanner {
     const sim = this.scratch;
     const plan: boolean[] = [];
     const segments: Omit<Segment, 'edgeId' | 'kind'>[] = [];
-    const reward: EdgeReward = { pickedValue: 0, sparkScore: 0 };
+    const perceivedPastilles = this.currentPerceived?.snap.pastilles ?? [];
+    const minDistSq = new Float64Array(perceivedPastilles.length);
+    for (let i = 0; i < minDistSq.length; i += 1) minDistSq[i] = Infinity;
+    const reward: EdgeReward = {
+      pickedValue: 0, sparkScore: 0,
+      collectedKeys: new Set<string>(),
+      minDistSq,
+    };
     const route = this.emptyRoute(parent.state);
     sim.restore(parent.state);
 
@@ -419,6 +452,15 @@ export class InterwheelPlanner {
       plan.push(press);
       this.collectStepReward(sim, reward);
       this.updateRoute(route, sim);
+      if (perceivedPastilles.length > 0) {
+        const bx = sim.blob.x, by = sim.blob.y;
+        for (let i = 0; i < perceivedPastilles.length; i += 1) {
+          const p = perceivedPastilles[i];
+          const dx = p.x - bx, dy = p.y - by;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < minDistSq[i]) minDistSq[i] = d2;
+        }
+      }
       if (!this.cfg.collectSegments) {
         if (press) launched = true;
         return;
@@ -522,6 +564,7 @@ export class InterwheelPlanner {
   private collectStepReward(sim: ScratchInterwheelSim, reward: EdgeReward): void {
     for (const pastille of sim.events.collectedPastilles) {
       reward.pickedValue += SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
+      reward.collectedKeys.add(this.pastilleKey(pastille));
     }
     for (const spark of sim.events.collectedSparks) {
       reward.sparkScore += spark.score;
@@ -539,7 +582,7 @@ export class InterwheelPlanner {
   ): CandidateScoreBreakdown {
     const waitPenalty = this.waitPenalty(waitTicks);
     if (this.isTerminal(end)) {
-      const collectibles = this.cfg.policy.collectibles * (reward.pickedValue + reward.sparkScore);
+      const collectibles = this.cfg.policy.collectibles * (reward.pickedValue * 1.5 + reward.sparkScore * 3);
       const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
       const safetyCost = 1_000_000;
       return {
@@ -569,13 +612,13 @@ export class InterwheelPlanner {
     const scorePolicy =
       reward.sparkScore * 3 +
       reward.pickedValue * 1.5;
-    const scoreTerm = Math.min(
-      scorePolicy * this.cfg.scoreBias,
-      Math.max(1_250, heightPolicy * 0.35),
-    ) * (1 - waterUrgency * 0.85);
+    // Uncapped: collectibles term scales linearly with pickup value, so the
+    // policy.collectibles knob has real magnitude authority vs height.
+    const scoreTerm = scorePolicy * this.cfg.scoreBias * (1 - waterUrgency * 0.85);
     const loopPenalty = sameStableTarget && reward.pickedValue + reward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
     const height = this.cfg.policy.climb * heightPolicy * (1 + waterUrgency * 1.2);
     const collectibles = this.cfg.policy.collectibles * scoreTerm;
+    const missedCollect = this.cfg.policy.collectibles * this.missedCollectibleValue(reward) * MISS_PENALTY_FACTOR;
     const wallRoute = this.cfg.policy.wallRoutes * this.wallRouteValue(route);
     const stability = stateBonus;
     const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
@@ -585,14 +628,51 @@ export class InterwheelPlanner {
     return {
       height,
       collectibles,
+      missedCollect,
       wallRoute,
       stability,
       paceCost,
       safetyCost,
       backtrackCost,
       loopCost,
-      total: height + collectibles + wallRoute + stability - paceCost - safetyCost - backtrackCost - loopCost,
+      total: height + collectibles + wallRoute + stability - missedCollect - paceCost - safetyCost - backtrackCost - loopCost,
     };
+  }
+
+  // Sum perceived pastille values that the route passed within
+  // MISS_PROXIMITY_PX of but did not collect. Linear proximity weight
+  // (1 at the pastille, 0 at the threshold) keeps the signal smooth.
+  private missedCollectibleValue(reward: EdgeReward): number {
+    const perceived = this.currentPerceived?.snap.pastilles;
+    if (!perceived || perceived.length === 0) return 0;
+    let missed = 0;
+    for (let i = 0; i < perceived.length; i += 1) {
+      const p = perceived[i];
+      if (reward.collectedKeys.has(this.pastilleKey(p))) continue;
+      const d2 = reward.minDistSq[i];
+      if (!Number.isFinite(d2) || d2 >= MISS_PROXIMITY_PX_SQ) continue;
+      const proximity = 1 - Math.sqrt(d2) / MISS_PROXIMITY_PX;
+      missed += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * proximity;
+    }
+    return missed;
+  }
+
+  // Bias for how attractive a node is for further search expansion when the
+  // policy weights collectibles. Decays exponentially with blob-to-pastille
+  // distance, summed over still-uncollected perceived pastilles.
+  private collectibleBias(state: SimSnapshot): number {
+    if (this.cfg.policy.collectibles <= 0) return 0;
+    const pastilles = state.pastilles;
+    if (pastilles.length === 0) return 0;
+    let bias = 0;
+    const bx = state.blob.x, by = state.blob.y;
+    for (const p of pastilles) {
+      const dx = p.x - bx, dy = p.y - by;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      const decay = Math.exp(-d / NODE_BIAS_DECAY_PX);
+      bias += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * decay;
+    }
+    return bias * this.cfg.policy.collectibles * NODE_BIAS_FACTOR;
   }
 
   private emptyRoute(start: SimSnapshot): EdgeRoute {
@@ -650,7 +730,7 @@ export class InterwheelPlanner {
 
   private nodePriority(node: SearchNode, root: SimSnapshot): number {
     const yGain = root.blob.y - node.state.blob.y;
-    return node.value + Math.max(0, yGain) * 2 - node.totalTicks * 1.5;
+    return node.value + Math.max(0, yGain) * 2 - node.totalTicks * 1.5 + node.collectibleBias;
   }
 
   private bestEdgeIds(nodes: SearchNode[], target: SearchNode): Set<number> {

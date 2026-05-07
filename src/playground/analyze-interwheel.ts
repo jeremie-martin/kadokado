@@ -343,7 +343,7 @@ function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
 }
 
 function scoreBreakdownKeys(): Array<keyof CandidateScoreBreakdown> {
-  return ['height', 'collectibles', 'wallRoute', 'stability', 'paceCost', 'safetyCost', 'backtrackCost', 'loopCost', 'total'];
+  return ['height', 'collectibles', 'missedCollect', 'wallRoute', 'stability', 'paceCost', 'safetyCost', 'backtrackCost', 'loopCost', 'total'];
 }
 
 function addScoreBreakdown(target: CandidateScoreBreakdown, source: CandidateScoreBreakdown): void {
@@ -876,6 +876,8 @@ type TrialResult = {
   cpuMs: number;
   planner: TrialPlannerStats;
   analytics: InterwheelRunAnalyticsResult;
+  /** Unique pastilles that came into the agent's perception window over the run. */
+  uniquePerceivedPastilles: number;
   /** The seed used for this trial's level generation, or null if Math.random was used. */
   seed: number | null;
 };
@@ -924,6 +926,7 @@ async function runTrial(
       cpuMs: performance.now() - startCpu,
       planner: summarizePlannerStats(currentPlannerRun ?? freshPlannerRunStats()),
       analytics: currentAnalytics.finish(game.sim.clone(), !game.ended && ticks >= maxTicks),
+      uniquePerceivedPastilles: planner.uniquePerceivedPastilles(),
       seed,
     };
   } finally {
@@ -978,6 +981,7 @@ async function runPureTrial(
     cpuMs: performance.now() - startCpu,
     planner: summarizePlannerStats(plannerRun),
     analytics: analytics.finish(sim.clone(), !sim.ended && ticks >= maxTicks),
+    uniquePerceivedPastilles: purePlanner.uniquePerceivedPastilles(),
     seed,
   };
 }
