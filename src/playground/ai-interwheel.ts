@@ -70,7 +70,9 @@ function policyFromFocus(focus: number, base: PlannerPolicy): PlannerPolicy {
 }
 
 function readPolicyControls(): PlannerPolicy {
-  const next: PlannerPolicy = { ...DEFAULT_PLANNER_POLICY };
+  // Start from current policy so keys without a UI input (e.g. climb,
+  // collectibles when only the Focus slider is shown) retain their values.
+  const next: PlannerPolicy = { ...policy };
   for (const key of POLICY_KEYS) {
     const input = policyInputs.get(key);
     if (!input) continue;
