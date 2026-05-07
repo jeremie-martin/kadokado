@@ -8,6 +8,7 @@
 //   npm run analyze:interwheel -- --trials=10 --seed=42
 //   npm run analyze:interwheel -- --runner=pure     # browser pure sim/planner runner
 //   npm run analyze:interwheel -- --runner=pure --concurrency=8
+//   npm run analyze:interwheel -- --policy.wallRoutes=0.5 --policy.climb=1.2
 //   npm run analyze:interwheel -- --quick           # 1 seeded trial, capped at 30 in-game seconds
 //   npm run analyze:interwheel -- --max-seconds=30  # cap each trial's simulated duration
 //   npm run analyze:interwheel -- --verify-pure     # compare pure sim replay against mounted headless
@@ -30,6 +31,7 @@ import { chromium } from '@playwright/test';
 const GAME_FPS = 40;
 const DEFAULT_MAX_TICKS = 24_000;
 const QUICK_MAX_SECONDS = 30;
+const POLICY_KEYS = ['climb', 'collectibles', 'wallRoutes', 'pace'];
 
 function parseArgs(argv) {
   const args = {
@@ -41,6 +43,7 @@ function parseArgs(argv) {
     verifyPurePlanner: false,
     runner: 'mounted',
     concurrency: 1,
+    policy: {},
     help: false,
   };
   for (const raw of argv.slice(2)) {
@@ -50,6 +53,17 @@ function parseArgs(argv) {
     else if (raw === '--verify-pure-planner') args.verifyPurePlanner = true;
     else if (raw.startsWith('--runner=')) args.runner = raw.slice('--runner='.length);
     else if (raw.startsWith('--concurrency=')) args.concurrency = Number(raw.slice('--concurrency='.length));
+    else if (raw.startsWith('--policy.')) {
+      const eq = raw.indexOf('=');
+      const key = raw.slice('--policy.'.length, eq);
+      const value = Number(raw.slice(eq + 1));
+      if (eq < 0 || !POLICY_KEYS.includes(key) || !Number.isFinite(value)) {
+        console.error(`Invalid policy override: ${raw}`);
+        args.help = true;
+      } else {
+        args.policy[key] = value;
+      }
+    }
     else if (raw === '--quick') {
       args.trials = 1;
       args.seedBase = 42;
@@ -96,6 +110,7 @@ USAGE:
   npm run analyze:interwheel -- --seed=S           seed level generation (deterministic)
   npm run analyze:interwheel -- --runner=pure      use browser pure sim/planner runner
   npm run analyze:interwheel -- --concurrency=N    parallel pure-runner pages
+  npm run analyze:interwheel -- --policy.KEY=N     set one numeric policy knob
   npm run analyze:interwheel -- --quick            1 seed=42 trial, max 30 in-game seconds
   npm run analyze:interwheel -- --max-seconds=N    cap each trial to N in-game seconds
   npm run analyze:interwheel -- --max-ticks=N      cap each trial to N game ticks
@@ -108,6 +123,8 @@ USAGE:
 The primary metric is height (median, in meters). Higher is better. The
 human player record we are calibrating against is ~2000m. The default cap is
 ${DEFAULT_MAX_TICKS} ticks (= ${(DEFAULT_MAX_TICKS / GAME_FPS).toFixed(0)} in-game seconds).
+
+Policy knobs: ${POLICY_KEYS.join(', ')}
 `);
 }
 
@@ -190,17 +207,26 @@ function combineActionRates(summaries) {
   const wheelJumps = summaries.reduce((sum, summary) => sum + summary.wheelJumps, 0);
   const wallJumps = summaries.reduce((sum, summary) => sum + summary.wallJumps, 0);
   const flights = summaries.reduce((sum, summary) => sum + summary.flights, 0);
+  const pastilles = summaries.reduce((sum, summary) => sum + (summary.pastilles ?? 0), 0);
+  const sparks = summaries.reduce((sum, summary) => sum + (summary.sparks ?? 0), 0);
+  const bonusScore = summaries.reduce((sum, summary) => sum + (summary.bonusScore ?? 0), 0);
   return {
     presses,
     jumps,
     wheelJumps,
     wallJumps,
     flights,
+    pastilles,
+    sparks,
+    bonusScore,
     pressesPerMinute: perMinute(presses),
     jumpsPerMinute: perMinute(jumps),
     wheelJumpsPerMinute: perMinute(wheelJumps),
     wallJumpsPerMinute: perMinute(wallJumps),
     flightsPerMinute: perMinute(flights),
+    pastillesPerMinute: perMinute(pastilles),
+    sparksPerMinute: perMinute(sparks),
+    bonusScorePerMinute: perMinute(bonusScore),
   };
 }
 
@@ -258,6 +284,7 @@ function printMovementAnalytics(trials) {
   const planMsMax = Math.max(...summaries.map((summary) => summary.planner.planMs.max), 0);
   const edgesP95 = Math.max(...summaries.map((summary) => summary.planner.edgesEvaluated.p95), 0);
   const edgesMax = Math.max(...summaries.map((summary) => summary.planner.edgesEvaluated.max), 0);
+  const scoreBreakdown = combineScoreBreakdownMeans(summaries);
 
   console.log('');
   console.log('movement analytics:');
@@ -266,6 +293,11 @@ function printMovementAnalytics(trials) {
       `jumps=${actions.jumps} ${fmtNumber(actions.jumpsPerMinute, '/min', 1)}  ` +
       `wheelJumps=${actions.wheelJumps} ${fmtNumber(actions.wheelJumpsPerMinute, '/min', 1)}  ` +
       `wallJumps=${actions.wallJumps} ${fmtNumber(actions.wallJumpsPerMinute, '/min', 1)}`,
+  );
+  console.log(
+    `  bonuses     pastilles=${actions.pastilles} ${fmtNumber(actions.pastillesPerMinute, '/min', 1)}  ` +
+      `sparks=${actions.sparks} ${fmtNumber(actions.sparksPerMinute, '/min', 1)}  ` +
+      `bonusScore=${actions.bonusScore} ${fmtNumber(actions.bonusScorePerMinute, '/min', 1)}`,
   );
   console.log(
     `  phases      ${fmtPhase('wheel', phases.wheelTicks, phases.wheelSeconds, phases.wheelPercent)}  ` +
@@ -288,6 +320,34 @@ function printMovementAnalytics(trials) {
   );
   console.log(`  planMs      p95(max trial)=${fmtNumber(planMsP95, 'ms', 1)}  max=${fmtNumber(planMsMax, 'ms', 1)}`);
   console.log(`  edges       p95(max trial)=${fmtNumber(edgesP95, '', 0)}  max=${fmtNumber(edgesMax, '', 0)}`);
+  if (scoreBreakdown) {
+    console.log(
+      `  best score  height=${fmtNumber(scoreBreakdown.height, '', 0)}  ` +
+        `collect=${fmtNumber(scoreBreakdown.collectibles, '', 0)}  ` +
+        `wall=${fmtNumber(scoreBreakdown.wallRoute, '', 0)}  ` +
+        `stable=${fmtNumber(scoreBreakdown.stability, '', 0)}  ` +
+        `paceCost=${fmtNumber(scoreBreakdown.paceCost, '', 0)}  ` +
+        `riskCost=${fmtNumber(scoreBreakdown.safetyCost, '', 0)}  ` +
+        `total=${fmtNumber(scoreBreakdown.total, '', 0)}`,
+    );
+  }
+}
+
+function combineScoreBreakdownMeans(summaries) {
+  const first = summaries[0]?.planner.bestScoreBreakdown;
+  if (!first) return null;
+  const out = {};
+  for (const key of Object.keys(first)) {
+    let total = 0;
+    let count = 0;
+    for (const summary of summaries) {
+      const stat = summary.planner.bestScoreBreakdown[key];
+      total += stat.total;
+      count += stat.count;
+    }
+    out[key] = count > 0 ? total / count : 0;
+  }
+  return out;
 }
 
 function prettyPrint(result) {
@@ -295,6 +355,7 @@ function prettyPrint(result) {
   console.log('Interwheel A* analytics');
   console.log('=======================');
   console.log(`config:    trials=${config.trials}  seedBase=${config.seedBase ?? 'random'}  maxTicks=${config.maxTicks}  runner=${config.runner ?? 'mounted'}`);
+  console.log(`policy:    ${JSON.stringify(config.policy ?? {})}`);
   console.log(`planner:   ${JSON.stringify(config.plannerConfig)}`);
   console.log('');
   console.log('trials:');
@@ -343,6 +404,7 @@ function combineAnalyzeResults(partials, config, wallMs) {
       maxTicks: config.maxTicks,
       runner: config.runner,
       concurrency: config.concurrency,
+      policy: config.policy,
     },
     wallMs,
     cpuMs: partials.reduce((sum, partial) => sum + partial.cpuMs, 0),
@@ -384,12 +446,13 @@ async function openAnalyticsPage(browser, url, onFailure) {
 
 async function evaluateAnalytics(page, opts) {
   return await page.evaluate(
-    ([trials, seedBase, maxTicks, verifyPure, verifyPurePlanner, runner]) => {
+    ([trials, seedBase, maxTicks, verifyPure, verifyPurePlanner, runner, policy]) => {
       if (verifyPure) {
         return window.__interwheelAnalytics__.comparePureReplayCorpus({
           trials,
           seedBase: seedBase === null ? 42 : seedBase,
           maxTicks: maxTicks === null ? undefined : maxTicks,
+          policy,
         });
       }
       if (verifyPurePlanner) {
@@ -397,6 +460,7 @@ async function evaluateAnalytics(page, opts) {
           trials,
           seedBase: seedBase === null ? 42 : seedBase,
           maxTicks: maxTicks === null ? undefined : maxTicks,
+          policy,
         });
       }
       const run = runner === 'pure'
@@ -406,9 +470,10 @@ async function evaluateAnalytics(page, opts) {
         trials,
         seedBase: seedBase === null ? undefined : seedBase,
         maxTicks: maxTicks === null ? undefined : maxTicks,
+        policy,
       });
     },
-    [opts.trials, opts.seedBase, opts.maxTicks, opts.verifyPure, opts.verifyPurePlanner, opts.runner],
+    [opts.trials, opts.seedBase, opts.maxTicks, opts.verifyPure, opts.verifyPurePlanner, opts.runner, opts.policy],
   );
 }
 
@@ -466,6 +531,7 @@ async function main() {
         maxTicks: args.maxTicks ?? partials[0]?.config.maxTicks ?? null,
         runner: args.runner,
         concurrency: chunks.length,
+        policy: args.policy,
       }, performance.now() - wallStart);
     } else {
       const page = await openAnalyticsPage(browser, url, () => { exitCode = 1; });
@@ -477,6 +543,7 @@ async function main() {
       if (!args.verifyPure && !args.verifyPurePlanner) {
         result.config.runner = args.runner;
         result.config.concurrency = 1;
+        result.config.policy = args.policy;
       }
     }
 

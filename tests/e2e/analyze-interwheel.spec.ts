@@ -52,16 +52,36 @@ test('analytics harness is faithful to live game and records movement stats', as
       summary: {
         jumps: number;
         wheelStays: number;
-        actionsPerMinute: { jumpsPerMinute: number; pressesPerMinute: number };
+        pastilles: number;
+        sparks: number;
+        bonusScore: number;
+        actionsPerMinute: {
+          jumpsPerMinute: number;
+          pressesPerMinute: number;
+          pastillesPerMinute: number;
+          sparksPerMinute: number;
+          bonusScorePerMinute: number;
+        };
         phaseTime: { wheelPercent: number; flightPercent: number; wallPercent: number; classifiedPercent: number };
         wheelStayRevolutions: { count: number; median: number; p95: number; max: number };
-        planner: { plans: number; planMs: { count: number; p95: number; max: number } };
+        planner: {
+          plans: number;
+          planMs: { count: number; p95: number; max: number };
+          bestScoreBreakdown: {
+            total: { count: number; mean: number };
+            height: { count: number; mean: number };
+            collectibles: { count: number; mean: number };
+            paceCost: { count: number; mean: number };
+          };
+        };
       };
       events: {
         jumps: unknown[];
         wheelStays: unknown[];
         wallDrifts: unknown[];
         flights: unknown[];
+        pastilles: unknown[];
+        sparks: unknown[];
       };
     };
   };
@@ -108,9 +128,16 @@ test('analytics harness is faithful to live game and records movement stats', as
   expect(results[0].analytics.summary.wheelStayRevolutions.count).toBe(results[0].analytics.events.wheelStays.length);
   expect(results[0].analytics.summary.actionsPerMinute.jumpsPerMinute).toBeGreaterThan(0);
   expect(results[0].analytics.summary.actionsPerMinute.pressesPerMinute).toBeGreaterThan(0);
+  expect(results[0].analytics.summary.pastilles).toBe(results[0].analytics.events.pastilles.length);
+  expect(results[0].analytics.summary.sparks).toBe(results[0].analytics.events.sparks.length);
+  expect(results[0].analytics.summary.bonusScore).toBeGreaterThanOrEqual(0);
+  expect(results[0].analytics.summary.actionsPerMinute.bonusScorePerMinute).toBeGreaterThanOrEqual(0);
   expect(results[0].analytics.summary.phaseTime.classifiedPercent).toBeGreaterThan(90);
   expect(results[0].analytics.summary.planner.plans).toBeGreaterThan(0);
   expect(results[0].analytics.summary.planner.planMs.p95).toBeGreaterThanOrEqual(0);
+  expect(results[0].analytics.summary.planner.bestScoreBreakdown.total.count).toBe(results[0].analytics.summary.planner.plans);
+  expect(results[0].analytics.summary.planner.bestScoreBreakdown.height.mean).toBeGreaterThan(0);
+  expect(results[0].analytics.summary.planner.bestScoreBreakdown.paceCost.mean).toBeGreaterThanOrEqual(0);
 
   const replayEquivalence = await page.evaluate(async () => {
     const w = window as unknown as {

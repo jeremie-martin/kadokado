@@ -8,9 +8,17 @@ import {
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/index';
-import { FPS, InterwheelSim as PureInterwheelSim, type SimEvents } from '../games/interwheel/sim';
+import { FPS, InterwheelSim as PureInterwheelSim, SCORE_PASTILLE, type SimEvents } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
-import { InterwheelPlanner, type PlannerStats } from './interwheel-planner';
+import {
+  emptyScoreBreakdown,
+  InterwheelPlanner,
+  resolvePlannerPolicy,
+  type CandidateScoreBreakdown,
+  type PlannerConfig,
+  type PlannerPolicy,
+  type PlannerStats,
+} from './interwheel-planner';
 
 // Faithful headless analytics harness.
 //
@@ -41,7 +49,14 @@ const ANALYTICS_PLANNER_CONFIG = {
   maxStableDepth: 3,
   targetClimb: 400,
   collectSegments: false,
-} as const;
+} satisfies PlannerConfig;
+
+function plannerConfigForPolicy(policy: Partial<PlannerPolicy> = {}): PlannerConfig {
+  return {
+    ...ANALYTICS_PLANNER_CONFIG,
+    policy: resolvePlannerPolicy(policy),
+  };
+}
 
 let game: InterwheelGame;
 let planner: InterwheelPlanner;
@@ -63,6 +78,7 @@ type PlannerRunStats = {
   totalSegments: number;
   totalWheels: number;
   totalPastilles: number;
+  totalScoreBreakdown: CandidateScoreBreakdown;
 };
 
 type TrialPlannerStats = {
@@ -73,6 +89,7 @@ type TrialPlannerStats = {
   avgSegments: number;
   avgWheels: number;
   avgPastilles: number;
+  avgScoreBreakdown: CandidateScoreBreakdown;
 };
 
 type Stats = {
@@ -89,6 +106,8 @@ type Stats = {
   p95: number;
   stdev: number;
 };
+
+type ScoreBreakdownStats = Record<keyof CandidateScoreBreakdown, Stats>;
 
 type MovementExit = 'jump' | 'wallJump' | 'wheel' | 'wall' | 'death' | 'drown' | 'mine' | 'runEnd' | 'timeout' | 'unknown';
 type JumpSource = 'wheel' | 'wall' | 'unknown';
@@ -153,6 +172,22 @@ type FlightEvent = {
   maxHeightGainMeters: number;
 };
 
+type PastilleCollectEvent = {
+  tick: number;
+  x: number;
+  y: number;
+  type: number;
+  score: number;
+};
+
+type SparkCollectEvent = {
+  tick: number;
+  x: number;
+  y: number;
+  type: number;
+  score: number;
+};
+
 type PlannerAnalyticsSummary = {
   plans: number;
   modes: Record<PlannerStats['mode'], number>;
@@ -163,6 +198,7 @@ type PlannerAnalyticsSummary = {
   perceivedPastilles: Stats;
   segments: Stats;
   bestScore: Stats;
+  bestScoreBreakdown: ScoreBreakdownStats;
 };
 
 type ActionRateSummary = {
@@ -171,6 +207,9 @@ type ActionRateSummary = {
   wheelJumpsPerMinute: number;
   wallJumpsPerMinute: number;
   flightsPerMinute: number;
+  pastillesPerMinute: number;
+  sparksPerMinute: number;
+  bonusScorePerMinute: number;
 };
 
 type PhaseTimeSummary = {
@@ -204,6 +243,9 @@ type InterwheelRunSummary = {
   wheelStays: number;
   wallDrifts: number;
   flights: number;
+  pastilles: number;
+  sparks: number;
+  bonusScore: number;
   deathCause: MovementExit | null;
   jumpIntervalsTicks: Stats;
   wheelStayTicks: Stats;
@@ -222,6 +264,8 @@ type InterwheelRunAnalyticsResult = {
     wheelStays: WheelStayEvent[];
     wallDrifts: WallDriftEvent[];
     flights: FlightEvent[];
+    pastilles: PastilleCollectEvent[];
+    sparks: SparkCollectEvent[];
   };
 };
 
@@ -264,6 +308,7 @@ function freshPlannerRunStats(): PlannerRunStats {
     totalSegments: 0,
     totalWheels: 0,
     totalPastilles: 0,
+    totalScoreBreakdown: emptyScoreBreakdown(),
   };
 }
 
@@ -280,6 +325,7 @@ function addPlannerStats(run: PlannerRunStats, stats: PlannerStats): void {
   run.totalSegments += stats.segments;
   run.totalWheels += stats.perceivedWheels;
   run.totalPastilles += stats.perceivedPastilles;
+  addScoreBreakdown(run.totalScoreBreakdown, stats.bestScoreBreakdown);
 }
 
 function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
@@ -292,7 +338,30 @@ function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
     avgSegments: stats.totalSegments / plans,
     avgWheels: stats.totalWheels / plans,
     avgPastilles: stats.totalPastilles / plans,
+    avgScoreBreakdown: divideScoreBreakdown(stats.totalScoreBreakdown, plans),
   };
+}
+
+function scoreBreakdownKeys(): Array<keyof CandidateScoreBreakdown> {
+  return ['height', 'collectibles', 'wallRoute', 'stability', 'paceCost', 'safetyCost', 'backtrackCost', 'loopCost', 'total'];
+}
+
+function addScoreBreakdown(target: CandidateScoreBreakdown, source: CandidateScoreBreakdown): void {
+  for (const key of scoreBreakdownKeys()) target[key] += source[key];
+}
+
+function divideScoreBreakdown(source: CandidateScoreBreakdown, divisor: number): CandidateScoreBreakdown {
+  const out = emptyScoreBreakdown();
+  for (const key of scoreBreakdownKeys()) out[key] = source[key] / divisor;
+  return out;
+}
+
+function summarizeScoreBreakdown(values: CandidateScoreBreakdown[]): ScoreBreakdownStats {
+  const out = {} as ScoreBreakdownStats;
+  for (const key of scoreBreakdownKeys()) {
+    out[key] = statsOf(values.map((value) => value[key]));
+  }
+  return out;
 }
 
 function heightMetersFromSnapshot(snapshot: SimSnapshot): number {
@@ -377,6 +446,8 @@ class InterwheelRunAnalytics {
   private readonly wheelStays: WheelStayEvent[] = [];
   private readonly wallDrifts: WallDriftEvent[] = [];
   private readonly flights: FlightEvent[] = [];
+  private readonly pastilles: PastilleCollectEvent[] = [];
+  private readonly sparks: SparkCollectEvent[] = [];
   private readonly plannerStats: PlannerStats[] = [];
 
   start(seed: number | null, snapshot: SimSnapshot): void {
@@ -388,6 +459,8 @@ class InterwheelRunAnalytics {
     this.wheelStays.length = 0;
     this.wallDrifts.length = 0;
     this.flights.length = 0;
+    this.pastilles.length = 0;
+    this.sparks.length = 0;
     this.plannerStats.length = 0;
     this.activeWheelStay = null;
     this.activeWallDrift = null;
@@ -410,6 +483,7 @@ class InterwheelRunAnalytics {
     if (events.blobDrowned) this.deathCause = 'drown';
 
     if (events.blobJumpAngle !== null) this.recordJump(before, after, events.blobJumpAngle);
+    this.recordCollections(after.tick, events);
 
     this.updateWheelStay(before, after, events);
     this.updateWallDrift(before, after, events);
@@ -433,6 +507,9 @@ class InterwheelRunAnalytics {
     const flightTicks = this.flights.reduce((sum, flight) => sum + flight.durationTicks, 0);
     const wallTicks = this.wallDrifts.reduce((sum, drift) => sum + drift.durationTicks, 0);
     const classifiedTicks = wheelTicks + flightTicks + wallTicks;
+    const bonusScore =
+      this.pastilles.reduce((sum, event) => sum + event.score, 0) +
+      this.sparks.reduce((sum, event) => sum + event.score, 0);
     const unclassifiedTicks = Math.max(0, this.lastTick - classifiedTicks);
     const tickPercent = (ticks: number) => (this.lastTick > 0 ? (100 * ticks) / this.lastTick : 0);
     const tickSeconds = (ticks: number) => ticks / FPS;
@@ -450,6 +527,9 @@ class InterwheelRunAnalytics {
           wheelJumpsPerMinute: perMinute(wheelJumps),
           wallJumpsPerMinute: perMinute(wallJumps),
           flightsPerMinute: perMinute(this.flights.length),
+          pastillesPerMinute: perMinute(this.pastilles.length),
+          sparksPerMinute: perMinute(this.sparks.length),
+          bonusScorePerMinute: perMinute(bonusScore),
         },
         phaseTime: {
           wheelTicks,
@@ -474,6 +554,9 @@ class InterwheelRunAnalytics {
         wheelStays: this.wheelStays.length,
         wallDrifts: this.wallDrifts.length,
         flights: this.flights.length,
+        pastilles: this.pastilles.length,
+        sparks: this.sparks.length,
+        bonusScore,
         deathCause: this.deathCause,
         jumpIntervalsTicks: statsOf(jumpIntervals),
         wheelStayTicks: statsOf(this.wheelStays.map((stay) => stay.durationTicks)),
@@ -488,8 +571,31 @@ class InterwheelRunAnalytics {
         wheelStays: this.wheelStays,
         wallDrifts: this.wallDrifts,
         flights: this.flights,
+        pastilles: this.pastilles,
+        sparks: this.sparks,
       },
     };
+  }
+
+  private recordCollections(tick: number, events: SimEvents): void {
+    for (const pastille of events.collectedPastilles) {
+      this.pastilles.push({
+        tick,
+        x: pastille.x,
+        y: pastille.y,
+        type: pastille.type,
+        score: SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0],
+      });
+    }
+    for (const spark of events.collectedSparks) {
+      this.sparks.push({
+        tick,
+        x: spark.x,
+        y: spark.y,
+        type: spark.type,
+        score: spark.score,
+      });
+    }
   }
 
   private syncActivePhases(snapshot: SimSnapshot): void {
@@ -710,6 +816,7 @@ class InterwheelRunAnalytics {
       perceivedPastilles: statsOf(this.plannerStats.map((stat) => stat.perceivedPastilles)),
       segments: statsOf(this.plannerStats.map((stat) => stat.segments)),
       bestScore: statsOf(this.plannerStats.map((stat) => stat.bestScore)),
+      bestScoreBreakdown: summarizeScoreBreakdown(this.plannerStats.map((stat) => stat.bestScoreBreakdown)),
     };
   }
 }
@@ -773,7 +880,11 @@ type TrialResult = {
   seed: number | null;
 };
 
-async function runTrial(seed: number | null = null, maxTicks = 24_000): Promise<TrialResult> {
+async function runTrial(
+  seed: number | null = null,
+  maxTicks = 24_000,
+  plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+): Promise<TrialResult> {
   if (seed !== null) {
     const savedRandom = Math.random;
     Math.random = makeSeededRng(seed);
@@ -785,6 +896,7 @@ async function runTrial(seed: number | null = null, maxTicks = 24_000): Promise<
   } else {
     game.reset();
   }
+  planner = new InterwheelPlanner(game.sim, plannerCfg);
   planner.invalidate();
   currentPlannerRun = freshPlannerRunStats();
   currentAnalytics = new InterwheelRunAnalytics();
@@ -813,10 +925,14 @@ async function runTrial(seed: number | null = null, maxTicks = 24_000): Promise<
   }
 }
 
-async function runPureTrial(seed: number | null = null, maxTicks = 24_000): Promise<TrialResult> {
+async function runPureTrial(
+  seed: number | null = null,
+  maxTicks = 24_000,
+  plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+): Promise<TrialResult> {
   const sim = new PureInterwheelSim();
   sim.reset(seed !== null ? makeSeededRng(seed) : Math.random);
-  const purePlanner = new InterwheelPlanner(sim, ANALYTICS_PLANNER_CONFIG);
+  const purePlanner = new InterwheelPlanner(sim, plannerCfg);
   const plannerRun = freshPlannerRunStats();
   const analytics = new InterwheelRunAnalytics();
   analytics.start(seed, sim.clone());
@@ -903,6 +1019,8 @@ export type AnalyzeInterwheelOpts = {
   seedBase?: number;
   /** Hard cap on ticks per trial. Default 24000 (= 10 in-game minutes at 40 Hz). */
   maxTicks?: number;
+  /** Numeric planner policy knobs. Omitted fields use the default value 1, except wallRoutes=0. */
+  policy?: Partial<PlannerPolicy>;
 };
 
 export type AnalyzeInterwheelResult = {
@@ -912,7 +1030,7 @@ export type AnalyzeInterwheelResult = {
     trials: number;
     seedBase: number | null;
     maxTicks: number;
-    plannerConfig: typeof ANALYTICS_PLANNER_CONFIG;
+    plannerConfig: PlannerConfig;
   };
   wallMs: number;
   cpuMs: number;
@@ -922,7 +1040,7 @@ async function runAnalyze(opts: AnalyzeInterwheelOpts = {}): Promise<AnalyzeInte
   const trials = Math.max(1, opts.trials ?? 5);
   const seedBase = opts.seedBase ?? null;
   const maxTicks = opts.maxTicks ?? 24_000;
-  const plannerCfg = ANALYTICS_PLANNER_CONFIG;
+  const plannerCfg = plannerConfigForPolicy(opts.policy);
 
   log(`analytics: ${trials} trials  seedBase=${seedBase ?? 'random'}  maxTicks=${maxTicks}\n`);
 
@@ -930,7 +1048,7 @@ async function runAnalyze(opts: AnalyzeInterwheelOpts = {}): Promise<AnalyzeInte
   const wallStart = performance.now();
   for (let i = 0; i < trials; i += 1) {
     const seed = seedBase !== null ? seedBase + i : null;
-    const r = await runTrial(seed, maxTicks);
+    const r = await runTrial(seed, maxTicks, plannerCfg);
     results.push(r);
     append(
       `  trial ${String(i + 1).padStart(3)}/${trials}` +
@@ -964,12 +1082,13 @@ async function runPureAnalyze(opts: AnalyzeInterwheelOpts = {}): Promise<Analyze
   const trials = Math.max(1, opts.trials ?? 5);
   const seedBase = opts.seedBase ?? null;
   const maxTicks = opts.maxTicks ?? 24_000;
+  const plannerCfg = plannerConfigForPolicy(opts.policy);
 
   const results: TrialResult[] = [];
   const wallStart = performance.now();
   for (let i = 0; i < trials; i += 1) {
     const seed = seedBase !== null ? seedBase + i : null;
-    results.push(await runPureTrial(seed, maxTicks));
+    results.push(await runPureTrial(seed, maxTicks, plannerCfg));
   }
   const wallMs = performance.now() - wallStart;
   const cpuMs = results.reduce((s, r) => s + r.cpuMs, 0);
@@ -982,7 +1101,7 @@ async function runPureAnalyze(opts: AnalyzeInterwheelOpts = {}): Promise<Analyze
       ticks: statsOf(results.map((r) => r.ticks)),
       cpuMs: statsOf(results.map((r) => r.cpuMs)),
     },
-    config: { trials, seedBase, maxTicks, plannerConfig: ANALYTICS_PLANNER_CONFIG },
+    config: { trials, seedBase, maxTicks, plannerConfig: plannerCfg },
     wallMs,
     cpuMs,
   };
@@ -1058,8 +1177,13 @@ function resetMountedGame(seed: number): void {
   }
 }
 
-async function runMountedTranscript(seed: number, maxTicks: number): Promise<TranscriptResult> {
+async function runMountedTranscript(
+  seed: number,
+  maxTicks: number,
+  plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+): Promise<TranscriptResult> {
   resetMountedGame(seed);
+  planner = new InterwheelPlanner(game.sim, plannerCfg);
   planner.invalidate();
   recordedPresses = [];
   recording = true;
@@ -1117,10 +1241,14 @@ function runPureReplayTranscript(seed: number, maxTicks: number, presses: readon
   };
 }
 
-function runPurePlannedTranscript(seed: number, maxTicks: number): TranscriptResult {
+function runPurePlannedTranscript(
+  seed: number,
+  maxTicks: number,
+  plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+): TranscriptResult {
   const sim = new PureInterwheelSim();
   sim.reset(makeSeededRng(seed));
-  const purePlanner = new InterwheelPlanner(sim, ANALYTICS_PLANNER_CONFIG);
+  const purePlanner = new InterwheelPlanner(sim, plannerCfg);
   const samples: TranscriptSample[] = [];
   const startCpu = performance.now();
   let ticks = 0;
@@ -1212,25 +1340,34 @@ function compareTranscripts(
   };
 }
 
-async function comparePureReplay(seed = 42, maxTicks = 1_200): Promise<PureReplayEquivalenceResult> {
-  const mounted = await runMountedTranscript(seed, maxTicks);
+async function comparePureReplay(
+  seed = 42,
+  maxTicks = 1_200,
+  plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+): Promise<PureReplayEquivalenceResult> {
+  const mounted = await runMountedTranscript(seed, maxTicks, plannerCfg);
   const pure = runPureReplayTranscript(seed, maxTicks, mounted.samples.map((sample) => sample.press));
   return compareTranscripts(mounted, pure);
 }
 
-async function comparePurePlanner(seed = 42, maxTicks = 1_200): Promise<PurePlannerEquivalenceResult> {
-  const mounted = await runMountedTranscript(seed, maxTicks);
-  const pure = runPurePlannedTranscript(seed, maxTicks);
+async function comparePurePlanner(
+  seed = 42,
+  maxTicks = 1_200,
+  plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+): Promise<PurePlannerEquivalenceResult> {
+  const mounted = await runMountedTranscript(seed, maxTicks, plannerCfg);
+  const pure = runPurePlannedTranscript(seed, maxTicks, plannerCfg);
   return compareTranscripts(mounted, pure);
 }
 
-async function comparePureReplayCorpus(opts: { trials?: number; seedBase?: number; maxTicks?: number } = {}): Promise<PureReplayCorpusResult> {
+async function comparePureReplayCorpus(opts: AnalyzeInterwheelOpts = {}): Promise<PureReplayCorpusResult> {
   const trials = Math.max(1, opts.trials ?? 5);
   const seedBase = opts.seedBase ?? 42;
   const maxTicks = opts.maxTicks ?? 1_200;
+  const plannerCfg = plannerConfigForPolicy(opts.policy);
   const results: PureReplayEquivalenceResult[] = [];
   for (let i = 0; i < trials; i += 1) {
-    const result = await comparePureReplay(seedBase + i, maxTicks);
+    const result = await comparePureReplay(seedBase + i, maxTicks, plannerCfg);
     results.push(result);
     if (!result.equal) break;
   }
@@ -1245,13 +1382,14 @@ async function comparePureReplayCorpus(opts: { trials?: number; seedBase?: numbe
   };
 }
 
-async function comparePurePlannerCorpus(opts: { trials?: number; seedBase?: number; maxTicks?: number } = {}): Promise<PurePlannerCorpusResult> {
+async function comparePurePlannerCorpus(opts: AnalyzeInterwheelOpts = {}): Promise<PurePlannerCorpusResult> {
   const trials = Math.max(1, opts.trials ?? 5);
   const seedBase = opts.seedBase ?? 42;
   const maxTicks = opts.maxTicks ?? 1_200;
+  const plannerCfg = plannerConfigForPolicy(opts.policy);
   const results: PurePlannerEquivalenceResult[] = [];
   for (let i = 0; i < trials; i += 1) {
-    const result = await comparePurePlanner(seedBase + i, maxTicks);
+    const result = await comparePurePlanner(seedBase + i, maxTicks, plannerCfg);
     results.push(result);
     if (!result.equal) break;
   }

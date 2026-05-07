@@ -38,6 +38,12 @@ type EdgeReward = {
   sparkScore: number;
 };
 
+type EdgeRoute = {
+  startsOnWall: boolean;
+  touchedWall: boolean;
+  endedOnWall: boolean;
+};
+
 type PerceivedSnapshot = {
   snap: SimSnapshot;
   perceivedWheels: number;
@@ -65,6 +71,7 @@ type SearchEdge = {
   isStable: boolean;
   value: number;
   reward: EdgeReward;
+  scoreBreakdown: CandidateScoreBreakdown;
   segments: Omit<Segment, 'edgeId' | 'kind'>[];
 };
 
@@ -94,6 +101,7 @@ export type PlannerStats = {
   perceivedPastilles: number;
   segments: number;
   bestScore: number;
+  bestScoreBreakdown: CandidateScoreBreakdown;
 };
 
 export type PlanResult = {
@@ -117,12 +125,64 @@ export type PlannerConfig = {
   revealScreensAbove?: number;
   memoryScreensBelow?: number;
   collectSegments?: boolean;
+  policy?: Partial<PlannerPolicy>;
 };
+
+export type PlannerPolicy = {
+  /** Prefer raw upward progress and max-height gain. Default preserves legacy scoring. */
+  climb: number;
+  /** Prefer pastilles/sparks. Default preserves legacy scoring. */
+  collectibles: number;
+  /** Add preference for routes that intentionally touch a wall from a wheel. */
+  wallRoutes: number;
+  /** Penalize long plans/waits. Default preserves legacy scoring. */
+  pace: number;
+};
+
+export type CandidateScoreBreakdown = {
+  height: number;
+  collectibles: number;
+  wallRoute: number;
+  stability: number;
+  paceCost: number;
+  safetyCost: number;
+  backtrackCost: number;
+  loopCost: number;
+  total: number;
+};
+
+export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
+  climb: 1,
+  collectibles: 1,
+  wallRoutes: 0,
+  pace: 1,
+};
+
+export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): PlannerPolicy {
+  return {
+    ...DEFAULT_PLANNER_POLICY,
+    ...policy,
+  };
+}
+
+export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
+  return {
+    height: 0,
+    collectibles: 0,
+    wallRoute: 0,
+    stability: 0,
+    paceCost: 0,
+    safetyCost: 0,
+    backtrackCost: 0,
+    loopCost: 0,
+    total,
+  };
+}
 
 export class InterwheelPlanner {
   private readonly sim: InterwheelSim;
   private readonly scratch = new ScratchInterwheelSim();
-  private readonly cfg: Required<PlannerConfig>;
+  private readonly cfg: Required<Omit<PlannerConfig, 'policy'>> & { policy: PlannerPolicy };
 
   private lastResult: PlanResult | null = null;
   private knownWheelIdx = new Set<number>();
@@ -147,6 +207,7 @@ export class InterwheelPlanner {
       revealScreensAbove: cfg.revealScreensAbove ?? 1,
       memoryScreensBelow: cfg.memoryScreensBelow ?? 2,
       collectSegments: cfg.collectSegments ?? true,
+      policy: resolvePlannerPolicy(cfg.policy),
     };
   }
 
@@ -199,6 +260,15 @@ export class InterwheelPlanner {
   private planStable(perceived: PerceivedSnapshot): PlanResult {
     const rootState = perceived.snap;
     const startTime = performance.now();
+    const rootScore = this.scoreCandidate(
+      rootState,
+      rootState,
+      0,
+      0,
+      { pickedValue: 0, sparkScore: 0 },
+      this.emptyRoute(rootState),
+      false,
+    );
     const root: SearchNode = {
       id: 0,
       parentId: -1,
@@ -206,7 +276,7 @@ export class InterwheelPlanner {
       state: rootState,
       depth: 0,
       totalTicks: 0,
-      value: this.scoreState(rootState, rootState, 0, 0, { pickedValue: 0, sparkScore: 0 }, false),
+      value: rootScore.total,
     };
 
     const nodes: SearchNode[] = [root];
@@ -251,6 +321,7 @@ export class InterwheelPlanner {
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
     const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds) : [];
+    const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
     return {
       plan: plan.length > 0 ? plan : [false],
       segments,
@@ -264,6 +335,7 @@ export class InterwheelPlanner {
         perceivedPastilles: perceived.perceivedPastilles,
         segments: segments.length,
         bestScore: targetNode.value,
+        bestScoreBreakdown,
       },
     };
   }
@@ -317,6 +389,7 @@ export class InterwheelPlanner {
         perceivedPastilles: perceived.perceivedPastilles,
         segments: segments.length,
         bestScore: 0,
+        bestScoreBreakdown: emptyScoreBreakdown(),
       },
     };
   }
@@ -326,6 +399,7 @@ export class InterwheelPlanner {
     const plan: boolean[] = [];
     const segments: Omit<Segment, 'edgeId' | 'kind'>[] = [];
     const reward: EdgeReward = { pickedValue: 0, sparkScore: 0 };
+    const route = this.emptyRoute(parent.state);
     sim.restore(parent.state);
 
     let sx = sim.blob.x;
@@ -335,6 +409,7 @@ export class InterwheelPlanner {
       sim.step(press, constantRng);
       plan.push(press);
       this.collectStepReward(sim, reward);
+      this.updateRoute(route, sim);
       if (!this.cfg.collectSegments) {
         if (press) launched = true;
         return;
@@ -408,7 +483,17 @@ export class InterwheelPlanner {
 
     const isDead = this.isTerminal(endState);
     const isStable = endState.blob.state === BLOB_STATE_GRAB || endState.blob.state === BLOB_STATE_WALL;
-    const value = this.scoreState(rootState, endState, parent.totalTicks + plan.length, waitTicks, reward, this.isSameStableTarget(parent.state, endState));
+    route.endedOnWall = endState.blob.state === BLOB_STATE_WALL;
+    const scoreBreakdown = this.scoreCandidate(
+      rootState,
+      endState,
+      parent.totalTicks + plan.length,
+      waitTicks,
+      reward,
+      route,
+      this.isSameStableTarget(parent.state, endState),
+    );
+    const value = scoreBreakdown.total;
     return {
       id: edgeId,
       parentId: parent.id,
@@ -420,6 +505,7 @@ export class InterwheelPlanner {
       isStable,
       value,
       reward,
+      scoreBreakdown,
       segments,
     };
   }
@@ -433,17 +519,27 @@ export class InterwheelPlanner {
     }
   }
 
-  private scoreState(
+  private scoreCandidate(
     root: SimSnapshot,
     end: SimSnapshot,
     totalTicks: number,
     waitTicks: number,
     reward: EdgeReward,
+    route: EdgeRoute,
     sameStableTarget: boolean,
-  ): number {
+  ): CandidateScoreBreakdown {
     const waitPenalty = this.waitPenalty(waitTicks);
     if (this.isTerminal(end)) {
-      return -1_000_000 + reward.pickedValue + reward.sparkScore - totalTicks * 4 - waitPenalty;
+      const collectibles = this.cfg.policy.collectibles * (reward.pickedValue + reward.sparkScore);
+      const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
+      const safetyCost = 1_000_000;
+      return {
+        ...emptyScoreBreakdown(),
+        collectibles,
+        paceCost,
+        safetyCost,
+        total: collectibles - paceCost - safetyCost,
+      };
     }
 
     const heightGain = end.maxHeight - root.maxHeight;
@@ -469,16 +565,45 @@ export class InterwheelPlanner {
       Math.max(1_250, heightPolicy * 0.35),
     ) * (1 - waterUrgency * 0.85);
     const loopPenalty = sameStableTarget && reward.pickedValue + reward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
-    return (
-      heightPolicy * (1 + waterUrgency * 1.2) +
-      scoreTerm +
-      stateBonus -
-      totalTicks * 4 -
-      waitPenalty -
-      waterPenalty -
-      backtrackPenalty -
-      loopPenalty
-    );
+    const height = this.cfg.policy.climb * heightPolicy * (1 + waterUrgency * 1.2);
+    const collectibles = this.cfg.policy.collectibles * scoreTerm;
+    const wallRoute = this.cfg.policy.wallRoutes * this.wallRouteValue(route);
+    const stability = stateBonus;
+    const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
+    const safetyCost = waterPenalty;
+    const backtrackCost = backtrackPenalty;
+    const loopCost = loopPenalty;
+    return {
+      height,
+      collectibles,
+      wallRoute,
+      stability,
+      paceCost,
+      safetyCost,
+      backtrackCost,
+      loopCost,
+      total: height + collectibles + wallRoute + stability - paceCost - safetyCost - backtrackCost - loopCost,
+    };
+  }
+
+  private emptyRoute(start: SimSnapshot): EdgeRoute {
+    const startsOnWall = start.blob.state === BLOB_STATE_WALL;
+    return {
+      startsOnWall,
+      touchedWall: startsOnWall,
+      endedOnWall: startsOnWall,
+    };
+  }
+
+  private updateRoute(route: EdgeRoute, sim: ScratchInterwheelSim): void {
+    if (sim.blob.state === BLOB_STATE_WALL) route.touchedWall = true;
+  }
+
+  private wallRouteValue(route: EdgeRoute): number {
+    if (route.startsOnWall) return 0;
+    if (route.touchedWall && route.endedOnWall) return 450;
+    if (route.touchedWall) return 300;
+    return 0;
   }
 
   private waitPenalty(waitTicks: number): number {
@@ -539,6 +664,14 @@ export class InterwheelPlanner {
     const plan: boolean[] = [];
     for (let i = chunks.length - 1; i >= 0; i -= 1) plan.push(...chunks[i]);
     return plan;
+  }
+
+  private scoreBreakdownForNode(
+    edges: SearchEdge[],
+    target: SearchNode,
+  ): CandidateScoreBreakdown | null {
+    if (target.edgeId < 0) return null;
+    return edges[target.edgeId].scoreBreakdown;
   }
 
   private segmentsForEdges(edges: SearchEdge[], bestEdgeIds: Set<number>): Segment[] {
@@ -653,6 +786,7 @@ export class InterwheelPlanner {
         perceivedPastilles: perceived.perceivedPastilles,
         segments: 0,
         bestScore: 0,
+        bestScoreBreakdown: emptyScoreBreakdown(),
       },
     };
   }
