@@ -4,10 +4,11 @@
 // The game itself is a 300x300 Pixi stage. For a blur-free 1080p export we
 // override window.devicePixelRatio to 1080/300, making Pixi render a 1080x1080
 // backing canvas. The page then copies that canvas 1:1 into the center of a
-// 1920x1080 recording canvas. In archival mode, frames are encoded by ffmpeg;
-// live mode uses the browser's native MediaRecorder for faster previews.
+// 1920x1080 recording canvas. In archival mode, raw RGBA frames are streamed
+// to ffmpeg; live mode uses the browser's native MediaRecorder for faster
+// previews.
 
-import { mkdir, rm } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -22,6 +23,19 @@ const DEFAULT_BITRATE = 25_000_000;
 const DEFAULT_CRF = 15;
 const DEFAULT_SECONDS = 10;
 const DEFAULT_OUT = '.tmp/captures/interwheel-1080p.webm';
+const DEFAULT_WEB_CODEC = 'vp8';
+const WEB_CODECS = {
+  vp8: {
+    label: 'WebCodecs VP8',
+    codec: 'vp8',
+    fourcc: 'VP80',
+  },
+  vp9: {
+    label: 'WebCodecs VP9',
+    codec: 'vp09.00.10.08',
+    fourcc: 'VP90',
+  },
+};
 const ASSET_PRESETS = {
   x1: { root: '/assets/interwheel', scale: 1 },
   x2: { root: '/assets/interwheel-2x/median-all', scale: 2 },
@@ -37,6 +51,7 @@ function parseArgs(argv) {
     fps: DEFAULT_FPS,
     bitrate: DEFAULT_BITRATE,
     crf: DEFAULT_CRF,
+    webCodec: DEFAULT_WEB_CODEC,
     width: DEFAULT_WIDTH,
     height: DEFAULT_HEIGHT,
     mode: 'frames',
@@ -56,6 +71,7 @@ function parseArgs(argv) {
     else if (raw.startsWith('--fps=')) args.fps = Number(raw.slice('--fps='.length));
     else if (raw.startsWith('--bitrate=')) args.bitrate = Number(raw.slice('--bitrate='.length));
     else if (raw.startsWith('--crf=')) args.crf = Number(raw.slice('--crf='.length));
+    else if (raw.startsWith('--web-codec=')) args.webCodec = raw.slice('--web-codec='.length);
     else if (raw.startsWith('--width=')) args.width = Number(raw.slice('--width='.length));
     else if (raw.startsWith('--height=')) args.height = Number(raw.slice('--height='.length));
     else if (raw.startsWith('--mode=')) args.mode = raw.slice('--mode='.length);
@@ -82,8 +98,12 @@ function parseArgs(argv) {
       args.help = true;
     }
   }
-  if (!['frames', 'live'].includes(args.mode)) {
-    console.error('--mode must be either "frames" or "live"');
+  if (!['frames', 'webcodecs', 'live'].includes(args.mode)) {
+    console.error('--mode must be "frames", "webcodecs", or "live"');
+    args.help = true;
+  }
+  if (!(args.webCodec in WEB_CODECS)) {
+    console.error(`--web-codec must be one of: ${Object.keys(WEB_CODECS).join(', ')}`);
     args.help = true;
   }
   if (!(args.assetPreset in ASSET_PRESETS)) {
@@ -110,6 +130,18 @@ function resolveAssets(args) {
   };
 }
 
+function outputFormat(mode, webCodec) {
+  if (mode === 'webcodecs') {
+    return webCodec === 'vp8' ? 'video/webm;codecs=vp8' : 'video/webm;codecs=vp9';
+  }
+  return 'video/webm;codecs=vp9';
+}
+
+function encoderLabel(mode, webCodec) {
+  if (mode === 'webcodecs') return WEB_CODECS[webCodec]?.label;
+  return 'VP9 archival';
+}
+
 function help() {
   console.log(`Interwheel 1080p capture
 
@@ -125,7 +157,9 @@ OPTIONS:
   --fps=N          Recording stream frame rate. Default ${DEFAULT_FPS}.
   --bitrate=N      Video bitrate in bits per second. Default ${DEFAULT_BITRATE}.
   --crf=N          VP9 CRF for frame-sequence encoding. Default ${DEFAULT_CRF}.
-  --mode=frames    "frames" for archival output, "live" for MediaRecorder.
+  --web-codec=NAME WebCodecs encoder: vp8 or vp9. Default ${DEFAULT_WEB_CODEC}.
+  --mode=frames    "frames" for raw-frame archival output, "webcodecs" for
+                  deterministic browser-side encoding, "live" for MediaRecorder.
   --asset-preset=P Asset set: x1, x2, x4, or x4-aa. Default x1.
   --asset-root=PATH
                   Advanced asset root override under /assets/interwheel.
@@ -165,9 +199,113 @@ function devicePixelRatioSource(scale) {
   `;
 }
 
-function run(cmd, args, opts = {}) {
+function writeStream(stream, chunk) {
   return new Promise((resolve, reject) => {
-    const child = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], ...opts });
+    const onError = (err) => {
+      cleanup();
+      reject(err);
+    };
+    const onDrain = () => {
+      cleanup();
+      resolve();
+    };
+    const cleanup = () => {
+      stream.off('error', onError);
+      stream.off('drain', onDrain);
+    };
+
+    stream.on('error', onError);
+    if (stream.write(chunk)) {
+      cleanup();
+      resolve();
+    } else {
+      stream.on('drain', onDrain);
+    }
+  });
+}
+
+function startRawVideoEncoder(opts, outPath) {
+  const child = spawn('ffmpeg', [
+    '-y',
+    '-hide_banner',
+    '-loglevel', 'error',
+    '-f', 'rawvideo',
+    '-pix_fmt', 'rgba',
+    '-s:v', `${opts.width}x${opts.height}`,
+    '-r', String(opts.fps),
+    '-i', 'pipe:0',
+    '-an',
+    '-c:v', 'libvpx-vp9',
+    '-crf', String(opts.crf),
+    '-b:v', '0',
+    '-row-mt', '1',
+    '-pix_fmt', 'yuv420p',
+    outPath,
+  ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
+  let stdout = '';
+  let stderr = '';
+  child.stdout?.on('data', (chunk) => { stdout += chunk; });
+  child.stderr?.on('data', (chunk) => { stderr += chunk; });
+
+  const closed = new Promise((resolve, reject) => {
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve({ stdout, stderr });
+      else reject(new Error(`ffmpeg exited ${code}\n${stderr || stdout}`));
+    });
+  });
+
+  return { child, closed };
+}
+
+function writeUInt64LE(buffer, offset, value) {
+  const n = BigInt(value);
+  buffer.writeUInt32LE(Number(n & 0xffffffffn), offset);
+  buffer.writeUInt32LE(Number((n >> 32n) & 0xffffffffn), offset + 4);
+}
+
+function makeIvfFile(opts, chunks) {
+  const codec = WEB_CODECS[opts.webCodec];
+  const header = Buffer.alloc(32);
+  header.write('DKIF', 0, 'ascii');
+  header.writeUInt16LE(0, 4);
+  header.writeUInt16LE(32, 6);
+  header.write(codec.fourcc, 8, 'ascii');
+  header.writeUInt16LE(opts.width, 12);
+  header.writeUInt16LE(opts.height, 14);
+  header.writeUInt32LE(opts.fps, 16);
+  header.writeUInt32LE(1, 20);
+  header.writeUInt32LE(chunks.length, 24);
+  header.writeUInt32LE(0, 28);
+
+  const parts = [header];
+  for (let i = 0; i < chunks.length; i += 1) {
+    const data = Buffer.from(
+      chunks[i].data.buffer,
+      chunks[i].data.byteOffset,
+      chunks[i].data.byteLength,
+    );
+    const frameHeader = Buffer.alloc(12);
+    frameHeader.writeUInt32LE(data.byteLength, 0);
+    writeUInt64LE(frameHeader, 4, i);
+    parts.push(frameHeader, data);
+  }
+  return Buffer.concat(parts);
+}
+
+function remuxIvfToWebm(ivf, outPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('ffmpeg', [
+      '-y',
+      '-hide_banner',
+      '-loglevel', 'error',
+      '-f', 'ivf',
+      '-i', 'pipe:0',
+      '-c:v', 'copy',
+      outPath,
+    ], { stdio: ['pipe', 'pipe', 'pipe'] });
+
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (chunk) => { stdout += chunk; });
@@ -175,8 +313,9 @@ function run(cmd, args, opts = {}) {
     child.on('error', reject);
     child.on('close', (code) => {
       if (code === 0) resolve({ stdout, stderr });
-      else reject(new Error(`${cmd} exited ${code}\n${stderr || stdout}`));
+      else reject(new Error(`ffmpeg exited ${code}\n${stderr || stdout}`));
     });
+    child.stdin.end(ivf);
   });
 }
 
@@ -368,6 +507,11 @@ async function setupFrameCapture(page, opts) {
         heightMeters: Math.floor(game.maxHeight * 0.2),
       };
     };
+    window.__captureInterwheelRawFrame = () => {
+      const state = window.__captureInterwheelFrame();
+      const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      return { ...state, pixels };
+    };
     window.__captureInterwheelMeta = {
       width: canvas.width,
       height: canvas.height,
@@ -386,38 +530,42 @@ async function setupFrameCapture(page, opts) {
   return { handle, meta };
 }
 
-async function recordFrames(page, opts, outPath) {
+async function recordRawFrames(page, opts, outPath) {
   const totalFrames = Math.max(1, Math.round(opts.seconds * opts.fps));
-  const frameDir = `${outPath}.frames`;
-  await rm(frameDir, { recursive: true, force: true });
-  await mkdir(frameDir, { recursive: true });
+  const expectedBytes = opts.width * opts.height * 4;
+  const { meta } = await setupFrameCapture(page, opts);
+  const { child, closed } = startRawVideoEncoder(opts, outPath);
 
-  const { handle, meta } = await setupFrameCapture(page, opts);
   let lastFrame = { tick: 0, score: 0, heightMeters: 0 };
-  for (let i = 0; i < totalFrames; i += 1) {
-    lastFrame = await page.evaluate(() => window.__captureInterwheelFrame());
-    const framePath = path.join(frameDir, `${String(i + 1).padStart(6, '0')}.png`);
-    await handle.screenshot({ path: framePath });
-    if ((i + 1) % Math.max(1, opts.fps) === 0 || i + 1 === totalFrames) {
-      console.log(`  frames:     ${i + 1}/${totalFrames}`);
+  try {
+    for (let i = 0; i < totalFrames; i += 1) {
+      const frame = await page.evaluate(() => window.__captureInterwheelRawFrame());
+      if (frame.pixels.length !== expectedBytes) {
+        throw new Error(`Raw frame has ${frame.pixels.length} bytes, expected ${expectedBytes}`);
+      }
+      const pixels = Buffer.from(
+        frame.pixels.buffer,
+        frame.pixels.byteOffset,
+        frame.pixels.byteLength,
+      );
+      await writeStream(child.stdin, pixels);
+      lastFrame = {
+        tick: frame.tick,
+        score: frame.score,
+        heightMeters: frame.heightMeters,
+      };
+      if ((i + 1) % Math.max(1, opts.fps) === 0 || i + 1 === totalFrames) {
+        console.log(`  frames:     ${i + 1}/${totalFrames}`);
+      }
     }
+  } catch (err) {
+    child.stdin.destroy();
+    child.kill('SIGTERM');
+    throw err;
   }
 
-  await run('ffmpeg', [
-    '-y',
-    '-hide_banner',
-    '-loglevel', 'error',
-    '-framerate', String(opts.fps),
-    '-i', path.join(frameDir, '%06d.png'),
-    '-c:v', 'libvpx-vp9',
-    '-crf', String(opts.crf),
-    '-b:v', '0',
-    '-row-mt', '1',
-    '-pix_fmt', 'yuv420p',
-    outPath,
-  ]);
-
-  await rm(frameDir, { recursive: true, force: true });
+  child.stdin.end();
+  await closed;
   return {
     ...meta,
     fps: opts.fps,
@@ -426,6 +574,161 @@ async function recordFrames(page, opts, outPath) {
     tick: lastFrame.tick,
     heightMeters: lastFrame.heightMeters,
     score: lastFrame.score,
+  };
+}
+
+async function recordWebCodecsFrames(page, opts, outPath) {
+  const totalFrames = Math.max(1, Math.round(opts.seconds * opts.fps));
+  const webCodec = WEB_CODECS[opts.webCodec];
+  if (!webCodec) {
+    throw new Error(`WebCodecs mode does not support codec "${opts.webCodec}"`);
+  }
+
+  const encoded = await page.evaluate(async (recordOpts) => {
+    const game = window.__game__;
+    if (!game?.app?.canvas) throw new Error('Interwheel game canvas is not ready');
+    if (typeof VideoEncoder === 'undefined' || typeof VideoFrame === 'undefined') {
+      throw new Error('This browser does not expose WebCodecs VideoEncoder');
+    }
+
+    game.app.ticker.stop();
+
+    const source = game.app.canvas;
+    const canvas = document.createElement('canvas');
+    canvas.width = recordOpts.width;
+    canvas.height = recordOpts.height;
+
+    const ctx = canvas.getContext('2d', { alpha: false });
+    if (!ctx) throw new Error('2D recording canvas is unavailable');
+    ctx.imageSmoothingEnabled = false;
+
+    await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+
+    const sourceWidth = source.width;
+    const sourceHeight = source.height;
+    if (sourceWidth !== recordOpts.height || sourceHeight !== recordOpts.height) {
+      throw new Error(
+        `Expected a ${recordOpts.height}x${recordOpts.height} source canvas, got ` +
+          `${sourceWidth}x${sourceHeight}. Check devicePixelRatio override.`,
+      );
+    }
+    if (sourceWidth > recordOpts.width || sourceHeight > recordOpts.height) {
+      throw new Error(`Source canvas ${sourceWidth}x${sourceHeight} does not fit in output`);
+    }
+
+    const dx = Math.floor((recordOpts.width - sourceWidth) / 2);
+    const dy = Math.floor((recordOpts.height - sourceHeight) / 2);
+    const renderStage = () => {
+      game.app.renderer.render({ container: game.app.stage });
+    };
+    const draw = () => {
+      renderStage();
+      ctx.fillStyle = recordOpts.background;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(source, 0, 0, sourceWidth, sourceHeight, dx, dy, sourceWidth, sourceHeight);
+    };
+
+    draw();
+    const sample = ctx.getImageData(dx, dy, sourceWidth, sourceHeight).data;
+    let nonBackgroundSamples = 0;
+    for (let i = 0; i < sample.length; i += 64) {
+      const r = sample[i];
+      const g = sample[i + 1];
+      const b = sample[i + 2];
+      if (Math.abs(r - 14) + Math.abs(g - 20) + Math.abs(b - 24) > 20) nonBackgroundSamples += 1;
+    }
+    if (nonBackgroundSamples === 0) throw new Error('Recording canvas appears blank');
+
+    const config = {
+      codec: recordOpts.webCodec,
+      width: canvas.width,
+      height: canvas.height,
+      bitrate: recordOpts.bitrate,
+      framerate: recordOpts.fps,
+    };
+    const support = await VideoEncoder.isConfigSupported(config);
+    if (!support.supported) {
+      throw new Error(`Unsupported WebCodecs config: ${JSON.stringify(config)}`);
+    }
+
+    const chunks = [];
+    const errors = [];
+    const encoder = new VideoEncoder({
+      output: (chunk) => {
+        const data = new Uint8Array(chunk.byteLength);
+        chunk.copyTo(data);
+        chunks.push({
+          type: chunk.type,
+          timestamp: chunk.timestamp,
+          duration: chunk.duration ?? null,
+          data,
+        });
+      },
+      error: (error) => { errors.push(String(error)); },
+    });
+    encoder.configure(support.config);
+
+    let lastFrame = { tick: 0, score: 0, heightMeters: 0 };
+    const encodeStartedAt = performance.now();
+    try {
+      for (let i = 0; i < recordOpts.totalFrames; i += 1) {
+        game.update();
+        draw();
+        const frame = new VideoFrame(canvas, {
+          timestamp: Math.round((i * 1_000_000) / recordOpts.fps),
+        });
+        encoder.encode(frame, { keyFrame: i === 0 });
+        frame.close();
+        lastFrame = {
+          tick: game.tick,
+          score: game.score,
+          heightMeters: Math.floor(game.maxHeight * 0.2),
+        };
+      }
+      await encoder.flush();
+    } finally {
+      encoder.close();
+    }
+    if (errors.length > 0) throw new Error(`WebCodecs failed: ${errors.join('; ')}`);
+
+    return {
+      chunks,
+      encodeMs: performance.now() - encodeStartedAt,
+      width: canvas.width,
+      height: canvas.height,
+      fps: recordOpts.fps,
+      bitrate: recordOpts.bitrate,
+      sourceWidth,
+      sourceHeight,
+      gameX: dx,
+      gameY: dy,
+      frameCount: recordOpts.totalFrames,
+      tick: lastFrame.tick,
+      heightMeters: lastFrame.heightMeters,
+      score: lastFrame.score,
+      assetRoot: game.assetRoot,
+      assetScale: game.assetScale,
+      webCodec: support.config.codec,
+      nonBackgroundSamples,
+    };
+  }, {
+    ...opts,
+    totalFrames,
+    webCodec: webCodec.codec,
+  });
+
+  const ivf = makeIvfFile(opts, encoded.chunks);
+  await remuxIvfToWebm(ivf, outPath);
+
+  const encodedBytes = encoded.chunks.reduce((sum, chunk) => sum + chunk.data.byteLength, 0);
+  return {
+    ...encoded,
+    chunks: undefined,
+    fps: opts.fps,
+    crf: opts.crf,
+    webCodec: opts.webCodec,
+    encodedBytes,
+    ivfBytes: ivf.byteLength,
   };
 }
 
@@ -443,7 +746,13 @@ async function main() {
 
   const gameScale = args.height / GAME_STAGE_SIZE;
   const vite = await createServer({
-    server: { port: 0, host: '127.0.0.1' },
+    server: {
+      port: 0,
+      host: '127.0.0.1',
+      watch: {
+        ignored: ['**/generated-assets/**', '**/.tmp/**', '**/dist/**'],
+      },
+    },
     logLevel: 'silent',
     clearScreen: false,
   });
@@ -480,12 +789,22 @@ async function main() {
     await page.goto(url.href);
     await page.waitForFunction(() => Boolean(window.__game__), null, { timeout: 30_000 });
 
-    if (args.mode === 'frames') {
-      console.log(`Capturing ${Math.round(args.seconds * args.fps)} frames at ${args.width}x${args.height}...`);
-      const meta = await recordFrames(page, {
+    if (args.mode === 'frames' || args.mode === 'webcodecs') {
+      const frameLabel = {
+        frames: 'raw frames',
+        webcodecs: 'WebCodecs frames',
+      }[args.mode];
+      console.log(`Capturing ${Math.round(args.seconds * args.fps)} ${frameLabel} at ${args.width}x${args.height}...`);
+      const recorder = {
+        frames: recordRawFrames,
+        webcodecs: recordWebCodecsFrames,
+      }[args.mode];
+      const meta = await recorder(page, {
         seconds: args.seconds,
         fps: args.fps,
         crf: args.crf,
+        webCodec: args.webCodec,
+        bitrate: args.bitrate,
         width: args.width,
         height: args.height,
         background: '#0e1418',
@@ -493,11 +812,18 @@ async function main() {
 
       console.log('Interwheel capture complete');
       console.log(`  file:       ${path.relative(repoRoot, outPath)}`);
-      console.log('  format:     video/webm;codecs=vp9');
+      console.log(`  format:     ${outputFormat(args.mode, meta.webCodec)}`);
       console.log(`  output:     ${meta.width}x${meta.height} @ ${meta.fps}fps`);
       console.log(`  game:       ${meta.sourceWidth}x${meta.sourceHeight} at (${meta.gameX}, ${meta.gameY})`);
       console.log(`  assets:     ${meta.assetRoot} @ ${meta.assetScale}x`);
-      console.log(`  quality:    VP9 CRF ${meta.crf}`);
+      console.log(`  encoder:    ${encoderLabel(args.mode, meta.webCodec)}`);
+      if (args.mode === 'webcodecs') {
+        console.log(`  bitrate:    ${Math.round(meta.bitrate / 1_000_000)}Mbps target`);
+      } else {
+        console.log(`  quality:    CRF/CQ ${meta.crf}`);
+      }
+      if (meta.encodeMs !== undefined) console.log(`  encode:     ${(meta.encodeMs / 1000).toFixed(2)}s in browser`);
+      if (meta.encodedBytes !== undefined) console.log(`  encoded:    ${(meta.encodedBytes / 1_000_000).toFixed(1)}MB`);
       console.log(`  frames:     ${meta.frameCount}`);
       console.log(`  tick:       ${meta.tick}`);
       console.log(`  height:     ${meta.heightMeters}m`);
