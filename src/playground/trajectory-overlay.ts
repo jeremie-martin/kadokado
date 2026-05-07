@@ -49,10 +49,6 @@ export class TrajectoryOverlay {
     return this.mode;
   }
 
-  setVisible(v: boolean): void {
-    this.setMode(v ? 'cinematic' : 'off');
-  }
-
   toggle(): OverlayMode {
     const next: OverlayMode =
       this.mode === 'cinematic' ? 'debug' :
@@ -60,10 +56,6 @@ export class TrajectoryOverlay {
           'cinematic';
     this.setMode(next);
     return next;
-  }
-
-  isVisible(): boolean {
-    return this.mode !== 'off';
   }
 
   lastDrawnStats(): { edges: number; segments: number } {

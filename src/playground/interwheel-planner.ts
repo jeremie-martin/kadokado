@@ -25,11 +25,15 @@ const DEEP_WALL_WAIT_STEP = 2;
 const DEFAULT_WAIT_PENALTY = 0.75;
 const DEFAULT_WAIT_GRACE_TICKS = 24;
 const DEFAULT_LONG_WAIT_PENALTY = 0.08;
+const STATE_BONUS: Record<number, number> = {
+  [BLOB_STATE_GRAB]: 850,
+  [BLOB_STATE_WALL]: 600,
+};
+const STATE_BONUS_FALLBACK = -1_000;
 
 type EdgeReward = {
   pickedValue: number;
   sparkScore: number;
-  pendingSparkValue: number;
 };
 
 type PerceivedSnapshot = {
@@ -198,7 +202,7 @@ export class InterwheelPlanner {
       state: rootState,
       depth: 0,
       totalTicks: 0,
-      value: this.scoreState(rootState, rootState, 0, 0, { pickedValue: 0, sparkScore: 0, pendingSparkValue: 0 }, false),
+      value: this.scoreState(rootState, rootState, 0, 0, { pickedValue: 0, sparkScore: 0 }, false),
     };
 
     const nodes: SearchNode[] = [root];
@@ -317,8 +321,7 @@ export class InterwheelPlanner {
     const sim = this.scratch;
     const plan: boolean[] = [];
     const segments: Omit<Segment, 'edgeId' | 'kind'>[] = [];
-    const reward: EdgeReward = { pickedValue: 0, sparkScore: 0, pendingSparkValue: 0 };
-    const startSparkValue = this.sparkValue(parent.state);
+    const reward: EdgeReward = { pickedValue: 0, sparkScore: 0 };
     sim.restore(parent.state);
 
     let sx = sim.blob.x;
@@ -329,7 +332,11 @@ export class InterwheelPlanner {
       plan.push(press);
       this.collectStepReward(sim, reward);
       const terminal = sim.blob.state !== BLOB_STATE_GRAB && sim.blob.state !== BLOB_STATE_WALL && sim.blob.state !== BLOB_STATE_FLY;
-      const phase: SegmentPhase = terminal || sim.ending || sim.ended ? 'terminal' : press ? 'launch' : launched ? 'flight' : 'wait';
+      const phase: SegmentPhase =
+        terminal || sim.ending || sim.ended ? 'terminal' :
+          press ? 'launch' :
+            sim.blob.state === BLOB_STATE_FLY ? 'flight' :
+              'wait';
       const shouldRecord =
         press ||
         terminal ||
@@ -356,10 +363,10 @@ export class InterwheelPlanner {
 
     for (let i = 0; i < waitTicks; i += 1) {
       recordStep(false);
-      if (this.isSimTerminal(sim)) break;
+      if (this.isTerminal(sim)) break;
     }
 
-    if (!this.isSimTerminal(sim) && (sim.blob.state === BLOB_STATE_GRAB || sim.blob.state === BLOB_STATE_WALL)) {
+    if (!this.isTerminal(sim) && (sim.blob.state === BLOB_STATE_GRAB || sim.blob.state === BLOB_STATE_WALL)) {
       recordStep(true);
     }
 
@@ -375,7 +382,6 @@ export class InterwheelPlanner {
     }
 
     const endState = sim.clone();
-    reward.pendingSparkValue = Math.max(0, this.sparkValue(endState) - startSparkValue - reward.pickedValue);
     if (segments.length === 0 || segments[segments.length - 1].x1 !== endState.blob.x || segments[segments.length - 1].y1 !== endState.blob.y) {
       segments.push({
         x0: sx,
@@ -384,7 +390,10 @@ export class InterwheelPlanner {
         y1: endState.blob.y,
         depth: parent.totalTicks + plan.length,
         localTick: plan.length,
-        phase: this.isTerminal(endState) ? 'terminal' : launched ? 'flight' : 'wait',
+        phase:
+          this.isTerminal(endState) ? 'terminal' :
+            endState.blob.state === BLOB_STATE_FLY ? 'flight' :
+              'wait',
         scoreGain: reward.pickedValue + reward.sparkScore,
       });
     }
@@ -436,10 +445,7 @@ export class InterwheelPlanner {
     const waterPenalty = waterMargin < WATER_SAFETY_MARGIN
       ? (WATER_SAFETY_MARGIN - waterMargin) * 30
       : 0;
-    const stateBonus =
-      end.blob.state === BLOB_STATE_GRAB ? 850 :
-        end.blob.state === BLOB_STATE_WALL ? 600 :
-          -1_000;
+    const stateBonus = STATE_BONUS[end.blob.state] ?? STATE_BONUS_FALLBACK;
     const backtrackPenalty = end.blob.y > root.blob.y + 20
       ? (end.blob.y - root.blob.y) * 25
       : 0;
@@ -449,8 +455,7 @@ export class InterwheelPlanner {
       yGain * 4;
     const scorePolicy =
       reward.sparkScore * 3 +
-      reward.pickedValue * 1.5 +
-      reward.pendingSparkValue * 0.5;
+      reward.pickedValue * 1.5;
     const scoreTerm = Math.min(
       scorePolicy * this.cfg.scoreBias,
       Math.max(1_250, heightPolicy * 0.35),
@@ -534,13 +539,12 @@ export class InterwheelPlanner {
       const kind: SegmentKind = bestEdgeIds.has(edge.id) ? 'best' : edge.isDead ? 'dead' : 'branch';
       const scoreGain = edge.reward.pickedValue + edge.reward.sparkScore;
       for (const segment of edge.segments) {
-        out.push({
-          ...segment,
-          edgeId: edge.id,
-          kind,
-          scoreGain,
-          value: edge.value,
-        });
+        const s = segment as Segment;
+        s.edgeId = edge.id;
+        s.kind = kind;
+        s.scoreGain = scoreGain;
+        s.value = edge.value;
+        out.push(s);
       }
     }
     return out;
@@ -610,12 +614,8 @@ export class InterwheelPlanner {
     return `${p.type}:${p.x}:${p.y}`;
   }
 
-  private isTerminal(snap: SimSnapshot): boolean {
-    return snap.blob.state === BLOB_STATE_DEAD || snap.ending || snap.ended;
-  }
-
-  private isSimTerminal(sim: ScratchInterwheelSim): boolean {
-    return sim.blob.state === BLOB_STATE_DEAD || sim.ending || sim.ended;
+  private isTerminal(s: { blob: { state: number }; ending: boolean; ended: boolean }): boolean {
+    return s.blob.state === BLOB_STATE_DEAD || s.ending || s.ended;
   }
 
   private isSameStableTarget(start: SimSnapshot, end: SimSnapshot): boolean {
@@ -623,10 +623,6 @@ export class InterwheelPlanner {
     if (start.blob.state === BLOB_STATE_GRAB) return start.blob.cwIdx >= 0 && start.blob.cwIdx === end.blob.cwIdx;
     if (start.blob.state === BLOB_STATE_WALL) return start.blob.wallSide !== 0 && start.blob.wallSide === end.blob.wallSide;
     return false;
-  }
-
-  private sparkValue(snap: SimSnapshot): number {
-    return snap.sparks.reduce((sum, spark) => sum + spark.score, 0);
   }
 
   private waterUrgency(waterMargin: number): number {

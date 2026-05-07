@@ -166,7 +166,7 @@ async function recordInPage(page, opts) {
     if (sourceWidth !== recordOpts.height || sourceHeight !== recordOpts.height) {
       throw new Error(
         `Expected a ${recordOpts.height}x${recordOpts.height} source canvas, got ` +
-          `${sourceWidth}x${sourceHeight}. Check deviceScaleFactor.`,
+          `${sourceWidth}x${sourceHeight}. Check devicePixelRatio override.`,
       );
     }
     if (sourceWidth > recordOpts.width || sourceHeight > recordOpts.height) {
@@ -220,16 +220,19 @@ async function recordInPage(page, opts) {
       recorder.onstop = resolve;
     });
 
-    recorder.start(1000);
-    await new Promise((resolve) => setTimeout(resolve, recordOpts.seconds * 1000));
-    recorder.stop();
-    await stopped;
+    let blob;
+    try {
+      recorder.start(1000);
+      await new Promise((resolve) => setTimeout(resolve, recordOpts.seconds * 1000));
+      recorder.stop();
+      await stopped;
+      blob = new Blob(chunks, { type: mimeType });
+    } finally {
+      active = false;
+      cancelAnimationFrame(raf);
+      for (const track of stream.getTracks()) track.stop();
+    }
 
-    active = false;
-    cancelAnimationFrame(raf);
-    for (const track of stream.getTracks()) track.stop();
-
-    const blob = new Blob(chunks, { type: mimeType });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -237,6 +240,7 @@ async function recordInPage(page, opts) {
     document.body.appendChild(a);
     a.click();
     a.remove();
+    URL.revokeObjectURL(url);
 
     return {
       mimeType,

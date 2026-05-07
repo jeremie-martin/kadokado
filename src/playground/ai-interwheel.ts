@@ -43,16 +43,13 @@ function attachAI(g: InterwheelGame): void {
   planner = new InterwheelPlanner(g.sim);
   overlay = new TrajectoryOverlay(g.world);
 
-  // Wrap the game's update so we can inject AI presses on the same call —
-  // this naturally lines up 1:1 with each game tick (the existing accumulator
-  // ticker calls update() exactly once per game tick).
   const originalUpdate = g.update.bind(g);
+  let wasEnded = g.ended || g.ending;
   g.update = (() => {
     if (aiActive && !g.ended && !g.ending && planner) {
-      const t0 = performance.now();
       const { press, result } = planner.step();
       if (result) {
-        lastPlanMs = result.stats.planMs || performance.now() - t0;
+        lastPlanMs = result.stats.planMs;
         lastSegmentCount = result.segments.length;
         lastEdges = result.stats.edgesEvaluated;
         lastNodes = result.stats.stableNodesExpanded;
@@ -65,19 +62,15 @@ function attachAI(g: InterwheelGame): void {
       if (press) g.spacePressed = true;
     }
     originalUpdate();
-    refreshStats();
-  }) as typeof g.update;
-
-  // Force a replan whenever a run ends (so the next attempt starts fresh).
-  const watchEnded = () => {
-    if (g.ended || g.ending) {
+    const isEnded = g.ended || g.ending;
+    if (isEnded && !wasEnded) {
       planner?.invalidate();
       overlay?.draw([]);
       refreshOverlayStats();
     }
-    requestAnimationFrame(watchEnded);
-  };
-  requestAnimationFrame(watchEnded);
+    wasEnded = isEnded;
+    refreshStats();
+  }) as typeof g.update;
 }
 
 window.addEventListener('keydown', (e) => {

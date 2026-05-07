@@ -173,23 +173,17 @@ async function runTrial(seed: number | null = null, maxTicks = 24_000): Promise<
 }
 
 function summarize(label: string, results: TrialResult[]): string {
-  const scores = results.map((r) => r.score).sort((a, b) => a - b);
-  const heights = results.map((r) => r.heightMeters).sort((a, b) => a - b);
-  const ticks = results.map((r) => r.ticks).sort((a, b) => a - b);
-  const cpuMs = results.map((r) => r.cpuMs);
-  const median = (a: number[]) => a[Math.floor(a.length / 2)];
-  const p10 = (a: number[]) => a[Math.max(0, Math.floor(a.length * 0.1))];
-  const p90 = (a: number[]) => a[Math.min(a.length - 1, Math.floor(a.length * 0.9))];
-  const sum = (a: number[]) => a.reduce((x, y) => x + y, 0);
-  const totalCpu = sum(cpuMs);
-  const meanScore = Math.round(sum(scores) / scores.length);
-  const meanCpu = Math.round(totalCpu / cpuMs.length);
+  const scores = statsOf(results.map((r) => r.score));
+  const heights = statsOf(results.map((r) => r.heightMeters));
+  const ticks = statsOf(results.map((r) => r.ticks));
+  const cpuMs = statsOf(results.map((r) => r.cpuMs));
+  const totalCpu = cpuMs.mean * results.length;
   return [
     `${label}: ${results.length} trials`,
-    `  score    p10=${p10(scores)} median=${median(scores)} p90=${p90(scores)} max=${scores[scores.length - 1]} mean=${meanScore}`,
-    `  height_m p10=${p10(heights)} median=${median(heights)} p90=${p90(heights)} max=${heights[heights.length - 1]}`,
-    `  ticks    p10=${p10(ticks)} median=${median(ticks)} p90=${p90(ticks)} max=${ticks[ticks.length - 1]}`,
-    `  cpu      mean=${meanCpu}ms total=${Math.round(totalCpu)}ms (${(totalCpu / 1000).toFixed(2)}s)`,
+    `  score    p10=${scores.p10} median=${scores.median} p90=${scores.p90} max=${scores.max} mean=${Math.round(scores.mean)}`,
+    `  height_m p10=${heights.p10} median=${heights.median} p90=${heights.p90} max=${heights.max}`,
+    `  ticks    p10=${ticks.p10} median=${ticks.median} p90=${ticks.p90} max=${ticks.max}`,
+    `  cpu      mean=${Math.round(cpuMs.mean)}ms total=${Math.round(totalCpu)}ms (${(totalCpu / 1000).toFixed(2)}s)`,
   ].join('\n');
 }
 
@@ -388,8 +382,10 @@ async function parityCheck(): Promise<{
   }
   // Phase A's recording skips the ending phase (the AI doesn't run during
   // those ~30 ticks). Drain that tail here so Phase B reaches the same
-  // ended-state Phase A did.
-  while (!game.ended && game.tick < 12_000) {
+  // ended-state Phase A did. Cap by Phase A's sample count rather than a
+  // fixed tick budget — Phase A's loop runs up to 24k ticks, and a stale
+  // smaller cap here would silently mask real divergences as length deltas.
+  while (!game.ended && fullSamples.length < benchSamples.length) {
     game.update();
     sampleInto(fullSamples);
   }
