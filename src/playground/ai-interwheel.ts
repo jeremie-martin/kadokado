@@ -36,7 +36,7 @@ let lastPerceived = '0w/0p';
 let lastShownSegments = 0;
 let lastShownEdges = 0;
 let lastBuckets = '0/0/0';
-let lastValueRange = '—';
+let lastSupportRange = '—';
 
 function isPolicyKey(value: string): value is PolicyKey {
   return (POLICY_KEYS as string[]).includes(value);
@@ -140,11 +140,11 @@ function refreshOverlayStats(): void {
   if (drawn && drawn.edges > 0) {
     const { hi, mid, lo } = drawn.alphaBuckets;
     lastBuckets = `${hi}/${mid}/${lo}`;
-    const span = drawn.bestValue - drawn.worstValue;
-    lastValueRange = `${drawn.bestValue.toFixed(1)} (med ${drawn.medianValue.toFixed(1)}, Δ ${span.toFixed(1)})`;
+    const span = drawn.bestVisualValue - drawn.worstVisualValue;
+    lastSupportRange = `${drawn.bestVisualValue.toFixed(2)} (med ${drawn.medianVisualValue.toFixed(2)}, Δ ${span.toFixed(2)})`;
   } else {
     lastBuckets = '0/0/0';
-    lastValueRange = '—';
+    lastSupportRange = '—';
   }
 }
 
@@ -179,7 +179,7 @@ function refreshStats(): void {
     statItem('Visible', lastPerceived),
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
     statItem('α buckets', lastBuckets),
-    statItem('Value', lastValueRange),
+    statItem('Support', lastSupportRange),
   );
 }
 

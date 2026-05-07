@@ -27,6 +27,8 @@ const DEEP_WALL_WAIT_STEP = 2;
 const DEFAULT_WAIT_PENALTY = 0.75;
 const DEFAULT_WAIT_GRACE_TICKS = 24;
 const DEFAULT_LONG_WAIT_PENALTY = 0.08;
+const LINEAGE_SUPPORT_GAMMA = 3;
+const LINEAGE_SUPPORT_DECAY = 0.65;
 // "Miss" detection: how close does the trajectory get to an uncollected
 // pastille before we count it as a foregone opportunity? Pickup radius is
 // 70px, so anything <70 was either grabbed or barely missed; out to ~300
@@ -87,7 +89,7 @@ type SearchEdge = {
   value: number;
   reward: EdgeReward;
   scoreBreakdown: CandidateScoreBreakdown;
-  segments: Omit<Segment, 'edgeId' | 'value' | 'onChosenChain'>[];
+  segments: Omit<Segment, 'edgeId' | 'visualValue' | 'onChosenChain'>[];
 };
 
 export type Segment = {
@@ -98,7 +100,7 @@ export type Segment = {
   y1: number;
   depth: number;
   localTick: number;
-  value: number;
+  visualValue: number;
   onChosenChain: boolean;
 };
 
@@ -350,7 +352,8 @@ export class InterwheelPlanner {
     const targetNode = bestNode ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
-    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds) : [];
+    const visualValues = this.continuationSupportForEdges(nodes, edges);
+    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, visualValues) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
     return {
       plan: plan.length > 0 ? plan : [false],
@@ -397,7 +400,7 @@ export class InterwheelPlanner {
           y1: sim.blob.y,
           depth: ticks,
           localTick: ticks,
-          value: 0,
+          visualValue: 0,
           onChosenChain: true,
         });
         sx = sim.blob.x;
@@ -426,7 +429,7 @@ export class InterwheelPlanner {
   private evaluateEdge(rootState: SimSnapshot, parent: SearchNode, waitTicks: number, edgeId: number): SearchEdge {
     const sim = this.scratch;
     const plan: boolean[] = [];
-    const segments: Omit<Segment, 'edgeId' | 'value' | 'onChosenChain'>[] = [];
+    const segments: Omit<Segment, 'edgeId' | 'visualValue' | 'onChosenChain'>[] = [];
     const perceivedPastilles = this.currentPerceived?.snap.pastilles ?? [];
     const minDistSq = new Float64Array(perceivedPastilles.length);
     for (let i = 0; i < minDistSq.length; i += 1) minDistSq[i] = Infinity;
@@ -745,14 +748,38 @@ export class InterwheelPlanner {
     return edges[target.edgeId].scoreBreakdown;
   }
 
-  private segmentsForEdges(edges: SearchEdge[], bestEdgeIds: Set<number>): Segment[] {
+  private continuationSupportForEdges(nodes: SearchNode[], edges: SearchEdge[]): number[] {
+    if (edges.length === 0) return [];
+
+    // Visual support is deliberately separate from planner score. It models
+    // additive overdraw of complete candidate paths: a good follow-up jump
+    // contributes to itself, then contributes a decayed amount to the prefix
+    // jumps that make it reachable.
+    const support = new Array<number>(edges.length).fill(0);
+    const ranked = [...edges].sort((a, b) => a.value - b.value || a.id - b.id).map((edge) => edge.id);
+    const maxRank = Math.max(1, ranked.length - 1);
+    for (let i = 0; i < ranked.length; i += 1) {
+      const edgeId = ranked[i];
+      const rank = ranked.length <= 1 ? 1 : i / maxRank;
+      support[edgeId] = Math.pow(rank, LINEAGE_SUPPORT_GAMMA);
+    }
+
+    for (let i = edges.length - 1; i >= 0; i -= 1) {
+      const parentEdgeId = nodes[edges[i].parentId]?.edgeId ?? -1;
+      if (parentEdgeId >= 0) support[parentEdgeId] += support[i] * LINEAGE_SUPPORT_DECAY;
+    }
+
+    return support;
+  }
+
+  private segmentsForEdges(edges: SearchEdge[], bestEdgeIds: Set<number>, visualValues: number[]): Segment[] {
     const out: Segment[] = [];
     for (const edge of edges) {
       const onChosenChain = bestEdgeIds.has(edge.id);
       for (const segment of edge.segments) {
         const s = segment as Segment;
         s.edgeId = edge.id;
-        s.value = edge.value;
+        s.visualValue = visualValues[edge.id] ?? 0;
         s.onChosenChain = onChosenChain;
         out.push(s);
       }

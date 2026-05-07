@@ -32,20 +32,20 @@ const SCALE_EPS = 1;
 export type OverlayStats = {
   segments: number;
   edges: number;
-  bestValue: number;
-  pivotValue: number;
-  medianValue: number;
-  worstValue: number;
+  bestVisualValue: number;
+  pivotVisualValue: number;
+  medianVisualValue: number;
+  worstVisualValue: number;
   alphaBuckets: { hi: number; mid: number; lo: number };
 };
 
 const EMPTY_STATS: OverlayStats = {
   segments: 0,
   edges: 0,
-  bestValue: 0,
-  pivotValue: 0,
-  medianValue: 0,
-  worstValue: 0,
+  bestVisualValue: 0,
+  pivotVisualValue: 0,
+  medianVisualValue: 0,
+  worstVisualValue: 0,
   alphaBuckets: { hi: 0, mid: 0, lo: 0 },
 };
 
@@ -89,10 +89,10 @@ export class TrajectoryOverlay {
     }
 
     // One observation per edge regardless of segment count — long flights
-    // shouldn't bias the value distribution.
+    // shouldn't bias the visual-support distribution.
     const edgeValues = new Map<number, number>();
     for (const s of segments) {
-      if (!edgeValues.has(s.edgeId)) edgeValues.set(s.edgeId, s.value);
+      if (!edgeValues.has(s.edgeId)) edgeValues.set(s.edgeId, s.visualValue);
     }
     const sortedValues = [...edgeValues.values()].sort((a, b) => a - b);
     const bestValue = sortedValues[sortedValues.length - 1];
@@ -124,10 +124,10 @@ export class TrajectoryOverlay {
     this.stats = {
       segments: drawnSegments,
       edges: seenEdges.size,
-      bestValue,
-      pivotValue,
-      medianValue: sortedValues[sortedValues.length >> 1],
-      worstValue: sortedValues[0],
+      bestVisualValue: bestValue,
+      pivotVisualValue: pivotValue,
+      medianVisualValue: sortedValues[sortedValues.length >> 1],
+      worstVisualValue: sortedValues[0],
       alphaBuckets: { hi, mid, lo },
     };
   }

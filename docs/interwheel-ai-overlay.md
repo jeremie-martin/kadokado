@@ -64,7 +64,7 @@ Each `SearchEdge` carries its own `segments: Segment[]`. A `Segment` is
 deliberately minimal — only what the renderer needs:
 
 ```
-edgeId, x0/y0/x1/y1, depth, localTick, value, onChosenChain
+edgeId, x0/y0/x1/y1, depth, localTick, visualValue, onChosenChain
 ```
 
 Sampling inside `evaluateEdge()` is sparse: every `TRAJECTORY_SAMPLE_TICKS = 3`
@@ -72,10 +72,24 @@ ticks, plus on press, terminal, and state transitions. Each edge becomes a
 polyline with ~tens of points.
 
 After search, `segmentsForEdges()` walks each edge once and stamps every
-segment with the edge's scalar `value` plus an `onChosenChain` boolean
+segment with the edge's scalar `visualValue` plus an `onChosenChain` boolean
 (`bestEdgeIds.has(edge.id)` — the chain back from the chosen target node to
 the root). No kind/phase enum, no per-segment scoreGain. The renderer
-consumes only the scalar value and the chain bit.
+consumes only the scalar visual value and the chain bit.
+
+`visualValue` is not the raw planner score of that one edge. Follow-up jumps
+are already represented as later edges in the search tree, so after the tree
+is built the planner computes **lineage support**:
+
+- rank every edge by raw score and convert that rank to local support;
+- walk backward through the tree;
+- add each child edge's support into its parent edge with
+  `LINEAGE_SUPPORT_DECAY = 0.65`.
+
+This approximates additive rendering of complete candidate paths without
+duplicating the same prefix geometry once per path. If many strong second or
+third jumps share a first jump, that first jump earns more visual support even
+when its immediate endpoint score is not itself the best.
 
 ### `src/playground/trajectory-overlay.ts` — rendering
 
@@ -89,8 +103,8 @@ The rule:
 
 - Chosen-chain segments draw at `alpha = 1`.
 - Other segments draw at `alpha = rank^γ`, where `rank ∈ [0, 1]` is the edge's
-  position when all evaluated edges are sorted by `value` ascending (worst = 0,
-  best = 1) and `γ = ALPHA_GAMMA = 3`.
+  position when all evaluated edges are sorted by `visualValue` ascending
+  (worst = 0, best = 1) and `γ = ALPHA_GAMMA = 3`.
 - Below `MIN_DRAW_ALPHA = 0.05` segments are culled outright (no draw call) so
   the long tail doesn't accumulate into a noise carpet.
 
@@ -102,16 +116,18 @@ current; a `'value'` mode (`alpha = exp(-(gap/scale)^γ)`) is kept as a
 documented baseline for A/B comparison. See `buildEdgeAlpha()` for both
 formulas. §4 documents why rank ended up the default.
 
-Tunables (top of file):
+Tunables (top of the planner/overlay files):
 
-| Constant          | Default | Effect                                       |
-|-------------------|---------|----------------------------------------------|
-| `ALPHA_MODE`      | `rank`  | rank-based vs value-based fade               |
-| `ALPHA_GAMMA`     | `3`     | curve steepness; raise → fewer bright lines  |
-| `MIN_DRAW_ALPHA`  | `0.05`  | cull threshold; raise → cleaner long tail    |
-| `SEGMENT_COLOR`   | cyan    | uniform stroke color                         |
-| `SEGMENT_WIDTH`   | `1`     | uniform stroke width                         |
-| `SCALE_PIVOT`     | `0.5`   | value-mode only — calibration percentile     |
+| Constant                  | Default | Effect                                      |
+|---------------------------|---------|---------------------------------------------|
+| `ALPHA_MODE`              | `rank`  | rank-based vs value-based fade              |
+| `ALPHA_GAMMA`             | `3`     | curve steepness; raise → fewer bright lines |
+| `MIN_DRAW_ALPHA`          | `0.05`  | cull threshold; raise → cleaner long tail   |
+| `SEGMENT_COLOR`           | cyan    | uniform stroke color                        |
+| `SEGMENT_WIDTH`           | `1`     | uniform stroke width                        |
+| `SCALE_PIVOT`             | `0.5`   | value-mode only — calibration percentile    |
+| `LINEAGE_SUPPORT_GAMMA`   | `3`     | raw-score rank → local support curve        |
+| `LINEAGE_SUPPORT_DECAY`   | `0.65`  | follow-up support inherited by prefixes     |
 
 ### `src/playground/ai-interwheel.ts` — wiring
 
@@ -181,14 +197,14 @@ The original implementation had a `cinematic` filter mode (bucketing branches
 by launch depth, proximity-to-best tests, wait-prefix trimming) bolted on top
 of the renderer purely so the animation was watchable. It worked but it was
 not a principled rule, and tuning it felt like fighting the tool rather than
-expressing intent. We replaced it with a single render-time mapping from
-edge value to alpha.
+expressing intent. We replaced it with a lineage-support value computed by the
+planner, then a single render-time mapping from that support to alpha.
 
-The framing: **rendering opacity is a function of how competitive an edge is
-with the best**, not a function of arbitrary visual heuristics. As one path
-dominates the score, alternatives fade automatically. When multiple paths are
-genuinely competitive (one toward a collectible, one straight up), they all
-stay visible because they're all close to the best.
+The framing: **rendering opacity is a function of how much competitive search
+mass an edge carries**, not a function of arbitrary visual heuristics. As one
+path dominates the score, alternatives fade automatically. When multiple paths
+are genuinely competitive (one toward a collectible, one straight up), they all
+stay visible because their edges and prefixes carry support.
 
 This is the same principle behind both Mario phenomena: heuristic dominance
 suppresses uncompetitive branches, and the ring buffer suppresses branches
@@ -200,19 +216,21 @@ better, not by being filtered to win."
 We tried both, in this order.
 
 **Value-based (first attempt):** `alpha = exp(-((value_gap)/scale)^γ)`, where
-`scale` is the gap from the best edge to the median edge. Median edge always
+`value` is the scalar the renderer receives (historically raw edge score, now
+`visualValue`) and `scale` is the gap from the best edge to the median edge.
+Median edge always
 sits at `alpha = exp(-1) ≈ 0.37` regardless of γ; γ steepens the curve on
 both sides of the median. We tuned γ from 1 → 2 → 3 → 4 and raised the cull
 threshold, but the visual barely changed.
 
-The reason was a property of our score landscape: most non-trivial edges
-cluster very close to the best in *value*. With a tight cluster near the top,
+The reason was a property of our raw score landscape: most non-trivial edges
+cluster very close to the best in score. With a tight cluster near the top,
 `scale` itself becomes small, and the upper-percentile edges all have tiny
 gaps relative to it — γ steepens the curve but the inputs are all in the
 "near zero gap" region where the curve is flat-near-1. Result: too many
 similarly-bright lines.
 
-**Rank-based (current):** sort edges by value ascending, assign each a
+**Rank-based (current):** sort edges by visual support ascending, assign each a
 `rank ∈ [0, 1]` (worst = 0, best = 1), and use `alpha = rank^γ` with γ = 3.
 This forces a fixed alpha distribution regardless of how clustered the
 underlying values are. Even if 30 edges sit within 1% of the best in value,
@@ -229,8 +247,8 @@ is still highlighted unconditionally via `onChosenChain`.
 
 `ALPHA_MODE` at the top of `trajectory-overlay.ts` lets you flip back to
 value-mode for diagnosis if the rank fade ever feels off. `α buckets` and
-`Value` rows in the playground stat panel surface the live distribution so
-you can tell which mode the score landscape calls for.
+`Support` rows in the playground stat panel surface the live distribution so
+you can tell which mode the current visual-support distribution calls for.
 
 ### What this shifted
 
@@ -253,9 +271,9 @@ score-function conversation, not an overlay one.
 | Action space        | forward-only (`KEY_RIGHT` always set) | omnidirectional launch                 |
 | Storage             | global `int[1000][2]` ring            | per-edge `Segment[]` on each edge      |
 | Sampling rate       | every tick × 2                        | every 3 ticks + transitions            |
-| Per-segment metadata| none                                  | edgeId, x0/y0/x1/y1, depth, localTick, value, onChosenChain |
-| Visual budget       | shared, leader dominates by volume    | shared via render-time alpha (rank-based) |
-| Convergence         | emergent (heuristic + ring)           | emergent (rank → alpha mapping)        |
+| Per-segment metadata| none                                  | edgeId, x0/y0/x1/y1, depth, localTick, visualValue, onChosenChain |
+| Visual budget       | shared, leader dominates by volume    | shared via lineage support + rank alpha |
+| Convergence         | emergent (heuristic + ring)           | emergent (support → rank → alpha)      |
 | Renderer            | external Mario engine                 | Pixi `Graphics` child of `world`       |
 | Reset               | per `startSearch` (commented out)     | `draw([])` on AI-off / game-end        |
 | User toggle         | none                                  | `D` toggles overlay on/off, `A` toggles AI |
