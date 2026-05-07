@@ -199,6 +199,9 @@ cover the important scenarios.
   blob timeline frames, HUD placement, and reference captures.
 - Known gaps: audio/platform score hooks, complete pivot/timeline manifest, and
   deterministic reference scenarios.
+- Mine generation is an intentional port adaptation: the level is extended past
+  the original `WMAX = 50`, but mine difficulty is decoupled from total world
+  length so the first hazards still appear around the original early-run band.
 
 #### AI planner note
 

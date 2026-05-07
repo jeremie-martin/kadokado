@@ -46,6 +46,10 @@ export const BLOB_BLOP_START = 0.6;
 export const BLOB_BLOP_MIN = 0.07;
 export const BLOB_BLOP_FRICT = 0.94;
 export const MINE_SPACE = 36;
+// The port extends WMAX beyond the original 50-wheel level. Keep the mine
+// onset close to the original, then stretch only the late hazard tail.
+export const MINE_ORIGINAL_RAMP_WHEELS = 50;
+export const MINE_EARLY_RAMP_WHEELS = 35;
 export const ENDGAME_DELAY = 30;
 
 // Blob state values (numeric — avoid TS const-enum so external code can use
@@ -417,6 +421,18 @@ export class InterwheelSim {
     }
   }
 
+  private mineDifficulty(index: number, geometryDifficulty: number): number {
+    const earlyEnd = Math.min(MINE_EARLY_RAMP_WHEELS, WMAX);
+    const earlyEndValue = earlyEnd / MINE_ORIGINAL_RAMP_WHEELS;
+    const lateSpan = Math.max(1, WMAX - earlyEnd);
+    const geometryBase = clamp(index / WMAX, 0, 1);
+    const inheritedJitter = geometryDifficulty - geometryBase;
+    const base = index <= earlyEnd
+      ? index / MINE_ORIGINAL_RAMP_WHEELS
+      : earlyEndValue + ((index - earlyEnd) / lateSpan) * (1 - earlyEndValue);
+    return clamp(base + inheritedJitter, 0, 1);
+  }
+
   private initWheels(rng: RNG): void {
     const list: Wheel[] = [];
     let oldWheel = this.createWheelData(rng);
@@ -448,7 +464,8 @@ export class InterwheelSim {
         tries += 1;
       }
 
-      while (rng() + 0.4 < c) this.addMine(wheel, rng);
+      const mineDifficulty = this.mineDifficulty(i, c);
+      while (rng() + 0.4 < mineDifficulty) this.addMine(wheel, rng);
 
       if (rng() > c) {
         const interWheel = this.createWheelData(rng);
