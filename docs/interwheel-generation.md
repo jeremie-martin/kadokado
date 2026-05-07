@@ -83,8 +83,29 @@ Calibration on seeds `42..51`:
 
 ## Difficulty
 
-Future work: expose a continuous generation difficulty value and characterize it
-empirically. One promising measurement is to run intentionally imperfect agents
-over fixed seed populations: delayed jumps, noisy timing, reduced search depth,
-or limited reaction windows. The distribution of failure heights would give a
-practical measure of whether generated difficulty actually ramps as intended.
+Wheel generation now uses a height-based difficulty curve instead of deriving
+the whole ramp from `WMAX`. The curve is continuous, is already clearly harder
+around `10000m`, reaches full pressure around `20000m`, and then stays capped
+for the rest of the finite generated world.
+
+The current ramp changes three things:
+
+- Mines become more likely as height increases, but placement still enforces an
+  arc-spacing margin so a wheel cannot be packed with unavoidable mines.
+- Wheel rotation speeds are biased upward as height increases, with a capped
+  random component so the level still varies.
+- Wheel radii trend smaller on average as height increases, while keeping
+  enough randomness that high sections are not all minimum-size wheels.
+
+The route-support geometry is intentionally more conservative than the visible
+difficulty. Wheel spacing ramps more gently, and intermediate support wheels
+retain a minimum spawn chance even at full difficulty. This keeps the level
+generator hardening the climb without intentionally removing the route graph
+that the validators need to find.
+
+Future work: expose this as a tunable generation difficulty value and
+characterize it empirically. One promising measurement is to run intentionally
+imperfect agents over fixed seed populations: delayed jumps, noisy timing,
+reduced search depth, or limited reaction windows. The distribution of failure
+heights would give a practical measure of whether generated difficulty actually
+ramps as intended.

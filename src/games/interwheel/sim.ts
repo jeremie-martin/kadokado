@@ -19,7 +19,7 @@ export const SIDE = 10;
 export const SPACE = 8;
 export const VIEW_WHEEL = 50;
 export const START_WHEEL_ID = 10;
-export const WMAX = 1000;
+export const WMAX = 1200;
 
 // Wheel generation
 export const WHEEL_SPEED_MIN = 0.05;
@@ -31,6 +31,12 @@ export const WHEEL_RAY_MIN = 8;
 export const WHEEL_RAY_MAX = 32;
 export const WHEEL_RAY_RANDOM = 50;
 export const DIF_RANDOMIZER = 0.1;
+export const DIFFICULTY_FULL_HEIGHT_METERS = 20_000;
+export const WHEEL_DIST_HARD_FACTOR = 0.75;
+export const WHEEL_RAY_RANDOM_HARD_FACTOR = 0.9;
+export const WHEEL_SPEED_RANDOM_HARD_FACTOR = 0.35;
+export const INTER_WHEEL_CHANCE_EASY = 0.7;
+export const INTER_WHEEL_CHANCE_HARD = 0.25;
 
 // Water / scoring
 export const WATER_SPEED = 1;
@@ -46,10 +52,8 @@ export const BLOB_BLOP_START = 0.6;
 export const BLOB_BLOP_MIN = 0.07;
 export const BLOB_BLOP_FRICT = 0.94;
 export const MINE_SPACE = 36;
-// The port extends WMAX beyond the original 50-wheel level. Keep the mine
-// onset close to the original, then stretch only the late hazard tail.
-export const MINE_ORIGINAL_RAMP_WHEELS = 50;
-export const MINE_EARLY_RAMP_WHEELS = 35;
+export const MINE_SAFE_SPACE_FACTOR = 2.2;
+export const MINE_MAX_PLACEMENT_ATTEMPTS = 12;
 export const ENDGAME_DELAY = 30;
 
 // Blob state values (numeric — avoid TS const-enum so external code can use
@@ -89,6 +93,15 @@ export function angleTo(a: { x: number; y: number }, b: { x: number; y: number }
 function randomInt(rng: RNG, max: number): number {
   if (max <= 1) return 0;
   return Math.floor(rng() * max);
+}
+
+export function heightMetersFromY(y: number): number {
+  return Math.max(0, Math.floor(-y * 0.2));
+}
+
+export function generationDifficultyAtHeight(heightMeters: number): number {
+  const t = clamp(heightMeters / DIFFICULTY_FULL_HEIGHT_METERS, 0, 1);
+  return t * t * (3 - 2 * t);
 }
 
 // ============================================================================
@@ -406,31 +419,51 @@ export class InterwheelSim {
     };
   }
 
-  private addMine(wheel: Wheel, rng: RNG): void {
+  private addMine(wheel: Wheel, rng: RNG): boolean {
     const perim = Math.PI * 2 * wheel.ray;
-    if (perim / (wheel.mines.length + 1) < MINE_SPACE * 2) return;
+    if (perim / (wheel.mines.length + 1) < MINE_SPACE * MINE_SAFE_SPACE_FACTOR) return false;
     let tries = 0;
     while (tries <= 20) {
       const a = rng() * Math.PI * 2;
       const valid = wheel.mines.every((mine) => Math.abs(hMod(mine - a, Math.PI)) * wheel.ray >= MINE_SPACE);
       if (valid) {
         wheel.mines.push(a);
-        return;
+        return true;
       }
       tries += 1;
     }
+    return false;
   }
 
-  private mineDifficulty(index: number, geometryDifficulty: number): number {
-    const earlyEnd = Math.min(MINE_EARLY_RAMP_WHEELS, WMAX);
-    const earlyEndValue = earlyEnd / MINE_ORIGINAL_RAMP_WHEELS;
-    const lateSpan = Math.max(1, WMAX - earlyEnd);
-    const geometryBase = clamp(index / WMAX, 0, 1);
-    const inheritedJitter = geometryDifficulty - geometryBase;
-    const base = index <= earlyEnd
-      ? index / MINE_ORIGINAL_RAMP_WHEELS
-      : earlyEndValue + ((index - earlyEnd) / lateSpan) * (1 - earlyEndValue);
-    return clamp(base + inheritedJitter, 0, 1);
+  private difficultyAtY(y: number): number {
+    return generationDifficultyAtHeight(heightMetersFromY(y));
+  }
+
+  private noisyDifficulty(base: number, rng: RNG): number {
+    return clamp(base + (rng() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
+  }
+
+  private wheelRay(difficulty: number, rng: RNG): number {
+    const randomSpan = WHEEL_RAY_RANDOM * (1 - difficulty * (1 - WHEEL_RAY_RANDOM_HARD_FACTOR));
+    return WHEEL_RAY_MIN + (1 - difficulty) * (WHEEL_RAY_MAX - WHEEL_RAY_MIN) + rng() * randomSpan;
+  }
+
+  private wheelSpeed(difficulty: number, rng: RNG): number {
+    const randomSpan = WHEEL_SPEED_RANDOM * (1 - difficulty * (1 - WHEEL_SPEED_RANDOM_HARD_FACTOR));
+    return WHEEL_SPEED_MIN + difficulty * (WHEEL_SPEED_MAX - WHEEL_SPEED_MIN) + rng() * randomSpan;
+  }
+
+  private interWheelChance(difficulty: number): number {
+    return INTER_WHEEL_CHANCE_HARD + (1 - difficulty) * (INTER_WHEEL_CHANCE_EASY - INTER_WHEEL_CHANCE_HARD);
+  }
+
+  private addDifficultyMines(wheel: Wheel, difficulty: number, rng: RNG): void {
+    const rollBias = 0.35 - difficulty * 0.25;
+    let placed = 0;
+    while (placed < MINE_MAX_PLACEMENT_ATTEMPTS && rng() + rollBias < difficulty) {
+      if (!this.addMine(wheel, rng)) break;
+      placed += 1;
+    }
   }
 
   private initWheels(rng: RNG): void {
@@ -443,14 +476,16 @@ export class InterwheelSim {
     list.push(oldWheel);
 
     for (let i = 0; i < WMAX; i += 1) {
-      const c = clamp(i / WMAX + (rng() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
-      const c2 = clamp(i / WMAX + (rng() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
-      const c3 = clamp(i / WMAX + (rng() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
+      const baseDifficulty = this.difficultyAtY(oldWheel.y);
+      const c = this.noisyDifficulty(baseDifficulty, rng);
+      const c2 = this.noisyDifficulty(baseDifficulty, rng);
+      const c3 = this.noisyDifficulty(baseDifficulty, rng);
       const wheel = this.createWheelData(rng);
-      wheel.ray = WHEEL_RAY_MIN + (1 - c2) * (WHEEL_RAY_MAX - WHEEL_RAY_MIN) + rng() * WHEEL_RAY_RANDOM;
-      wheel.speed = WHEEL_SPEED_MIN + c3 * (WHEEL_SPEED_MAX - WHEEL_SPEED_MIN) + rng() * WHEEL_SPEED_RANDOM;
+      wheel.ray = this.wheelRay(c2, rng);
+      wheel.speed = this.wheelSpeed(c3, rng);
 
-      const dist = WHEEL_DIST_MIN + c * (WHEEL_DIST_MAX - WHEEL_DIST_MIN) + oldWheel.ray + wheel.ray;
+      const spacingDifficulty = c * WHEEL_DIST_HARD_FACTOR;
+      const dist = WHEEL_DIST_MIN + spacingDifficulty * (WHEEL_DIST_MAX - WHEEL_DIST_MIN) + oldWheel.ray + wheel.ray;
       const lim = SIDE + SPACE + wheel.ray;
       let tries = 0;
       while (tries < 200) {
@@ -464,16 +499,16 @@ export class InterwheelSim {
         tries += 1;
       }
 
-      const mineDifficulty = this.mineDifficulty(i, c);
-      while (rng() + 0.4 < mineDifficulty) this.addMine(wheel, rng);
+      this.addDifficultyMines(wheel, this.noisyDifficulty(this.difficultyAtY(wheel.y), rng), rng);
 
-      if (rng() > c) {
+      if (rng() < this.interWheelChance(c)) {
         const interWheel = this.createWheelData(rng);
         interWheel.y = (wheel.y + oldWheel.y) * 0.5;
         let tr = 0;
         while (tr <= 30) {
-          interWheel.ray = WHEEL_RAY_MIN + 10 + rng() * (WHEEL_RAY_MAX - WHEEL_RAY_MIN);
-          interWheel.speed = WHEEL_SPEED_MIN + rng() * (WHEEL_SPEED_MAX - WHEEL_SPEED_MIN);
+          const interDifficulty = this.noisyDifficulty(this.difficultyAtY(interWheel.y), rng);
+          interWheel.ray = this.wheelRay(interDifficulty * 0.75, rng);
+          interWheel.speed = this.wheelSpeed(interDifficulty, rng);
           const m = SIDE + SPACE + interWheel.ray;
           interWheel.x = STAGE_WIDTH - m;
           const valid =
