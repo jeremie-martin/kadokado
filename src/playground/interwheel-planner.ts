@@ -89,7 +89,7 @@ type SearchEdge = {
   value: number;
   reward: EdgeReward;
   scoreBreakdown: CandidateScoreBreakdown;
-  segments: Omit<Segment, 'edgeId' | 'visualValue' | 'onChosenChain'>[];
+  segments: SegmentBody[];
 };
 
 export type Segment = {
@@ -100,9 +100,11 @@ export type Segment = {
   y1: number;
   depth: number;
   localTick: number;
-  visualValue: number;
+  support: number;
   onChosenChain: boolean;
 };
+
+type SegmentBody = Omit<Segment, 'edgeId' | 'support' | 'onChosenChain'>;
 
 export type PlannerStats = {
   mode: 'dead' | 'flight' | 'idle' | 'stable';
@@ -352,8 +354,8 @@ export class InterwheelPlanner {
     const targetNode = bestNode ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
-    const visualValues = this.continuationSupportForEdges(nodes, edges);
-    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, visualValues) : [];
+    const support = this.lineageSupportForEdges(nodes, edges);
+    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, support) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
     return {
       plan: plan.length > 0 ? plan : [false],
@@ -400,7 +402,7 @@ export class InterwheelPlanner {
           y1: sim.blob.y,
           depth: ticks,
           localTick: ticks,
-          visualValue: 0,
+          support: 0,
           onChosenChain: true,
         });
         sx = sim.blob.x;
@@ -429,7 +431,7 @@ export class InterwheelPlanner {
   private evaluateEdge(rootState: SimSnapshot, parent: SearchNode, waitTicks: number, edgeId: number): SearchEdge {
     const sim = this.scratch;
     const plan: boolean[] = [];
-    const segments: Omit<Segment, 'edgeId' | 'visualValue' | 'onChosenChain'>[] = [];
+    const segments: SegmentBody[] = [];
     const perceivedPastilles = this.currentPerceived?.snap.pastilles ?? [];
     const minDistSq = new Float64Array(perceivedPastilles.length);
     for (let i = 0; i < minDistSq.length; i += 1) minDistSq[i] = Infinity;
@@ -748,38 +750,40 @@ export class InterwheelPlanner {
     return edges[target.edgeId].scoreBreakdown;
   }
 
-  private continuationSupportForEdges(nodes: SearchNode[], edges: SearchEdge[]): number[] {
+  private lineageSupportForEdges(nodes: SearchNode[], edges: SearchEdge[]): number[] {
     if (edges.length === 0) return [];
 
-    // Visual support is deliberately separate from planner score. It models
-    // additive overdraw of complete candidate paths: a good follow-up jump
-    // contributes to itself, then contributes a decayed amount to the prefix
-    // jumps that make it reachable.
+    // Visual overdraw budget per edge, separate from planner score. Each edge
+    // seeds with rank^γ of its own value; then a single bottom-up pass adds a
+    // decayed share of each child edge's support to its parent. Net effect: a
+    // first jump that opens up many strong follow-ups accumulates support
+    // from each of them, even when its own landing scores middling.
+    //
+    // Bottom-up by reverse insertion order is sound: A* expands best-first,
+    // and a child edge can only be created after its parent node has been
+    // popped, so a parent edge always precedes any child edge in `edges`.
     const support = new Array<number>(edges.length).fill(0);
-    const ranked = [...edges].sort((a, b) => a.value - b.value || a.id - b.id).map((edge) => edge.id);
-    const maxRank = Math.max(1, ranked.length - 1);
-    for (let i = 0; i < ranked.length; i += 1) {
-      const edgeId = ranked[i];
-      const rank = ranked.length <= 1 ? 1 : i / maxRank;
-      support[edgeId] = Math.pow(rank, LINEAGE_SUPPORT_GAMMA);
+    const sortedIds = edges.map((e) => e.id).sort((a, b) => edges[a].value - edges[b].value || a - b);
+    const denom = Math.max(1, sortedIds.length - 1);
+    for (let i = 0; i < sortedIds.length; i += 1) {
+      const rank = sortedIds.length <= 1 ? 1 : i / denom;
+      support[sortedIds[i]] = Math.pow(rank, LINEAGE_SUPPORT_GAMMA);
     }
-
     for (let i = edges.length - 1; i >= 0; i -= 1) {
       const parentEdgeId = nodes[edges[i].parentId]?.edgeId ?? -1;
       if (parentEdgeId >= 0) support[parentEdgeId] += support[i] * LINEAGE_SUPPORT_DECAY;
     }
-
     return support;
   }
 
-  private segmentsForEdges(edges: SearchEdge[], bestEdgeIds: Set<number>, visualValues: number[]): Segment[] {
+  private segmentsForEdges(edges: SearchEdge[], bestEdgeIds: Set<number>, support: number[]): Segment[] {
     const out: Segment[] = [];
     for (const edge of edges) {
       const onChosenChain = bestEdgeIds.has(edge.id);
       for (const segment of edge.segments) {
         const s = segment as Segment;
         s.edgeId = edge.id;
-        s.visualValue = visualValues[edge.id] ?? 0;
+        s.support = support[edge.id] ?? 0;
         s.onChosenChain = onChosenChain;
         out.push(s);
       }

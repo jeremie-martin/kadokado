@@ -6,46 +6,35 @@ export type OverlayMode = 'on' | 'off';
 const SEGMENT_COLOR = 0x9be8ff;
 const SEGMENT_WIDTH = 1;
 
-// 'value' = alpha derived from value gap to best (sensitive to score landscape
-// shape — many near-tied edges all look similarly bright). 'rank' = alpha
-// derived from each edge's rank position among all edges (forces a spread
-// regardless of value distribution; better when scores cluster).
-type AlphaMode = 'value' | 'rank';
-const ALPHA_MODE: AlphaMode = 'rank';
-
-// Gamma applied to the alpha basis before drawing. Higher = sharper falloff,
-// fewer bright lines.
-//   value-mode: alpha = exp(-(gap/scale)^γ); 2 quadratic, 3 cubic, 4 quartic.
-//   rank-mode:  alpha = rank^γ where rank ∈ [0,1]; 3 cubes, 4 quartics.
+// Curve applied to each edge's rank-of-support. The planner's lineage pass
+// produces support that grows exponentially with depth on the principal
+// prefix (recurrence factor branching×decay > 1), so support *magnitude* is
+// dominated by a single outlier and not useful for direct normalization.
+// Rank-mapping discards magnitude but preserves the *ordering* lineage
+// support imposed: a good prefix earns top rank because of its descendants.
+// γ=3 matches the previous rank-of-value calibration; raise to thin the
+// long tail, lower to brighten it.
 const ALPHA_GAMMA = 3;
-
-// Value-mode only. Pivot percentile for the scale denominator. 0.5 = median-gap
-// (median edge ≈ alpha 0.37). Lower (e.g. 0.25) tightens scale further.
-const SCALE_PIVOT = 0.5;
 
 // Below this alpha, skip drawing entirely. Avoids a "carpet" of near-invisible
 // lines accumulating into visible noise. Lower → more long-tail visibility.
 const MIN_DRAW_ALPHA = 0.05;
 
-const SCALE_EPS = 1;
-
 export type OverlayStats = {
   segments: number;
   edges: number;
-  bestVisualValue: number;
-  pivotVisualValue: number;
-  medianVisualValue: number;
-  worstVisualValue: number;
+  bestSupport: number;
+  medianSupport: number;
+  worstSupport: number;
   alphaBuckets: { hi: number; mid: number; lo: number };
 };
 
 const EMPTY_STATS: OverlayStats = {
   segments: 0,
   edges: 0,
-  bestVisualValue: 0,
-  pivotVisualValue: 0,
-  medianVisualValue: 0,
-  worstVisualValue: 0,
+  bestSupport: 0,
+  medianSupport: 0,
+  worstSupport: 0,
   alphaBuckets: { hi: 0, mid: 0, lo: 0 },
 };
 
@@ -89,28 +78,27 @@ export class TrajectoryOverlay {
     }
 
     // One observation per edge regardless of segment count — long flights
-    // shouldn't bias the visual-support distribution.
-    const edgeValues = new Map<number, number>();
+    // shouldn't bias the support distribution.
+    const edgeSupport = new Map<number, number>();
     for (const s of segments) {
-      if (!edgeValues.has(s.edgeId)) edgeValues.set(s.edgeId, s.visualValue);
+      if (!edgeSupport.has(s.edgeId)) edgeSupport.set(s.edgeId, s.support);
     }
-    const sortedValues = [...edgeValues.values()].sort((a, b) => a - b);
-    const bestValue = sortedValues[sortedValues.length - 1];
-    const pivotIdx = Math.max(0, Math.min(sortedValues.length - 1, Math.floor(sortedValues.length * SCALE_PIVOT)));
-    const pivotValue = sortedValues[pivotIdx];
-    const scale = Math.max(bestValue - pivotValue, SCALE_EPS);
-
-    const alphaForEdge = this.buildEdgeAlpha(edgeValues, bestValue, scale);
+    const sorted = [...edgeSupport.entries()].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
+    const supportMax = Math.max(sorted[sorted.length - 1][1], Number.EPSILON);
+    const rankByEdge = new Map<number, number>();
+    const denom = Math.max(1, sorted.length - 1);
+    for (let i = 0; i < sorted.length; i += 1) {
+      rankByEdge.set(sorted[i][0], sorted.length <= 1 ? 1 : i / denom);
+    }
 
     let hi = 0;
     let mid = 0;
     let lo = 0;
-    const seenEdges = new Set<number>();
+    const drawnEdges = new Set<number>();
     let drawnSegments = 0;
 
     for (const s of segments) {
-      const alpha = s.onChosenChain ? 1 : alphaForEdge(s.edgeId);
-      seenEdges.add(s.edgeId);
+      const alpha = s.onChosenChain ? 1 : Math.pow(rankByEdge.get(s.edgeId) ?? 0, ALPHA_GAMMA);
       if (alpha >= 0.5) hi++;
       else if (alpha >= 0.15) mid++;
       else lo++;
@@ -118,42 +106,17 @@ export class TrajectoryOverlay {
       g.moveTo(s.x0, s.y0);
       g.lineTo(s.x1, s.y1);
       g.stroke({ color: SEGMENT_COLOR, width: SEGMENT_WIDTH, alpha });
+      drawnEdges.add(s.edgeId);
       drawnSegments++;
     }
 
     this.stats = {
       segments: drawnSegments,
-      edges: seenEdges.size,
-      bestVisualValue: bestValue,
-      pivotVisualValue: pivotValue,
-      medianVisualValue: sortedValues[sortedValues.length >> 1],
-      worstVisualValue: sortedValues[0],
+      edges: drawnEdges.size,
+      bestSupport: supportMax,
+      medianSupport: sorted[sorted.length >> 1][1],
+      worstSupport: sorted[0][1],
       alphaBuckets: { hi, mid, lo },
-    };
-  }
-
-  private buildEdgeAlpha(
-    edgeValues: Map<number, number>,
-    bestValue: number,
-    scale: number,
-  ): (edgeId: number) => number {
-    if (ALPHA_MODE === 'rank') {
-      const ranked = [...edgeValues.entries()].sort((a, b) => a[1] - b[1]);
-      const N = ranked.length;
-      const rankByEdge = new Map<number, number>();
-      for (let i = 0; i < N; i += 1) {
-        rankByEdge.set(ranked[i][0], N <= 1 ? 1 : i / (N - 1));
-      }
-      return (id) => Math.pow(rankByEdge.get(id) ?? 0, ALPHA_GAMMA);
-    }
-    // Value-mode is currently unselected; kept as a comparison baseline so we
-    // can A/B against rank-mode without git-archaeology if the score landscape
-    // changes shape. If it stays unused after a few iterations, drop it along
-    // with SCALE_PIVOT, SCALE_EPS, and the AlphaMode union.
-    return (id) => {
-      const v = edgeValues.get(id) ?? bestValue;
-      const norm = (bestValue - v) / scale;
-      return Math.exp(-Math.pow(norm, ALPHA_GAMMA));
     };
   }
 }

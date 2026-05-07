@@ -140,8 +140,8 @@ function refreshOverlayStats(): void {
   if (drawn && drawn.edges > 0) {
     const { hi, mid, lo } = drawn.alphaBuckets;
     lastBuckets = `${hi}/${mid}/${lo}`;
-    const span = drawn.bestVisualValue - drawn.worstVisualValue;
-    lastSupportRange = `${drawn.bestVisualValue.toFixed(2)} (med ${drawn.medianVisualValue.toFixed(2)}, Δ ${span.toFixed(2)})`;
+    const span = drawn.bestSupport - drawn.worstSupport;
+    lastSupportRange = `${drawn.bestSupport.toFixed(2)} (med ${drawn.medianSupport.toFixed(2)}, Δ ${span.toFixed(2)})`;
   } else {
     lastBuckets = '0/0/0';
     lastSupportRange = '—';

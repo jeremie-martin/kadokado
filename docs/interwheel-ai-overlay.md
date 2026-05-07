@@ -64,32 +64,35 @@ Each `SearchEdge` carries its own `segments: Segment[]`. A `Segment` is
 deliberately minimal — only what the renderer needs:
 
 ```
-edgeId, x0/y0/x1/y1, depth, localTick, visualValue, onChosenChain
+edgeId, x0/y0/x1/y1, depth, localTick, support, onChosenChain
 ```
 
 Sampling inside `evaluateEdge()` is sparse: every `TRAJECTORY_SAMPLE_TICKS = 3`
 ticks, plus on press, terminal, and state transitions. Each edge becomes a
 polyline with ~tens of points.
 
-After search, `segmentsForEdges()` walks each edge once and stamps every
-segment with the edge's scalar `visualValue` plus an `onChosenChain` boolean
-(`bestEdgeIds.has(edge.id)` — the chain back from the chosen target node to
-the root). No kind/phase enum, no per-segment scoreGain. The renderer
-consumes only the scalar visual value and the chain bit.
+`support` is **not** the raw planner score of that one edge — it's the
+visual overdraw budget the renderer should give it. Follow-up jumps already
+exist as later edges in the search tree, so after the tree is built the
+planner computes **lineage support** in `lineageSupportForEdges()`:
 
-`visualValue` is not the raw planner score of that one edge. Follow-up jumps
-are already represented as later edges in the search tree, so after the tree
-is built the planner computes **lineage support**:
+1. each edge seeds with `rank^LINEAGE_SUPPORT_GAMMA` of its own raw score
+   (worst rank = 0, best = 1, γ=3 by default — strong descendants count more
+   than mediocre ones);
+2. a single bottom-up pass adds `LINEAGE_SUPPORT_DECAY × child_support`
+   (0.65) to each parent edge.
 
-- rank every edge by raw score and convert that rank to local support;
-- walk backward through the tree;
-- add each child edge's support into its parent edge with
-  `LINEAGE_SUPPORT_DECAY = 0.65`.
+A first jump that opens up many strong follow-ups accumulates support from
+each of them, even when its own landing scores middling. Conversely, a first
+jump with a brilliant immediate score but no productive descendants doesn't
+get inflated. The bottom-up pass is sound because A* expands best-first and
+a child edge can only be created after its parent node has been popped, so
+a parent always precedes any of its children in the edge array.
 
-This approximates additive rendering of complete candidate paths without
-duplicating the same prefix geometry once per path. If many strong second or
-third jumps share a first jump, that first jump earns more visual support even
-when its immediate endpoint score is not itself the best.
+`segmentsForEdges()` then stamps each segment with its edge's `support` and
+an `onChosenChain` boolean (`bestEdgeIds.has(edge.id)` — the chain back from
+the chosen target node to the root). The renderer consumes only those two
+fields.
 
 ### `src/playground/trajectory-overlay.ts` — rendering
 
@@ -102,32 +105,35 @@ rule does the convergence work directly. See §4 for the reasoning.
 The rule:
 
 - Chosen-chain segments draw at `alpha = 1`.
-- Other segments draw at `alpha = rank^γ`, where `rank ∈ [0, 1]` is the edge's
-  position when all evaluated edges are sorted by `visualValue` ascending
-  (worst = 0, best = 1) and `γ = ALPHA_GAMMA = 3`.
-- Below `MIN_DRAW_ALPHA = 0.05` segments are culled outright (no draw call) so
-  the long tail doesn't accumulate into a noise carpet.
+- Other segments draw at `alpha = rank^ALPHA_GAMMA`, where `rank ∈ [0, 1]` is
+  each edge's position when sorted ascending by `support` (worst = 0,
+  best = 1) and `γ = 3`.
+- Below `MIN_DRAW_ALPHA = 0.05` segments are culled outright (no draw call)
+  so the long tail doesn't accumulate into a noise carpet.
 
 One color (`0x9be8ff`), one line width (`1`). All edges drawn in a single
 pass — no kind layering, no per-segment color.
 
-The mode is governed by `ALPHA_MODE` at the top of the file. `'rank'` is
-current; a `'value'` mode (`alpha = exp(-(gap/scale)^γ)`) is kept as a
-documented baseline for A/B comparison. See `buildEdgeAlpha()` for both
-formulas. §4 documents why rank ended up the default.
+Why rank rather than support magnitude directly: the lineage recurrence has
+factor `branching × decay` typically > 1, so support grows roughly
+exponentially with depth on the principal prefix. Linear normalize-to-max
+would let one outlier (depth-0 prefix root) dominate `supportMax` and crush
+every other edge below the cull threshold. Log scaling and percentile-max
+were considered; rank-mapping is the cleanest because it preserves the
+*ordering* lineage support imposes (which is the structural improvement)
+without inheriting the exponential blow-up. The previous rank-of-value
+calibration carries over directly: γ=3 was confirmed by playtest.
 
 Tunables (top of the planner/overlay files):
 
 | Constant                  | Default | Effect                                      |
 |---------------------------|---------|---------------------------------------------|
-| `ALPHA_MODE`              | `rank`  | rank-based vs value-based fade              |
-| `ALPHA_GAMMA`             | `3`     | curve steepness; raise → fewer bright lines |
+| `ALPHA_GAMMA`             | `3`     | rank-curve steepness; raise → fewer bright lines |
 | `MIN_DRAW_ALPHA`          | `0.05`  | cull threshold; raise → cleaner long tail   |
 | `SEGMENT_COLOR`           | cyan    | uniform stroke color                        |
 | `SEGMENT_WIDTH`           | `1`     | uniform stroke width                        |
-| `SCALE_PIVOT`             | `0.5`   | value-mode only — calibration percentile    |
-| `LINEAGE_SUPPORT_GAMMA`   | `3`     | raw-score rank → local support curve        |
-| `LINEAGE_SUPPORT_DECAY`   | `0.65`  | follow-up support inherited by prefixes     |
+| `LINEAGE_SUPPORT_GAMMA`   | `3`     | raw-score rank → seed support; γ=3 means only top descendants pull a parent up |
+| `LINEAGE_SUPPORT_DECAY`   | `0.65`  | fraction of child support a parent inherits |
 
 ### `src/playground/ai-interwheel.ts` — wiring
 
@@ -181,9 +187,11 @@ Interwheel gives each edge its own dedicated polyline. A bad edge's polyline
 would be just as visible on screen as a good edge's polyline if everything
 were drawn at the same alpha — there is no shared budget at the storage
 layer. The current implementation re-introduces the same effect at the
-rendering layer instead, by mapping alpha to each edge's rank among all
-edges (§4). Losers fade because they lose, not because a filter excluded
-them.
+rendering layer instead, via a lineage-support pass: each edge's support
+seeds at `rank^γ` of its score, then accumulates a decayed share of each
+descendant's support. The renderer then ranks edges by support and maps
+`rank^γ` to alpha (§4). Losers fade because they lose, not because a filter
+excluded them.
 
 This is the same idea as heuristic dominance, expressed at the rendering
 layer: **the visualization should reward search effort, not just
@@ -194,71 +202,76 @@ enumeration**.
 ## 4. Convergence by design — what we built and why
 
 The original implementation had a `cinematic` filter mode (bucketing branches
-by launch depth, proximity-to-best tests, wait-prefix trimming) bolted on top
-of the renderer purely so the animation was watchable. It worked but it was
-not a principled rule, and tuning it felt like fighting the tool rather than
-expressing intent. We replaced it with a lineage-support value computed by the
-planner, then a single render-time mapping from that support to alpha.
-
-The framing: **rendering opacity is a function of how much competitive search
-mass an edge carries**, not a function of arbitrary visual heuristics. As one
-path dominates the score, alternatives fade automatically. When multiple paths
-are genuinely competitive (one toward a collectible, one straight up), they all
-stay visible because their edges and prefixes carry support.
+by launch depth, proximity-to-best tests, wait-prefix trimming) bolted on
+top of the renderer purely so the animation was watchable. It worked but it
+was not a principled rule, and tuning it felt like fighting the tool rather
+than expressing intent. We replaced it with one principle: **rendering
+opacity is a function of how much competitive search mass an edge carries**,
+expressed via a lineage-support value computed by the planner, normalized
+to alpha by the renderer.
 
 This is the same principle behind both Mario phenomena: heuristic dominance
 suppresses uncompetitive branches, and the ring buffer suppresses branches
 that didn't earn many writes. Both are forms of "the leader wins by being
 better, not by being filtered to win."
 
-### Two formulations, value-based vs rank-based
+### Three iterations, what each one solved
 
-We tried both, in this order.
+**Value-based first.** `alpha = exp(-((bestValue − value)/scale)^γ)` with
+`scale = best − median`. We tuned γ from 1 → 2 → 3 → 4. The visual barely
+changed because our raw score landscape clusters most edges very close to
+the best — with a tight cluster, `scale` is small, the upper-percentile
+edges all have tiny gaps relative to it, and γ-steepening just bends the
+curve in a region where it's already flat-near-1. Too many similarly-bright
+lines.
 
-**Value-based (first attempt):** `alpha = exp(-((value_gap)/scale)^γ)`, where
-`value` is the scalar the renderer receives (historically raw edge score, now
-`visualValue`) and `scale` is the gap from the best edge to the median edge.
-Median edge always
-sits at `alpha = exp(-1) ≈ 0.37` regardless of γ; γ steepens the curve on
-both sides of the median. We tuned γ from 1 → 2 → 3 → 4 and raised the cull
-threshold, but the visual barely changed.
+**Rank-based second.** `alpha = rank^γ` with γ=3, where rank ∈ [0,1] is each
+edge's position when sorted by score ascending. This forced a fixed alpha
+spread regardless of how clustered the raw scores were — if 30 edges sat
+within 1% of the best in score, they got distinct ranks and therefore
+distinct alphas. Convergence appeared, but treated each edge in isolation:
+a "good first jump that opens up many strong follow-ups" stayed dim because
+its own landing score was middling.
 
-The reason was a property of our raw score landscape: most non-trivial edges
-cluster very close to the best in score. With a tight cluster near the top,
-`scale` itself becomes small, and the upper-percentile edges all have tiny
-gaps relative to it — γ steepens the curve but the inputs are all in the
-"near zero gap" region where the curve is flat-near-1. Result: too many
-similarly-bright lines.
+**Lineage support, current.** A first jump's brightness should reflect the
+plans starting *from* it, not just its own landing. The planner now computes
+`support[e] = rank(e)^γ + LINEAGE_SUPPORT_DECAY × Σ support[children(e)]` in
+a single bottom-up pass over the search tree. The renderer then ranks edges
+by support and maps `rank^ALPHA_GAMMA` to alpha — same mapping shape as
+iteration two, but now the *ordering* it ranks reflects tree structure,
+not isolated edge scores. (Magnitude can't be used directly: with
+branching×decay > 1 the recurrence makes support grow roughly exponentially
+with depth on the principal prefix, so one outlier dominates `supportMax`
+and crushes the tail under linear normalization. Log and percentile-max
+were considered; rank-of-support is cleanest, since the structural
+information is in the ordering, not the magnitudes.)
 
-**Rank-based (current):** sort edges by visual support ascending, assign each a
-`rank ∈ [0, 1]` (worst = 0, best = 1), and use `alpha = rank^γ` with γ = 3.
-This forces a fixed alpha distribution regardless of how clustered the
-underlying values are. Even if 30 edges sit within 1% of the best in value,
-they get distinct ranks and therefore distinct alphas; only the actually-top
-few stay bright, the rest fade as their rank drops.
+What this gives us:
 
-The trade-off: rank-mode loses the "two near-tied alternatives are both
-bright" property of value-mode. If your score landscape ever produces a
-genuine bimodal split (a few clearly-best alternatives, then a wide gap), the
-near-tied top alternatives still differentiate by rank — which is arguably a
-mild loss of fidelity. In practice we accept it: the convergence-by-design
-property is more valuable than perfect value-fidelity, and the chosen plan
-is still highlighted unconditionally via `onChosenChain`.
+- A first jump that opens up many strong follow-ups accumulates support
+  from each of them and lights up its prefix, even when its own landing is
+  middling. (Mario ring-buffer "additive overdraw," expressed as opacity.)
+- The `LINEAGE_SUPPORT_GAMMA = 3` seed means only **strong** descendants
+  contribute meaningfully — mediocre fanout doesn't inflate prefixes.
+- The `0.65` decay protects against a single brilliant deep leaf
+  disproportionately lighting up a mediocre prefix (`0.65^d` falls off
+  fast, so a one-off lottery ticket only travels a few levels up).
+- Off-chain edges with no expanded descendants get just their own
+  `rank(value)^γ`, so the long tail still has a meaningful gradient.
 
-`ALPHA_MODE` at the top of `trajectory-overlay.ts` lets you flip back to
-value-mode for diagnosis if the rank fade ever feels off. `α buckets` and
-`Support` rows in the playground stat panel surface the live distribution so
-you can tell which mode the current visual-support distribution calls for.
+The `α buckets` and `Support` rows in the playground stat panel surface the
+live distribution.
 
 ### What this shifted
 
 The hard work moved from **"render-time pruning so the animation looks
-good"** to **"score modeling so the planner's evaluation gradient is
-meaningful."** Rank-mode is robust to score-landscape shape, but if the
-ranking itself is uninformative (e.g. a single-objective score that makes
-all collectible-route edges artificially identical), no amount of rendering
-cleverness will paint a convergence story that isn't there. That's a future
-score-function conversation, not an overlay one.
+good"** to **"score and tree modeling so the planner exposes a meaningful
+gradient."** If the underlying score is uninformative (e.g. a single-
+objective score that makes all collectible-route edges artificially
+identical) no amount of rendering cleverness will paint a convergence story
+that isn't there — but lineage support also helps here, because even a
+flat raw-score distribution still produces a non-flat support distribution
+once the tree's branching structure is folded in.
 
 ---
 
@@ -271,9 +284,9 @@ score-function conversation, not an overlay one.
 | Action space        | forward-only (`KEY_RIGHT` always set) | omnidirectional launch                 |
 | Storage             | global `int[1000][2]` ring            | per-edge `Segment[]` on each edge      |
 | Sampling rate       | every tick × 2                        | every 3 ticks + transitions            |
-| Per-segment metadata| none                                  | edgeId, x0/y0/x1/y1, depth, localTick, visualValue, onChosenChain |
-| Visual budget       | shared, leader dominates by volume    | shared via lineage support + rank alpha |
-| Convergence         | emergent (heuristic + ring)           | emergent (support → rank → alpha)      |
+| Per-segment metadata| none                                  | edgeId, x0/y0/x1/y1, depth, localTick, support, onChosenChain |
+| Visual budget       | shared, leader dominates by volume    | shared via lineage support → rank → alpha |
+| Convergence         | emergent (heuristic + ring)           | emergent (lineage support → rank → alpha) |
 | Renderer            | external Mario engine                 | Pixi `Graphics` child of `world`       |
 | Reset               | per `startSearch` (commented out)     | `draw([])` on AI-off / game-end        |
 | User toggle         | none                                  | `D` toggles overlay on/off, `A` toggles AI |
