@@ -1,35 +1,58 @@
 import { Container, Graphics } from 'pixi.js';
-import type { Segment, SegmentKind } from './interwheel-planner';
+import type { Segment } from './interwheel-planner';
 
-export type OverlayMode = 'cinematic' | 'debug' | 'off';
+export type OverlayMode = 'on' | 'off';
 
-const FULL_WAIT_PREFIX_TICKS = 24;
-const WAIT_TAIL_TICKS = 16;
-const LAUNCH_BUCKET_TICKS = 6;
-const CLOSE_LAUNCH_TICKS = 8;
-const CLOSE_ENDPOINT_TICKS = 24;
-const CLOSE_LAUNCH_DISTANCE = 42;
-const CLOSE_ENDPOINT_DISTANCE = 70;
+const SEGMENT_COLOR = 0x9be8ff;
+const SEGMENT_WIDTH = 1;
 
-type EdgeGroup = {
-  edgeId: number;
-  kind: SegmentKind;
-  segments: Segment[];
-  value: number;
-  scoreGain: number;
-  launchLocalTick: number;
-  launchDepth: number;
-  launchX: number;
-  launchY: number;
-  endX: number;
-  endY: number;
+// 'value' = alpha derived from value gap to best (sensitive to score landscape
+// shape — many near-tied edges all look similarly bright). 'rank' = alpha
+// derived from each edge's rank position among all edges (forces a spread
+// regardless of value distribution; better when scores cluster).
+type AlphaMode = 'value' | 'rank';
+const ALPHA_MODE: AlphaMode = 'rank';
+
+// Gamma applied to the alpha basis before drawing. Higher = sharper falloff,
+// fewer bright lines.
+//   value-mode: alpha = exp(-(gap/scale)^γ); 2 quadratic, 3 cubic, 4 quartic.
+//   rank-mode:  alpha = rank^γ where rank ∈ [0,1]; 3 cubes, 4 quartics.
+const ALPHA_GAMMA = 3;
+
+// Value-mode only. Pivot percentile for the scale denominator. 0.5 = median-gap
+// (median edge ≈ alpha 0.37). Lower (e.g. 0.25) tightens scale further.
+const SCALE_PIVOT = 0.5;
+
+// Below this alpha, skip drawing entirely. Avoids a "carpet" of near-invisible
+// lines accumulating into visible noise. Lower → more long-tail visibility.
+const MIN_DRAW_ALPHA = 0.05;
+
+const SCALE_EPS = 1;
+
+export type OverlayStats = {
+  segments: number;
+  edges: number;
+  bestValue: number;
+  pivotValue: number;
+  medianValue: number;
+  worstValue: number;
+  alphaBuckets: { hi: number; mid: number; lo: number };
+};
+
+const EMPTY_STATS: OverlayStats = {
+  segments: 0,
+  edges: 0,
+  bestValue: 0,
+  pivotValue: 0,
+  medianValue: 0,
+  worstValue: 0,
+  alphaBuckets: { hi: 0, mid: 0, lo: 0 },
 };
 
 export class TrajectoryOverlay {
   private readonly graphics = new Graphics();
-  private mode: OverlayMode = 'cinematic';
-  private drawnSegments = 0;
-  private drawnEdges = 0;
+  private mode: OverlayMode = 'on';
+  private stats: OverlayStats = { ...EMPTY_STATS };
 
   constructor(parent: Container) {
     parent.addChild(this.graphics);
@@ -40,8 +63,7 @@ export class TrajectoryOverlay {
     this.graphics.visible = mode !== 'off';
     if (mode === 'off') {
       this.graphics.clear();
-      this.drawnSegments = 0;
-      this.drawnEdges = 0;
+      this.stats = { ...EMPTY_STATS };
     }
   }
 
@@ -50,181 +72,88 @@ export class TrajectoryOverlay {
   }
 
   toggle(): OverlayMode {
-    const next: OverlayMode =
-      this.mode === 'cinematic' ? 'debug' :
-        this.mode === 'debug' ? 'off' :
-          'cinematic';
-    this.setMode(next);
-    return next;
+    this.setMode(this.mode === 'on' ? 'off' : 'on');
+    return this.mode;
   }
 
-  lastDrawnStats(): { edges: number; segments: number } {
-    return { edges: this.drawnEdges, segments: this.drawnSegments };
+  lastDrawnStats(): OverlayStats {
+    return this.stats;
   }
 
   draw(segments: Segment[]): void {
     const g = this.graphics;
     g.clear();
     if (this.mode === 'off' || segments.length === 0) {
-      this.drawnSegments = 0;
-      this.drawnEdges = 0;
+      this.stats = { ...EMPTY_STATS };
       return;
     }
 
-    const visibleSegments = this.mode === 'debug' ? segments : this.cinematicSegments(segments);
-    this.drawnSegments = visibleSegments.length;
-    this.drawnEdges = this.countEdges(visibleSegments);
+    // One observation per edge regardless of segment count — long flights
+    // shouldn't bias the value distribution.
+    const edgeValues = new Map<number, number>();
+    for (const s of segments) {
+      if (!edgeValues.has(s.edgeId)) edgeValues.set(s.edgeId, s.value);
+    }
+    const sortedValues = [...edgeValues.values()].sort((a, b) => a - b);
+    const bestValue = sortedValues[sortedValues.length - 1];
+    const pivotIdx = Math.max(0, Math.min(sortedValues.length - 1, Math.floor(sortedValues.length * SCALE_PIVOT)));
+    const pivotValue = sortedValues[pivotIdx];
+    const scale = Math.max(bestValue - pivotValue, SCALE_EPS);
 
-    // Cinematic mode keeps all launched alternatives, but trims long non-best
-    // wheel waits to the visible decision moment.
-    for (const s of visibleSegments) {
-      if (s.kind !== 'branch') continue;
-      const hasScore = this.mode === 'debug' && (s.scoreGain ?? 0) > 0;
-      const alpha = Math.max(hasScore ? 0.35 : 0.18, (hasScore ? 0.85 : 0.75) - s.depth * 0.006);
+    const alphaForEdge = this.buildEdgeAlpha(edgeValues, bestValue, scale);
+
+    let hi = 0;
+    let mid = 0;
+    let lo = 0;
+    const seenEdges = new Set<number>();
+    let drawnSegments = 0;
+
+    for (const s of segments) {
+      const alpha = s.onChosenChain ? 1 : alphaForEdge(s.edgeId);
+      seenEdges.add(s.edgeId);
+      if (alpha >= 0.5) hi++;
+      else if (alpha >= 0.15) mid++;
+      else lo++;
+      if (alpha < MIN_DRAW_ALPHA) continue;
       g.moveTo(s.x0, s.y0);
       g.lineTo(s.x1, s.y1);
-      g.stroke({ color: hasScore ? 0x7dffbf : 0x9be8ff, width: hasScore ? 1.55 : 1.15, alpha });
+      g.stroke({ color: SEGMENT_COLOR, width: SEGMENT_WIDTH, alpha });
+      drawnSegments++;
     }
-    for (const s of visibleSegments) {
-      if (s.kind !== 'dead') continue;
-      g.moveTo(s.x0, s.y0);
-      g.lineTo(s.x1, s.y1);
-      g.stroke({ color: 0xff6e5c, width: 1.15, alpha: 0.6 });
-    }
-    for (const s of visibleSegments) {
-      if (s.kind !== 'best') continue;
-      g.moveTo(s.x0, s.y0);
-      g.lineTo(s.x1, s.y1);
-      g.stroke({ color: 0xfff1a8, width: 2.4, alpha: 1.0 });
-    }
-  }
 
-  private countEdges(segments: Segment[]): number {
-    const edgeIds = new Set<number>();
-    for (const segment of segments) edgeIds.add(segment.edgeId);
-    return edgeIds.size;
-  }
-
-  private cinematicSegments(segments: Segment[]): Segment[] {
-    const groups = this.groupSegments(segments);
-    const bestGroups = groups.filter((group) => group.kind === 'best');
-    const selected = new Set<number>();
-    const selectedGroups: EdgeGroup[] = [];
-    const add = (group: EdgeGroup): void => {
-      if (selected.has(group.edgeId)) return;
-      selected.add(group.edgeId);
-      selectedGroups.push(group);
+    this.stats = {
+      segments: drawnSegments,
+      edges: seenEdges.size,
+      bestValue,
+      pivotValue,
+      medianValue: sortedValues[sortedValues.length >> 1],
+      worstValue: sortedValues[0],
+      alphaBuckets: { hi, mid, lo },
     };
-
-    for (const group of groups) {
-      if (
-        group.kind === 'best' ||
-        group.kind === 'dead' ||
-        group.scoreGain > 0 ||
-        this.isCloseToBest(group, bestGroups)
-      ) {
-        add(group);
-      }
-    }
-
-    const bucketBest = new Map<number, EdgeGroup>();
-    for (const group of groups) {
-      if (selected.has(group.edgeId) || group.kind !== 'branch') continue;
-      const bucket = Math.floor(group.launchDepth / LAUNCH_BUCKET_TICKS);
-      const current = bucketBest.get(bucket);
-      if (!current || group.value > current.value) bucketBest.set(bucket, group);
-    }
-    for (const group of [...bucketBest.values()].sort((a, b) => a.launchDepth - b.launchDepth)) {
-      add(group);
-    }
-
-    return selectedGroups.flatMap((group) => this.visibleGroupSegments(group));
   }
 
-  private groupSegments(segments: Segment[]): EdgeGroup[] {
-    const groups = new Map<number, EdgeGroup>();
-    for (const segment of segments) {
-      let group = groups.get(segment.edgeId);
-      if (!group) {
-        group = {
-          edgeId: segment.edgeId,
-          kind: segment.kind,
-          segments: [],
-          value: segment.value ?? 0,
-          scoreGain: segment.scoreGain ?? 0,
-          launchLocalTick: Number.POSITIVE_INFINITY,
-          launchDepth: Number.POSITIVE_INFINITY,
-          launchX: segment.x1,
-          launchY: segment.y1,
-          endX: segment.x1,
-          endY: segment.y1,
-        };
-        groups.set(segment.edgeId, group);
+  private buildEdgeAlpha(
+    edgeValues: Map<number, number>,
+    bestValue: number,
+    scale: number,
+  ): (edgeId: number) => number {
+    if (ALPHA_MODE === 'rank') {
+      const ranked = [...edgeValues.entries()].sort((a, b) => a[1] - b[1]);
+      const N = ranked.length;
+      const rankByEdge = new Map<number, number>();
+      for (let i = 0; i < N; i += 1) {
+        rankByEdge.set(ranked[i][0], N <= 1 ? 1 : i / (N - 1));
       }
-
-      group.kind = this.mergeKind(group.kind, segment.kind);
-      group.segments.push(segment);
-      group.value = Math.max(group.value, segment.value ?? group.value);
-      group.scoreGain = Math.max(group.scoreGain, segment.scoreGain ?? 0);
-      group.endX = segment.x1;
-      group.endY = segment.y1;
-
-      if (segment.phase !== 'wait' && segment.depth < group.launchDepth) {
-        group.launchLocalTick = segment.localTick;
-        group.launchDepth = segment.depth;
-        group.launchX = segment.x1;
-        group.launchY = segment.y1;
-      }
+      return (id) => Math.pow(rankByEdge.get(id) ?? 0, ALPHA_GAMMA);
     }
-
-    for (const group of groups.values()) {
-      if (Number.isFinite(group.launchDepth)) continue;
-      const first = group.segments[0];
-      group.launchLocalTick = first.localTick;
-      group.launchDepth = first.depth;
-      group.launchX = first.x1;
-      group.launchY = first.y1;
-    }
-    return [...groups.values()];
-  }
-
-  private visibleGroupSegments(group: EdgeGroup): Segment[] {
-    if (group.kind === 'best') return group.segments;
-    return group.segments.filter((segment) => {
-      if (segment.phase !== 'wait') return true;
-      return group.launchLocalTick <= FULL_WAIT_PREFIX_TICKS || segment.localTick >= group.launchLocalTick - WAIT_TAIL_TICKS;
-    });
-  }
-
-  private isCloseToBest(group: EdgeGroup, bestGroups: EdgeGroup[]): boolean {
-    if (group.kind !== 'branch') return false;
-    for (const best of bestGroups) {
-      const launchDt = Math.abs(group.launchDepth - best.launchDepth);
-      if (
-        launchDt <= CLOSE_LAUNCH_TICKS &&
-        this.distanceSq(group.launchX, group.launchY, best.launchX, best.launchY) <= CLOSE_LAUNCH_DISTANCE * CLOSE_LAUNCH_DISTANCE
-      ) {
-        return true;
-      }
-      if (
-        launchDt <= CLOSE_ENDPOINT_TICKS &&
-        this.distanceSq(group.endX, group.endY, best.endX, best.endY) <= CLOSE_ENDPOINT_DISTANCE * CLOSE_ENDPOINT_DISTANCE
-      ) {
-        return true;
-      }
-    }
-    return false;
-  }
-
-  private mergeKind(a: SegmentKind, b: SegmentKind): SegmentKind {
-    if (a === 'best' || b === 'best') return 'best';
-    if (a === 'dead' || b === 'dead') return 'dead';
-    return 'branch';
-  }
-
-  private distanceSq(x0: number, y0: number, x1: number, y1: number): number {
-    const dx = x0 - x1;
-    const dy = y0 - y1;
-    return dx * dx + dy * dy;
+    // Value-mode is currently unselected; kept as a comparison baseline so we
+    // can A/B against rank-mode without git-archaeology if the score landscape
+    // changes shape. If it stays unused after a few iterations, drop it along
+    // with SCALE_PIVOT, SCALE_EPS, and the AlphaMode union.
+    return (id) => {
+      const v = edgeValues.get(id) ?? bestValue;
+      const norm = (bestValue - v) / scale;
+      return Math.exp(-Math.pow(norm, ALPHA_GAMMA));
+    };
   }
 }

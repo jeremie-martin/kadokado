@@ -35,6 +35,8 @@ let lastNodes = 0;
 let lastPerceived = '0w/0p';
 let lastShownSegments = 0;
 let lastShownEdges = 0;
+let lastBuckets = '0/0/0';
+let lastValueRange = '—';
 
 function isPolicyKey(value: string): value is PolicyKey {
   return (POLICY_KEYS as string[]).includes(value);
@@ -135,6 +137,15 @@ function refreshOverlayStats(): void {
   const drawn = overlay?.lastDrawnStats();
   lastShownSegments = drawn?.segments ?? 0;
   lastShownEdges = drawn?.edges ?? 0;
+  if (drawn && drawn.edges > 0) {
+    const { hi, mid, lo } = drawn.alphaBuckets;
+    lastBuckets = `${hi}/${mid}/${lo}`;
+    const span = drawn.bestValue - drawn.worstValue;
+    lastValueRange = `${drawn.bestValue.toFixed(1)} (med ${drawn.medianValue.toFixed(1)}, Δ ${span.toFixed(1)})`;
+  } else {
+    lastBuckets = '0/0/0';
+    lastValueRange = '—';
+  }
 }
 
 function statItem(label: string, value: string): HTMLElement {
@@ -167,6 +178,8 @@ function refreshStats(): void {
     statItem('Tree', `${lastNodes} nodes`),
     statItem('Visible', lastPerceived),
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
+    statItem('α buckets', lastBuckets),
+    statItem('Value', lastValueRange),
   );
 }
 

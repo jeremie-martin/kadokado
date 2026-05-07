@@ -87,11 +87,8 @@ type SearchEdge = {
   value: number;
   reward: EdgeReward;
   scoreBreakdown: CandidateScoreBreakdown;
-  segments: Omit<Segment, 'edgeId' | 'kind'>[];
+  segments: Omit<Segment, 'edgeId' | 'value' | 'onChosenChain'>[];
 };
-
-export type SegmentKind = 'branch' | 'best' | 'dead';
-export type SegmentPhase = 'flight' | 'launch' | 'terminal' | 'wait';
 
 export type Segment = {
   edgeId: number;
@@ -101,10 +98,8 @@ export type Segment = {
   y1: number;
   depth: number;
   localTick: number;
-  kind: SegmentKind;
-  phase: SegmentPhase;
-  scoreGain?: number;
-  value?: number;
+  value: number;
+  onChosenChain: boolean;
 };
 
 export type PlannerStats = {
@@ -394,7 +389,6 @@ export class InterwheelPlanner {
       plan.push(false);
       ticks += 1;
       if (this.cfg.collectSegments && ((ticks % TRAJECTORY_SAMPLE_TICKS) === 0 || sim.blob.state !== BLOB_STATE_FLY)) {
-        const dead = sim.ending || sim.ended || (sim.blob.state as number) === BLOB_STATE_DEAD;
         segments.push({
           edgeId: 0,
           x0: sx,
@@ -403,8 +397,8 @@ export class InterwheelPlanner {
           y1: sim.blob.y,
           depth: ticks,
           localTick: ticks,
-          kind: dead ? 'dead' : 'best',
-          phase: dead ? 'terminal' : 'flight',
+          value: 0,
+          onChosenChain: true,
         });
         sx = sim.blob.x;
         sy = sim.blob.y;
@@ -432,7 +426,7 @@ export class InterwheelPlanner {
   private evaluateEdge(rootState: SimSnapshot, parent: SearchNode, waitTicks: number, edgeId: number): SearchEdge {
     const sim = this.scratch;
     const plan: boolean[] = [];
-    const segments: Omit<Segment, 'edgeId' | 'kind'>[] = [];
+    const segments: Omit<Segment, 'edgeId' | 'value' | 'onChosenChain'>[] = [];
     const perceivedPastilles = this.currentPerceived?.snap.pastilles ?? [];
     const minDistSq = new Float64Array(perceivedPastilles.length);
     for (let i = 0; i < minDistSq.length; i += 1) minDistSq[i] = Infinity;
@@ -466,11 +460,6 @@ export class InterwheelPlanner {
         return;
       }
       const terminal = sim.blob.state !== BLOB_STATE_GRAB && sim.blob.state !== BLOB_STATE_WALL && sim.blob.state !== BLOB_STATE_FLY;
-      const phase: SegmentPhase =
-        terminal || sim.ending || sim.ended ? 'terminal' :
-          press ? 'launch' :
-            sim.blob.state === BLOB_STATE_FLY ? 'flight' :
-              'wait';
       const shouldRecord =
         press ||
         terminal ||
@@ -486,8 +475,6 @@ export class InterwheelPlanner {
           y1: sim.blob.y,
           depth: parent.totalTicks + plan.length,
           localTick: plan.length,
-          phase,
-          scoreGain: reward.pickedValue + reward.sparkScore,
         });
         sx = sim.blob.x;
         sy = sim.blob.y;
@@ -524,11 +511,6 @@ export class InterwheelPlanner {
         y1: endState.blob.y,
         depth: parent.totalTicks + plan.length,
         localTick: plan.length,
-        phase:
-          this.isTerminal(endState) ? 'terminal' :
-            endState.blob.state === BLOB_STATE_FLY ? 'flight' :
-              'wait',
-        scoreGain: reward.pickedValue + reward.sparkScore,
       });
     }
 
@@ -766,14 +748,12 @@ export class InterwheelPlanner {
   private segmentsForEdges(edges: SearchEdge[], bestEdgeIds: Set<number>): Segment[] {
     const out: Segment[] = [];
     for (const edge of edges) {
-      const kind: SegmentKind = bestEdgeIds.has(edge.id) ? 'best' : edge.isDead ? 'dead' : 'branch';
-      const scoreGain = edge.reward.pickedValue + edge.reward.sparkScore;
+      const onChosenChain = bestEdgeIds.has(edge.id);
       for (const segment of edge.segments) {
         const s = segment as Segment;
         s.edgeId = edge.id;
-        s.kind = kind;
-        s.scoreGain = scoreGain;
         s.value = edge.value;
+        s.onChosenChain = onChosenChain;
         out.push(s);
       }
     }
