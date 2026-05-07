@@ -107,7 +107,7 @@ The rule:
 - Chosen-chain segments draw at `alpha = 1`.
 - Other segments draw at `alpha = rank^ALPHA_GAMMA`, where `rank ∈ [0, 1]` is
   each edge's position when sorted ascending by `support` (worst = 0,
-  best = 1) and `γ = 3`.
+  best = 1) and `γ = 4`.
 - Below `MIN_DRAW_ALPHA = 0.05` segments are culled outright (no draw call)
   so the long tail doesn't accumulate into a noise carpet.
 
@@ -124,11 +124,14 @@ were considered; rank-mapping is the cleanest because it preserves the
 without inheriting the exponential blow-up. The previous rank-of-value
 calibration carries over directly: γ=3 was confirmed by playtest.
 
-Tunables (top of the planner/overlay files):
+Tunables are exposed as instance setters (`planner.setLineage`,
+`overlay.setAlphaGamma`/`setMinDrawAlpha`/`setSegmentWidth`) and bound to
+sliders in the playground "Overlay" panel. Defaults live at the top of the
+respective source files (`LINEAGE_DEFAULTS`, `OVERLAY_DEFAULTS`):
 
 | Constant                  | Default | Effect                                      |
 |---------------------------|---------|---------------------------------------------|
-| `ALPHA_GAMMA`             | `3`     | rank-curve steepness; raise → fewer bright lines |
+| `ALPHA_GAMMA`             | `4`     | rank-curve steepness; raise → fewer bright lines |
 | `MIN_DRAW_ALPHA`          | `0.05`  | cull threshold; raise → cleaner long tail   |
 | `SEGMENT_COLOR`           | cyan    | uniform stroke color                        |
 | `SEGMENT_WIDTH`           | `1`     | uniform stroke width                        |

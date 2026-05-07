@@ -1,7 +1,7 @@
 import { mount, type InterwheelGame } from '../games/interwheel/index';
 import { noopGameHost } from '../games/types';
-import { DEFAULT_PLANNER_POLICY, InterwheelPlanner, type PlannerPolicy, type PlanResult } from './interwheel-planner';
-import { TrajectoryOverlay } from './trajectory-overlay';
+import { DEFAULT_PLANNER_POLICY, InterwheelPlanner, LINEAGE_DEFAULTS, type PlannerPolicy, type PlanResult } from './interwheel-planner';
+import { OVERLAY_DEFAULTS, TrajectoryOverlay } from './trajectory-overlay';
 
 const stage = document.getElementById('stage');
 const stats = document.getElementById('stats');
@@ -21,6 +21,29 @@ const focusOutput = document.getElementById('policy-focus-value') as HTMLOutputE
 const FOCUS_CLIMB_MAX = 1.6;
 const FOCUS_CLIMB_MIN = 0.3;
 const FOCUS_COLLECT_MAX = 3;
+
+// Renderer params trigger a redraw of the cached segments; planner params
+// (lineageGamma, lineageDecay) require a re-plan to recompute support.
+const OVERLAY_PARAM_DEFAULTS = {
+  lineageDecay: LINEAGE_DEFAULTS.decay,
+  lineageGamma: LINEAGE_DEFAULTS.gamma,
+  alphaGamma: OVERLAY_DEFAULTS.alphaGamma,
+  minDrawAlpha: OVERLAY_DEFAULTS.minDrawAlpha,
+  segmentWidth: OVERLAY_DEFAULTS.segmentWidth,
+};
+type OverlayParamKey = keyof typeof OVERLAY_PARAM_DEFAULTS;
+const OVERLAY_PARAM_KEYS = Object.keys(OVERLAY_PARAM_DEFAULTS) as OverlayParamKey[];
+const OVERLAY_PARAM_PRECISION: Record<OverlayParamKey, number> = {
+  lineageDecay: 2,
+  lineageGamma: 1,
+  alphaGamma: 1,
+  minDrawAlpha: 2,
+  segmentWidth: 1,
+};
+const overlayParamInputs = new Map<OverlayParamKey, HTMLInputElement>();
+const overlayParamOutputs = new Map<OverlayParamKey, HTMLOutputElement>();
+const overlayReset = document.getElementById('overlay-reset') as HTMLButtonElement | null;
+let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -110,6 +133,78 @@ function setupPolicyControls(): void {
 
   policyReset?.addEventListener('click', () => applyPolicy({ ...DEFAULT_PLANNER_POLICY }));
   syncPolicyControls();
+}
+
+function isOverlayParamKey(value: string): value is OverlayParamKey {
+  return (OVERLAY_PARAM_KEYS as string[]).includes(value);
+}
+
+function syncOverlayParamControls(): void {
+  for (const key of OVERLAY_PARAM_KEYS) {
+    const input = overlayParamInputs.get(key);
+    const output = overlayParamOutputs.get(key);
+    if (input) input.value = String(overlayParams[key]);
+    if (output) output.value = overlayParams[key].toFixed(OVERLAY_PARAM_PRECISION[key]);
+  }
+}
+
+function applyOverlayParam(key: OverlayParamKey, value: number): void {
+  overlayParams[key] = value;
+  switch (key) {
+    case 'lineageDecay':
+      planner?.setLineage({ decay: value });
+      schedulePolicyPreview();
+      break;
+    case 'lineageGamma':
+      planner?.setLineage({ gamma: value });
+      schedulePolicyPreview();
+      break;
+    case 'alphaGamma':
+      overlay?.setAlphaGamma(value);
+      overlay?.draw(planner?.lastSegments() ?? []);
+      refreshOverlayStats();
+      break;
+    case 'minDrawAlpha':
+      overlay?.setMinDrawAlpha(value);
+      overlay?.draw(planner?.lastSegments() ?? []);
+      refreshOverlayStats();
+      break;
+    case 'segmentWidth':
+      overlay?.setSegmentWidth(value);
+      overlay?.draw(planner?.lastSegments() ?? []);
+      refreshOverlayStats();
+      break;
+  }
+  syncOverlayParamControls();
+  refreshStats();
+}
+
+function setupOverlayParamControls(): void {
+  document.querySelectorAll<HTMLInputElement>('input[data-overlay-key]').forEach((input) => {
+    const rawKey = input.dataset.overlayKey;
+    if (!rawKey || !isOverlayParamKey(rawKey)) return;
+    const output = document.getElementById(`${input.id}-value`) as HTMLOutputElement | null;
+    overlayParamInputs.set(rawKey, input);
+    if (output) overlayParamOutputs.set(rawKey, output);
+    input.addEventListener('input', () => {
+      const value = Number(input.value);
+      if (!Number.isFinite(value)) return;
+      applyOverlayParam(rawKey, value);
+    });
+  });
+
+  overlayReset?.addEventListener('click', () => {
+    for (const key of OVERLAY_PARAM_KEYS) {
+      applyOverlayParam(key, OVERLAY_PARAM_DEFAULTS[key]);
+    }
+  });
+
+  // Push current values into the planner/overlay so HTML defaults that
+  // diverge from code defaults take effect immediately.
+  for (const key of OVERLAY_PARAM_KEYS) {
+    applyOverlayParam(key, overlayParams[key]);
+  }
+  syncOverlayParamControls();
 }
 
 function recordPlanResult(result: PlanResult): void {
@@ -236,6 +331,7 @@ mount(stage as HTMLElement, {
     (window as unknown as { __game__: InterwheelGame }).__game__ = game;
     attachAI(game);
     setupPolicyControls();
+    setupOverlayParamControls();
     refreshStats();
   },
 }).catch((err) => {

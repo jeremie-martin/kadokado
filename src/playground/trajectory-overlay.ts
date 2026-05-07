@@ -4,21 +4,27 @@ import type { Segment } from './interwheel-planner';
 export type OverlayMode = 'on' | 'off';
 
 const SEGMENT_COLOR = 0x9be8ff;
-const SEGMENT_WIDTH = 1;
 
-// Curve applied to each edge's rank-of-support. The planner's lineage pass
-// produces support that grows exponentially with depth on the principal
-// prefix (recurrence factor branching×decay > 1), so support *magnitude* is
-// dominated by a single outlier and not useful for direct normalization.
-// Rank-mapping discards magnitude but preserves the *ordering* lineage
-// support imposed: a good prefix earns top rank because of its descendants.
-// γ=3 matches the previous rank-of-value calibration; raise to thin the
-// long tail, lower to brighten it.
-const ALPHA_GAMMA = 3;
-
-// Below this alpha, skip drawing entirely. Avoids a "carpet" of near-invisible
-// lines accumulating into visible noise. Lower → more long-tail visibility.
-const MIN_DRAW_ALPHA = 0.05;
+// Visual defaults. The instance fields below mirror these and can be
+// overridden at runtime via the playground sliders.
+//
+// alphaGamma: curve applied to each edge's rank-of-support. The planner's
+//   lineage pass produces support that grows roughly exponentially with depth
+//   on the principal prefix (recurrence factor branching × decay > 1), so
+//   support magnitude is dominated by a single outlier and not useful for
+//   direct normalization. Rank-mapping discards magnitude but preserves the
+//   ordering lineage support imposed: a good prefix earns top rank because
+//   of its descendants. γ=3 matches the previous rank-of-value calibration.
+//
+// minDrawAlpha: below this alpha, skip drawing entirely. Avoids a "carpet"
+//   of near-invisible lines accumulating into visible noise.
+//
+// segmentWidth: stroke width in world pixels.
+export const OVERLAY_DEFAULTS: { alphaGamma: number; minDrawAlpha: number; segmentWidth: number } = {
+  alphaGamma: 4,
+  minDrawAlpha: 0.05,
+  segmentWidth: 1,
+};
 
 export type OverlayStats = {
   segments: number;
@@ -42,6 +48,9 @@ export class TrajectoryOverlay {
   private readonly graphics = new Graphics();
   private mode: OverlayMode = 'on';
   private stats: OverlayStats = { ...EMPTY_STATS };
+  private alphaGamma = OVERLAY_DEFAULTS.alphaGamma;
+  private minDrawAlpha = OVERLAY_DEFAULTS.minDrawAlpha;
+  private segmentWidth = OVERLAY_DEFAULTS.segmentWidth;
 
   constructor(parent: Container) {
     parent.addChild(this.graphics);
@@ -63,6 +72,18 @@ export class TrajectoryOverlay {
   toggle(): OverlayMode {
     this.setMode(this.mode === 'on' ? 'off' : 'on');
     return this.mode;
+  }
+
+  setAlphaGamma(g: number): void {
+    this.alphaGamma = Math.max(0.1, g);
+  }
+
+  setMinDrawAlpha(a: number): void {
+    this.minDrawAlpha = Math.max(0, Math.min(1, a));
+  }
+
+  setSegmentWidth(w: number): void {
+    this.segmentWidth = Math.max(0.1, w);
   }
 
   lastDrawnStats(): OverlayStats {
@@ -98,14 +119,14 @@ export class TrajectoryOverlay {
     let drawnSegments = 0;
 
     for (const s of segments) {
-      const alpha = s.onChosenChain ? 1 : Math.pow(rankByEdge.get(s.edgeId) ?? 0, ALPHA_GAMMA);
+      const alpha = s.onChosenChain ? 1 : Math.pow(rankByEdge.get(s.edgeId) ?? 0, this.alphaGamma);
       if (alpha >= 0.5) hi++;
       else if (alpha >= 0.15) mid++;
       else lo++;
-      if (alpha < MIN_DRAW_ALPHA) continue;
+      if (alpha < this.minDrawAlpha) continue;
       g.moveTo(s.x0, s.y0);
       g.lineTo(s.x1, s.y1);
-      g.stroke({ color: SEGMENT_COLOR, width: SEGMENT_WIDTH, alpha });
+      g.stroke({ color: SEGMENT_COLOR, width: this.segmentWidth, alpha });
       drawnEdges.add(s.edgeId);
       drawnSegments++;
     }

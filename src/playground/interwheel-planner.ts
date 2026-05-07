@@ -27,8 +27,20 @@ const DEEP_WALL_WAIT_STEP = 2;
 const DEFAULT_WAIT_PENALTY = 0.75;
 const DEFAULT_WAIT_GRACE_TICKS = 24;
 const DEFAULT_LONG_WAIT_PENALTY = 0.08;
-const LINEAGE_SUPPORT_GAMMA = 3;
-const LINEAGE_SUPPORT_DECAY = 0.65;
+// Defaults for the lineage-support pass; mirrored on the planner instance
+// so the playground can override them at runtime via setLineage().
+//
+// gamma: leaf seed curve. Each edge seeds support at rank^gamma of its
+//   raw planner score. γ=3 means only top descendants pull a parent up;
+//   γ=1 makes mediocre descendants contribute proportionally too.
+// decay: fraction of a child's support a parent inherits in the bottom-up
+//   pass. decay=0 disables descendant accumulation entirely (the renderer
+//   then ranks edges by their own raw score, equivalent to the previous
+//   rank-of-value behavior); decay near 1 amplifies prefix accumulation.
+export const LINEAGE_DEFAULTS: { gamma: number; decay: number } = {
+  gamma: 3,
+  decay: 0.65,
+};
 // "Miss" detection: how close does the trajectory get to an uncollected
 // pastille before we count it as a foregone opportunity? Pickup radius is
 // 70px, so anything <70 was either grabbed or barely missed; out to ~300
@@ -205,6 +217,8 @@ export class InterwheelPlanner {
   private knownPastilleKeys = new Set<string>();
   private lastSeenTick = -1;
   private currentPerceived: PerceivedSnapshot | null = null;
+  private lineageGamma = LINEAGE_DEFAULTS.gamma;
+  private lineageDecay = LINEAGE_DEFAULTS.decay;
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
@@ -252,6 +266,16 @@ export class InterwheelPlanner {
   setPolicy(policy: Partial<PlannerPolicy>): void {
     this.cfg.policy = resolvePlannerPolicy(policy);
     this.lastResult = null;
+  }
+
+  setLineage(params: { gamma?: number; decay?: number }): void {
+    if (params.gamma !== undefined) this.lineageGamma = Math.max(0.1, params.gamma);
+    if (params.decay !== undefined) this.lineageDecay = Math.max(0, Math.min(1, params.decay));
+    this.lastResult = null;
+  }
+
+  getLineage(): { gamma: number; decay: number } {
+    return { gamma: this.lineageGamma, decay: this.lineageDecay };
   }
 
   invalidate(): void {
@@ -767,11 +791,11 @@ export class InterwheelPlanner {
     const denom = Math.max(1, sortedIds.length - 1);
     for (let i = 0; i < sortedIds.length; i += 1) {
       const rank = sortedIds.length <= 1 ? 1 : i / denom;
-      support[sortedIds[i]] = Math.pow(rank, LINEAGE_SUPPORT_GAMMA);
+      support[sortedIds[i]] = Math.pow(rank, this.lineageGamma);
     }
     for (let i = edges.length - 1; i >= 0; i -= 1) {
       const parentEdgeId = nodes[edges[i].parentId]?.edgeId ?? -1;
-      if (parentEdgeId >= 0) support[parentEdgeId] += support[i] * LINEAGE_SUPPORT_DECAY;
+      if (parentEdgeId >= 0) support[parentEdgeId] += support[i] * this.lineageDecay;
     }
     return support;
   }
