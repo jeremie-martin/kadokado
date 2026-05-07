@@ -22,6 +22,9 @@ const ROOT_GRAB_WAIT_STEP = 1;
 const ROOT_WALL_WAIT_STEP = 1;
 const DEEP_GRAB_WAIT_STEP = 4;
 const DEEP_WALL_WAIT_STEP = 2;
+const DEFAULT_WAIT_PENALTY = 0.75;
+const DEFAULT_WAIT_GRACE_TICKS = 24;
+const DEFAULT_LONG_WAIT_PENALTY = 0.08;
 
 type EdgeReward = {
   pickedValue: number;
@@ -102,6 +105,9 @@ export type PlannerConfig = {
   maxStableDepth?: number;
   targetClimb?: number;
   scoreBias?: number;
+  waitPenalty?: number;
+  waitGraceTicks?: number;
+  longWaitPenalty?: number;
   revealScreensAbove?: number;
   memoryScreensBelow?: number;
 };
@@ -128,6 +134,9 @@ export class InterwheelPlanner {
       maxStableDepth,
       targetClimb: cfg.targetClimb ?? 400,
       scoreBias: cfg.scoreBias ?? 1,
+      waitPenalty: cfg.waitPenalty ?? DEFAULT_WAIT_PENALTY,
+      waitGraceTicks: cfg.waitGraceTicks ?? DEFAULT_WAIT_GRACE_TICKS,
+      longWaitPenalty: cfg.longWaitPenalty ?? DEFAULT_LONG_WAIT_PENALTY,
       revealScreensAbove: cfg.revealScreensAbove ?? 1,
       memoryScreensBelow: cfg.memoryScreensBelow ?? 2,
     };
@@ -415,7 +424,10 @@ export class InterwheelPlanner {
     reward: EdgeReward,
     sameStableTarget: boolean,
   ): number {
-    if (this.isTerminal(end)) return -1_000_000 + reward.pickedValue + reward.sparkScore;
+    const waitPenalty = this.waitPenalty(waitTicks);
+    if (this.isTerminal(end)) {
+      return -1_000_000 + reward.pickedValue + reward.sparkScore - totalTicks * 4 - waitPenalty;
+    }
 
     const heightGain = end.maxHeight - root.maxHeight;
     const yGain = root.blob.y - end.blob.y;
@@ -444,17 +456,22 @@ export class InterwheelPlanner {
       Math.max(1_250, heightPolicy * 0.35),
     ) * (1 - waterUrgency * 0.85);
     const loopPenalty = sameStableTarget && reward.pickedValue + reward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
-
     return (
       heightPolicy * (1 + waterUrgency * 1.2) +
       scoreTerm +
       stateBonus -
       totalTicks * 4 -
-      waitTicks * 1.5 -
+      waitPenalty -
       waterPenalty -
       backtrackPenalty -
       loopPenalty
     );
+  }
+
+  private waitPenalty(waitTicks: number): number {
+    const overstay = Math.max(0, waitTicks - this.cfg.waitGraceTicks);
+    const acceleration = 1 + overstay / Math.max(1, this.cfg.waitGraceTicks);
+    return waitTicks * this.cfg.waitPenalty + overstay * overstay * acceleration * this.cfg.longWaitPenalty;
   }
 
   private waitSamples(snap: SimSnapshot, depth: number): number[] {

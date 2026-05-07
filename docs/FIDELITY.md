@@ -216,7 +216,9 @@ perceived world: currently visible objects, one screen of revealed lookahead
 above the viewport, and two screens of remembered known objects below for
 recovery. Score-seeking remains intentional, but bonus valuation is derived from
 local simulated pickup/spark events instead of scanning the full generated level.
-Execution jitter is disabled while this model is tuned.
+Execution jitter is disabled while this model is tuned. Stable-state waits carry
+a gentle explicit scoring penalty, with an accelerating non-linear overstay cost
+after a short grace window, so multi-revolution idling has to justify itself.
 
 The overlay has separate projections of that same tree. The default cinematic
 mode always keeps best, death, score, and best-neighborhood branches, then thins
