@@ -880,6 +880,13 @@ type TrialResult = {
   seed: number | null;
 };
 
+type TrialOptions = {
+  noWater?: boolean;
+  stopHeightMeters?: number;
+};
+
+const NO_WATER_Y = 1_000_000_000;
+
 async function runTrial(
   seed: number | null = null,
   maxTicks = 24_000,
@@ -929,16 +936,18 @@ async function runPureTrial(
   seed: number | null = null,
   maxTicks = 24_000,
   plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+  opts: TrialOptions = {},
 ): Promise<TrialResult> {
   const sim = new PureInterwheelSim();
   sim.reset(seed !== null ? makeSeededRng(seed) : Math.random);
+  if (opts.noWater) sim.waterY = NO_WATER_Y;
   const purePlanner = new InterwheelPlanner(sim, plannerCfg);
   const plannerRun = freshPlannerRunStats();
   const analytics = new InterwheelRunAnalytics();
   analytics.start(seed, sim.clone());
   const startCpu = performance.now();
   let ticks = 0;
-  while (!sim.ended && ticks < maxTicks) {
+  while (!sim.ended && ticks < maxTicks && !reachedStopHeight(sim, opts.stopHeightMeters)) {
     const before = sim.clone();
     let press = false;
     let plannerStats: PlannerStats | null = null;
@@ -971,6 +980,10 @@ async function runPureTrial(
     analytics: analytics.finish(sim.clone(), !sim.ended && ticks >= maxTicks),
     seed,
   };
+}
+
+function reachedStopHeight(sim: PureInterwheelSim, stopHeightMeters: number | undefined): boolean {
+  return typeof stopHeightMeters === 'number' && Math.floor(sim.maxHeight * 0.2) >= stopHeightMeters;
 }
 
 function summarize(label: string, results: TrialResult[]): string {

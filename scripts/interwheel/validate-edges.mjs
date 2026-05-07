@@ -13,6 +13,7 @@ function parseArgs(argv) {
     allowedDropMeters: 80,
     maxWallDriftTicks: 34,
     maxTargetDeltaY: 760,
+    ignoreMines: false,
     json: false,
     outDir: null,
     help: false,
@@ -20,6 +21,7 @@ function parseArgs(argv) {
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
     else if (raw === '--json') args.json = true;
+    else if (raw === '--ignore-mines') args.ignoreMines = true;
     else if (raw === '--full-height') args.maxHeightMeters = null;
     else if (raw.startsWith('--seed=')) args.seed = Number(raw.slice('--seed='.length));
     else if (raw.startsWith('--max-height=')) args.maxHeightMeters = Number(raw.slice('--max-height='.length));
@@ -35,7 +37,7 @@ function parseArgs(argv) {
     }
   }
   for (const [name, value] of Object.entries(args)) {
-    if (['json', 'outDir', 'help', 'maxHeightMeters'].includes(name)) continue;
+    if (['json', 'outDir', 'help', 'maxHeightMeters', 'ignoreMines'].includes(name)) continue;
     if (!Number.isFinite(value) || value < 1) {
       console.error(`--${name} must be a positive number`);
       args.help = true;
@@ -56,6 +58,7 @@ USAGE:
   npm run analyze:interwheel:edges -- --seed=42 --max-height=4000
   npm run analyze:interwheel:edges -- --seed=42 --allowed-drop=120
   npm run analyze:interwheel:edges -- --seed=42 --max-wall-drift=80
+  npm run analyze:interwheel:edges -- --seed=42 --ignore-mines
   npm run analyze:interwheel:edges -- --seed=42 --full-height --json
 
 This is offline experimental tooling. It builds a local reachability graph from
@@ -71,7 +74,15 @@ async function main() {
     process.exit(0);
   }
 
-  const server = await createServer({ server: { host: '127.0.0.1', port: 0 } });
+  const server = await createServer({
+    server: {
+      host: '127.0.0.1',
+      port: 0,
+      watch: {
+        ignored: ['**/generated-assets/**', '**/dist/**', '**/.tmp/**'],
+      },
+    },
+  });
   await server.listen();
   const address = server.httpServer.address();
   if (!address || typeof address === 'string') throw new Error('missing Vite server address');
@@ -91,6 +102,7 @@ async function main() {
         allowedDropMeters: args.allowedDropMeters,
         maxWallDriftTicks: args.maxWallDriftTicks,
         maxTargetDeltaY: args.maxTargetDeltaY,
+        ignoreMines: args.ignoreMines,
       },
     });
     if (args.outDir) {

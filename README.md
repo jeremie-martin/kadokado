@@ -40,6 +40,7 @@ npm run analyze:interwheel -- --verify-pure-planner --trials=3 --seed=42 --max-s
 npm run analyze:interwheel:policies -- --trials=40 --seed=4200 --max-seconds=30
 npm run analyze:interwheel:policies:summary -- .tmp/interwheel-policy-sweeps/<run>/raw.json
 npm run analyze:interwheel:climb -- --seed=42 --max-seconds=300
+npm run analyze:interwheel:climb -- --seed=42 --max-seconds=300 --no-water --min-height=5000
 npm run analyze:interwheel:edges -- --seed=42 --max-height=4000
 ```
 
@@ -53,7 +54,7 @@ Interwheel planner behavior is controlled through a small numeric policy object 
 
 For broader policy characterization, run `npm run analyze:interwheel:policies`. It sweeps the numeric policy knobs over a fixed seed population and writes `raw.json`, `summary.json`, and `report.md` under `.tmp/interwheel-policy-sweeps/<timestamp>/`. Re-run `npm run analyze:interwheel:policies:summary -- <raw.json>` to analyze an existing sweep without regenerating gameplay.
 
-For an experimental single-seed Interwheel climb check, run `npm run analyze:interwheel:climb`. This offline validator runs the trusted pure simulator with a climb-biased agent and reports whether the agent survived to the time cap with recent upward progress. It is analysis tooling only; live level generation does not call it.
+For an experimental single-seed Interwheel climb check, run `npm run analyze:interwheel:climb`. This offline validator runs the trusted pure simulator with a climb-biased agent and reports whether the agent survived to the time cap with recent upward progress. Add `--no-water --min-height=N` to temporarily disable drowning and use a target-height criterion for route-only calibration against the analytical edge validator. It is analysis tooling only; live level generation does not call it.
 
 For an experimental analytical Interwheel generation check, run `npm run analyze:interwheel:edges`. This builds a local reachability graph from generated wheels using sampled jump trajectories, forbidden mine landing arcs, and wall-assisted routes. It is offline analysis tooling only.
 

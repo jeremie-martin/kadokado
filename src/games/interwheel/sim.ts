@@ -19,7 +19,7 @@ export const SIDE = 10;
 export const SPACE = 8;
 export const VIEW_WHEEL = 50;
 export const START_WHEEL_ID = 10;
-export const WMAX = 180;
+export const WMAX = 1000;
 
 // Wheel generation
 export const WHEEL_SPEED_MIN = 0.05;
@@ -408,7 +408,7 @@ export class InterwheelSim {
 
   private addMine(wheel: Wheel, rng: RNG): void {
     const perim = Math.PI * 2 * wheel.ray;
-    if (wheel.mines.length > 0 && perim / wheel.mines.length < MINE_SPACE * 2) return;
+    if (perim / (wheel.mines.length + 1) < MINE_SPACE * 2) return;
     let tries = 0;
     while (tries <= 20) {
       const a = rng() * Math.PI * 2;

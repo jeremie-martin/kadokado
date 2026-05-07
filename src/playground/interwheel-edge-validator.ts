@@ -25,6 +25,7 @@ export type EdgeValidatorConfig = {
   allowedDropMeters?: number;
   wallDriftStep?: number;
   maxWallDriftTicks?: number;
+  ignoreMines?: boolean;
 };
 
 export type AnalyticalEdge = {
@@ -75,6 +76,7 @@ const DEFAULT_CONFIG = {
   allowedDropMeters: 80,
   wallDriftStep: 2,
   maxWallDriftTicks: 34,
+  ignoreMines: false,
 } satisfies Required<EdgeValidatorConfig>;
 
 export function makeSeededRng(seed: number): () => number {
@@ -155,6 +157,7 @@ function resolveConfig(cfg: EdgeValidatorConfig): Required<Omit<EdgeValidatorCon
     allowedDropMeters: positiveNumber(cfg.allowedDropMeters, DEFAULT_CONFIG.allowedDropMeters),
     wallDriftStep: positiveInteger(cfg.wallDriftStep, DEFAULT_CONFIG.wallDriftStep),
     maxWallDriftTicks: positiveInteger(cfg.maxWallDriftTicks, DEFAULT_CONFIG.maxWallDriftTicks),
+    ignoreMines: cfg.ignoreMines === true,
   };
 }
 
@@ -326,7 +329,7 @@ function edgeForWheelHit(
   const source = wheels[sourceIdx];
   const target = wheels[hit.wheelIdx];
   if (wheelHeightMeters(target) < wheelHeightMeters(source) - config.allowedDropMeters) return null;
-  if (!safeLanding(target, hit.landingAngle, hit.tick)) return null;
+  if (!config.ignoreMines && !safeLanding(target, hit.landingAngle, hit.tick)) return null;
   return {
     from: sourceIdx,
     to: hit.wheelIdx,

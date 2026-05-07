@@ -13,6 +13,8 @@ function parseArgs(argv) {
     minHeightMeters: 1_000,
     lookbackTicks: 30 * GAME_FPS,
     minRecentGainMeters: 100,
+    minHeightExplicit: false,
+    noWater: false,
     json: false,
     outDir: null,
     help: false,
@@ -20,10 +22,14 @@ function parseArgs(argv) {
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
     else if (raw === '--json') args.json = true;
+    else if (raw === '--no-water') args.noWater = true;
     else if (raw.startsWith('--seed=')) args.seed = Number(raw.slice('--seed='.length));
     else if (raw.startsWith('--max-ticks=')) args.maxTicks = Number(raw.slice('--max-ticks='.length));
     else if (raw.startsWith('--max-seconds=')) args.maxTicks = Math.ceil(Number(raw.slice('--max-seconds='.length)) * GAME_FPS);
-    else if (raw.startsWith('--min-height=')) args.minHeightMeters = Number(raw.slice('--min-height='.length));
+    else if (raw.startsWith('--min-height=')) {
+      args.minHeightMeters = Number(raw.slice('--min-height='.length));
+      args.minHeightExplicit = true;
+    }
     else if (raw.startsWith('--lookback-seconds=')) args.lookbackTicks = Math.ceil(Number(raw.slice('--lookback-seconds='.length)) * GAME_FPS);
     else if (raw.startsWith('--min-recent-gain=')) args.minRecentGainMeters = Number(raw.slice('--min-recent-gain='.length));
     else if (raw.startsWith('--out=')) args.outDir = raw.slice('--out='.length);
@@ -33,13 +39,14 @@ function parseArgs(argv) {
     }
   }
   for (const [name, value] of Object.entries(args)) {
-    if (['json', 'outDir', 'help'].includes(name)) continue;
+    if (['json', 'outDir', 'help', 'noWater', 'minHeightExplicit'].includes(name)) continue;
     if (!Number.isFinite(value) || value < 0) {
       console.error(`--${name} must be a finite non-negative number`);
       args.help = true;
     }
   }
   if (args.maxTicks < 1 || args.lookbackTicks < 1) args.help = true;
+  if (args.noWater && !args.minHeightExplicit) args.minHeightMeters = 5_000;
   return args;
 }
 
@@ -49,12 +56,18 @@ function help() {
 USAGE:
   npm run analyze:interwheel:climb
   npm run analyze:interwheel:climb -- --seed=42 --max-seconds=300
+  npm run analyze:interwheel:climb -- --seed=42 --max-seconds=300 --no-water
+  npm run analyze:interwheel:climb -- --seed=42 --no-water --min-height=5000
   npm run analyze:interwheel:climb -- --seed=42 --json
 
 This is offline experimental tooling. It runs one deterministic seed through
 the trusted pure simulator with a climb-biased planner policy. A pass means the
 agent survived to the time cap, reached the minimum height, and still made
 recent upward progress near the end of the run.
+
+Use --no-water to temporarily disable drowning in the pure simulator. That mode
+uses a target-height pass criterion and is only for comparing route reachability
+against the analytical edge validator.
 `);
 }
 
@@ -94,14 +107,13 @@ function validateTrial(trial, args) {
   const survivedToCap = trial.ticks >= args.maxTicks && summary.deathCause === 'timeout';
   const reachedMinimum = trial.heightMeters >= args.minHeightMeters;
   const madeRecentProgress = recentGainMeters >= args.minRecentGainMeters;
-  const passed = survivedToCap && reachedMinimum && madeRecentProgress;
+  const avoidedMine = summary.deathCause !== 'mine';
+  const passed = args.noWater ? reachedMinimum && avoidedMine : survivedToCap && reachedMinimum && madeRecentProgress;
   return {
     passed,
-    reasons: {
-      survivedToCap,
-      reachedMinimum,
-      madeRecentProgress,
-    },
+    reasons: args.noWater
+      ? { reachedMinimum, avoidedMine }
+      : { survivedToCap, reachedMinimum, madeRecentProgress },
     recentGainMeters,
     maxBeforeLookback,
     lookbackStartTick: lookbackStart,
@@ -116,6 +128,7 @@ function printReport(report) {
   console.log('Interwheel climb-agent empirical validation');
   console.log(`seed:       ${report.config.seed}`);
   console.log(`max ticks:  ${report.config.maxTicks} (${(report.config.maxTicks / GAME_FPS).toFixed(1)}s)`);
+  console.log(`water:      ${report.config.noWater ? 'off' : 'on'}`);
   console.log(`policy:     ${JSON.stringify(report.config.plannerConfig.policy)}`);
   console.log(`result:     ${validation.passed ? 'PASS' : 'FAIL'}`);
   console.log(`height:     ${trial.heightMeters}m`);
@@ -140,7 +153,15 @@ async function main() {
     process.exit(0);
   }
 
-  const server = await createServer({ server: { host: '127.0.0.1', port: 0 } });
+  const server = await createServer({
+    server: {
+      host: '127.0.0.1',
+      port: 0,
+      watch: {
+        ignored: ['**/generated-assets/**', '**/dist/**', '**/.tmp/**'],
+      },
+    },
+  });
   await server.listen();
   const address = server.httpServer.address();
   if (!address || typeof address === 'string') throw new Error('missing Vite server address');
@@ -162,13 +183,20 @@ async function main() {
           pace: 0.8,
         },
       };
-      const trial = await page.evaluate(async ({ seed, maxTicks, plannerConfig }) => {
-        return await window.__interwheelAnalytics__.runPureTrial(seed, maxTicks, plannerConfig);
-      }, { seed: args.seed, maxTicks: args.maxTicks, plannerConfig });
+      const trial = await page.evaluate(async ({ seed, maxTicks, plannerConfig, noWater, stopHeightMeters }) => {
+        return await window.__interwheelAnalytics__.runPureTrial(seed, maxTicks, plannerConfig, { noWater, stopHeightMeters });
+      }, {
+        seed: args.seed,
+        maxTicks: args.maxTicks,
+        plannerConfig,
+        noWater: args.noWater,
+        stopHeightMeters: args.noWater ? args.minHeightMeters : undefined,
+      });
       const report = {
         config: {
           seed: args.seed,
           maxTicks: args.maxTicks,
+          noWater: args.noWater,
           lookbackTicks: args.lookbackTicks,
           minHeightMeters: args.minHeightMeters,
           minRecentGainMeters: args.minRecentGainMeters,
