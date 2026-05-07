@@ -13,6 +13,14 @@ const POLICY_KEYS: PolicyKey[] = ['climb', 'collectibles', 'wallRoutes', 'pace']
 const policyInputs = new Map<PolicyKey, HTMLInputElement>();
 const policyOutputs = new Map<PolicyKey, HTMLOutputElement>();
 const policyReset = document.getElementById('policy-reset') as HTMLButtonElement | null;
+const focusInput = document.getElementById('policy-focus') as HTMLInputElement | null;
+const focusOutput = document.getElementById('policy-focus-value') as HTMLOutputElement | null;
+// Focus lerps climb and collectibles in opposite directions: focus=0 is pure
+// climber (max climb, no collect), focus=1 is pure collector (min climb, max
+// collect). Endpoints align with the existing slider ranges in playground.html.
+const FOCUS_CLIMB_MAX = 1.6;
+const FOCUS_CLIMB_MIN = 0.3;
+const FOCUS_COLLECT_MAX = 3;
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -43,6 +51,22 @@ function syncPolicyControls(): void {
     if (input) input.value = String(policy[key]);
     if (output) output.value = formatPolicyValue(policy[key]);
   }
+  // Focus reflects collectibles position on the lerp; climb may drift off the
+  // line if user adjusts it directly, that's OK — focus is a fast-path preset.
+  if (focusInput || focusOutput) {
+    const focus = Math.max(0, Math.min(1, policy.collectibles / FOCUS_COLLECT_MAX));
+    if (focusInput) focusInput.value = String(focus);
+    if (focusOutput) focusOutput.value = focus.toFixed(2);
+  }
+}
+
+function policyFromFocus(focus: number, base: PlannerPolicy): PlannerPolicy {
+  const f = Math.max(0, Math.min(1, focus));
+  return {
+    ...base,
+    climb: FOCUS_CLIMB_MAX - (FOCUS_CLIMB_MAX - FOCUS_CLIMB_MIN) * f,
+    collectibles: FOCUS_COLLECT_MAX * f,
+  };
 }
 
 function readPolicyControls(): PlannerPolicy {
@@ -72,6 +96,12 @@ function setupPolicyControls(): void {
     policyInputs.set(rawKey, input);
     if (output) policyOutputs.set(rawKey, output);
     input.addEventListener('input', () => applyPolicy(readPolicyControls()));
+  });
+
+  focusInput?.addEventListener('input', () => {
+    const focus = Number(focusInput.value);
+    if (!Number.isFinite(focus)) return;
+    applyPolicy(policyFromFocus(focus, policy));
   });
 
   policyReset?.addEventListener('click', () => applyPolicy({ ...DEFAULT_PLANNER_POLICY }));
