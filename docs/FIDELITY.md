@@ -200,6 +200,28 @@ cover the important scenarios.
 - Known gaps: audio/platform score hooks, complete pivot/timeline manifest, and
   deterministic reference scenarios.
 
+#### AI planner note
+
+The Interwheel playground AI uses a unified launch-edge search tree. A node is a
+stable grab/wall state; an edge is "wait N ticks, press, then simulate the
+flight until the next stable/dead state." The same tree chooses the next press
+and drives the trajectory overlay, so alternative paths are actual explored
+planner branches rather than a separate visual-only search.
+
+The planner predicts with a filtered scratch `InterwheelSim` built from a
+perceived world: currently visible objects, one screen of revealed lookahead
+above the viewport, and two screens of remembered known objects below for
+recovery. Score-seeking remains intentional, but bonus valuation is derived from
+local simulated pickup/spark events instead of scanning the full generated level.
+Execution jitter is disabled while this model is tuned.
+
+The overlay has separate projections of that same tree. The default cinematic
+mode always keeps best, death, score, and best-neighborhood branches, then thins
+ordinary alternatives by launch-time bucket. Long non-best wheel-wait prefixes
+are trimmed to the last few ticks before launch so long delays do not paint dense
+circular trails. Debug mode shows the full tree and restores score/bonus
+coloring for planner inspection.
+
 ### Pioupiou
 
 - Route: `/#pioupiou`

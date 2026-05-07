@@ -13,16 +13,29 @@ let overlay: TrajectoryOverlay | null = null;
 let aiActive = true;
 let lastPlanMs = 0;
 let lastSegmentCount = 0;
+let lastEdges = 0;
+let lastNodes = 0;
+let lastPerceived = '0w/0p';
+let lastShownSegments = 0;
+let lastShownEdges = 0;
+
+function refreshOverlayStats(): void {
+  const drawn = overlay?.lastDrawnStats();
+  lastShownSegments = drawn?.segments ?? 0;
+  lastShownEdges = drawn?.edges ?? 0;
+}
 
 function refreshStats(): void {
   if (!stats || !game) return;
   const heightMeters = Math.floor(game.maxHeight * 0.2);
   stats.textContent = [
     `AI:        ${aiActive ? 'on ' : 'off'}    [A] toggle`,
-    `Overlay:   ${overlay?.isVisible() ? 'on ' : 'off'}    [D] toggle`,
+    `Overlay:   ${overlay?.getMode() ?? 'off'}    [D] cycle`,
     `Height:    ${heightMeters}m`,
     `Score:     ${game.score}`,
-    `Last plan: ${lastPlanMs.toFixed(1)}ms / ${lastSegmentCount} segments`,
+    `Last plan: ${lastPlanMs.toFixed(1)}ms / ${lastSegmentCount} segments / ${lastEdges} edges`,
+    `Shown:     ${lastShownSegments} seg / ${lastShownEdges} edges`,
+    `Tree:      ${lastNodes} nodes / ${lastPerceived}`,
   ].join('\n');
 }
 
@@ -39,9 +52,13 @@ function attachAI(g: InterwheelGame): void {
       const t0 = performance.now();
       const { press, result } = planner.step();
       if (result) {
-        lastPlanMs = performance.now() - t0;
+        lastPlanMs = result.stats.planMs || performance.now() - t0;
         lastSegmentCount = result.segments.length;
+        lastEdges = result.stats.edgesEvaluated;
+        lastNodes = result.stats.stableNodesExpanded;
+        lastPerceived = `${result.stats.perceivedWheels}w/${result.stats.perceivedPastilles}p`;
         overlay?.draw(result.segments);
+        refreshOverlayStats();
       }
       // Only set the flag — checkPress() consumes by resetting to false, and
       // we mustn't clobber a player tap when AI is off.
@@ -56,6 +73,7 @@ function attachAI(g: InterwheelGame): void {
     if (g.ended || g.ending) {
       planner?.invalidate();
       overlay?.draw([]);
+      refreshOverlayStats();
     }
     requestAnimationFrame(watchEnded);
   };
@@ -65,10 +83,15 @@ function attachAI(g: InterwheelGame): void {
 window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyA') {
     aiActive = !aiActive;
-    if (!aiActive) overlay?.draw([]);
+    if (!aiActive) {
+      overlay?.draw([]);
+      refreshOverlayStats();
+    }
     refreshStats();
   } else if (e.code === 'KeyD') {
     overlay?.toggle();
+    overlay?.draw(planner?.lastSegments() ?? []);
+    refreshOverlayStats();
     refreshStats();
   } else if (e.code === 'KeyR') {
     location.reload();

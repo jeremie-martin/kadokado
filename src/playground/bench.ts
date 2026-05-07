@@ -1,6 +1,6 @@
 import { mount, type InterwheelGame, type InterwheelSim } from '../games/interwheel/index';
 import { noopGameHost } from '../games/types';
-import { InterwheelPlanner } from './interwheel-planner';
+import { InterwheelPlanner, type PlannerStats } from './interwheel-planner';
 
 // Faithful headless bench harness.
 //
@@ -33,6 +33,27 @@ let originalRender: () => void;
 let originalUpdateParticles: () => void;
 let recordedPresses: boolean[] = [];
 let recording = false;
+let currentPlannerRun: PlannerRunStats | null = null;
+
+type PlannerRunStats = {
+  plans: number;
+  totalPlanMs: number;
+  maxPlanMs: number;
+  totalEdges: number;
+  totalSegments: number;
+  totalWheels: number;
+  totalPastilles: number;
+};
+
+type TrialPlannerStats = {
+  plans: number;
+  avgPlanMs: number;
+  maxPlanMs: number;
+  avgEdges: number;
+  avgSegments: number;
+  avgWheels: number;
+  avgPastilles: number;
+};
 
 function log(msg: string): void {
   out.textContent = msg;
@@ -40,6 +61,42 @@ function log(msg: string): void {
 
 function append(msg: string): void {
   out.textContent = (out.textContent ?? '') + msg;
+}
+
+function freshPlannerRunStats(): PlannerRunStats {
+  return {
+    plans: 0,
+    totalPlanMs: 0,
+    maxPlanMs: 0,
+    totalEdges: 0,
+    totalSegments: 0,
+    totalWheels: 0,
+    totalPastilles: 0,
+  };
+}
+
+function recordPlannerStats(stats: PlannerStats): void {
+  if (!currentPlannerRun) return;
+  currentPlannerRun.plans += 1;
+  currentPlannerRun.totalPlanMs += stats.planMs;
+  currentPlannerRun.maxPlanMs = Math.max(currentPlannerRun.maxPlanMs, stats.planMs);
+  currentPlannerRun.totalEdges += stats.edgesEvaluated;
+  currentPlannerRun.totalSegments += stats.segments;
+  currentPlannerRun.totalWheels += stats.perceivedWheels;
+  currentPlannerRun.totalPastilles += stats.perceivedPastilles;
+}
+
+function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
+  const plans = Math.max(1, stats.plans);
+  return {
+    plans: stats.plans,
+    avgPlanMs: stats.totalPlanMs / plans,
+    maxPlanMs: stats.maxPlanMs,
+    avgEdges: stats.totalEdges / plans,
+    avgSegments: stats.totalSegments / plans,
+    avgWheels: stats.totalWheels / plans,
+    avgPastilles: stats.totalPastilles / plans,
+  };
 }
 
 async function setup(): Promise<void> {
@@ -60,8 +117,9 @@ async function setup(): Promise<void> {
       originalUpdate = game.update.bind(game);
       game.update = () => {
         if (!game.ended && !game.ending) {
-          const { press } = planner.step();
+          const { press, result } = planner.step();
           if (press) game.spacePressed = true;
+          if (result) recordPlannerStats(result.stats);
           if (recording) recordedPresses.push(press);
         }
         originalUpdate();
@@ -77,6 +135,7 @@ type TrialResult = {
   heightMeters: number;
   ticks: number;
   cpuMs: number;
+  planner: TrialPlannerStats;
   /** The seed used for this trial's level generation, or null if Math.random was used. */
   seed: number | null;
 };
@@ -94,6 +153,7 @@ async function runTrial(seed: number | null = null, maxTicks = 24_000): Promise<
     game.reset();
   }
   planner.invalidate();
+  currentPlannerRun = freshPlannerRunStats();
   const startCpu = performance.now();
   let ticks = 0;
   while (!game.ended && ticks < maxTicks) {
@@ -107,6 +167,7 @@ async function runTrial(seed: number | null = null, maxTicks = 24_000): Promise<
     heightMeters: Math.floor(game.maxHeight * 0.2),
     ticks,
     cpuMs: performance.now() - startCpu,
+    planner: summarizePlannerStats(currentPlannerRun),
     seed,
   };
 }
@@ -184,7 +245,7 @@ export type BenchmarkResult = {
     trials: number;
     seedBase: number | null;
     maxTicks: number;
-    plannerConfig: { budgetMs: number; maxNodes: number; maxDepth: number; targetClimb: number };
+    plannerConfig: { budgetMs: number; maxEdgeRollouts: number; maxStableDepth: number; targetClimb: number };
   };
   wallMs: number;
   cpuMs: number;
@@ -215,7 +276,7 @@ async function runBenchmark(opts: BenchmarkOpts = {}): Promise<BenchmarkResult> 
   const seedBase = opts.seedBase ?? null;
   const maxTicks = opts.maxTicks ?? 24_000;
   const plannerCfg = {
-    budgetMs: 18, maxNodes: 1800, maxDepth: 100, targetClimb: 400,
+    budgetMs: 5, maxEdgeRollouts: 240, maxStableDepth: 3, targetClimb: 400,
   };
 
   log(`benchmark: ${trials} trials  seedBase=${seedBase ?? 'random'}  maxTicks=${maxTicks}\n`);
@@ -229,7 +290,8 @@ async function runBenchmark(opts: BenchmarkOpts = {}): Promise<BenchmarkResult> 
     append(
       `  trial ${String(i + 1).padStart(3)}/${trials}` +
         (seed !== null ? ` (seed=${seed})` : '') +
-        `: height=${r.heightMeters}m  score=${r.score}  ticks=${r.ticks}  cpu=${Math.round(r.cpuMs)}ms\n`,
+        `: height=${r.heightMeters}m  score=${r.score}  ticks=${r.ticks}  cpu=${Math.round(r.cpuMs)}ms` +
+        `  plan=${r.planner.avgPlanMs.toFixed(2)}ms/${Math.round(r.planner.avgEdges)}e\n`,
     );
   }
   const wallMs = performance.now() - wallStart;
@@ -342,8 +404,9 @@ async function parityCheck(): Promise<{
   game.updateParticles = (() => {}) as typeof game.updateParticles;
   game.update = (() => {
     if (!game.ended && !game.ending) {
-      const { press } = planner.step();
+      const { press, result } = planner.step();
       if (press) game.spacePressed = true;
+      if (result) recordPlannerStats(result.stats);
       if (recording) recordedPresses.push(press);
     }
     originalUpdate();

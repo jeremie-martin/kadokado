@@ -106,7 +106,9 @@ function prettyPrint(result) {
     console.log(
       `  #${String(i + 1).padStart(2)}  height=${String(t.heightMeters).padStart(4)}m` +
         `  score=${String(t.score).padStart(6)}  ticks=${String(t.ticks).padStart(4)}` +
-        `  cpu=${Math.round(t.cpuMs)}ms${seedTag}`,
+        `  cpu=${Math.round(t.cpuMs)}ms` +
+        (t.planner ? `  plan=${t.planner.avgPlanMs.toFixed(2)}ms/${Math.round(t.planner.avgEdges)}e` : '') +
+        seedTag,
     );
   }
   console.log('');
