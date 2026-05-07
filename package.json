@@ -15,6 +15,7 @@
     "analyze:interwheel:quick": "node scripts/analyze-interwheel.mjs --quick",
     "analyze:interwheel:policies": "node scripts/interwheel/sweep-policies.mjs",
     "analyze:interwheel:policies:summary": "node scripts/interwheel/summarize-policy-sweep.mjs",
+    "analyze:interwheel:climb": "node scripts/interwheel/validate-climb-agent.mjs",
     "capture:interwheel": "node scripts/capture-interwheel.mjs"
   },
   "dependencies": {
