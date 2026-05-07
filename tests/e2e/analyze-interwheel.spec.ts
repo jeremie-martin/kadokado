@@ -1,0 +1,114 @@
+import { expect, test } from '@playwright/test';
+
+// Faithful headless analytics: same AI as the live playground, only Pixi
+// rendering and particle animation are skipped. We *first* assert parity
+// (same start state + same press sequence → identical end state with
+// rendering on vs off) so we know the harness is trustworthy, *then* run one
+// short deterministic analytics sample.
+test('analytics harness is faithful to live game and records movement stats', async ({ page }) => {
+  test.setTimeout(3 * 60 * 1000);
+
+  const consoleErrors: string[] = [];
+  page.on('console', (msg) => {
+    if (msg.type() === 'error') consoleErrors.push(msg.text());
+  });
+  page.on('pageerror', (err) => consoleErrors.push(`pageerror: ${err.message}`));
+
+  await page.goto('/analyze-interwheel.html');
+  await page.waitForFunction(() => Boolean((window as { __interwheelAnalytics__?: unknown }).__interwheelAnalytics__), null, {
+    timeout: 15000,
+  });
+
+  // 1. Parity — render off vs render on, same inputs, identical outcome.
+  const parity = await page.evaluate(async () => {
+    const w = window as unknown as {
+      __interwheelAnalytics__: { parityCheck: () => Promise<{
+        headless: { score: number; height: number; ticks: number };
+        full: { score: number; height: number; ticks: number };
+        equal: boolean;
+        firstDivergence?: { tick: number; headless: unknown; full: unknown };
+      }> };
+    };
+    return await w.__interwheelAnalytics__.parityCheck();
+  });
+  // eslint-disable-next-line no-console
+  console.log(`PARITY: headless=${JSON.stringify(parity.headless)} full=${JSON.stringify(parity.full)} equal=${parity.equal}`);
+  if (parity.firstDivergence) {
+    // eslint-disable-next-line no-console
+    console.log(`FIRST_DIVERGENCE: ${JSON.stringify(parity.firstDivergence, null, 2)}`);
+  }
+  // eslint-disable-next-line no-console
+  console.log('STATS_TEXT:\n' + (await page.evaluate(() => document.getElementById('out')?.textContent ?? '')));
+  expect(parity.equal, `headless must reproduce live gameplay exactly. firstDivergence=${JSON.stringify(parity.firstDivergence)}`).toBe(true);
+
+  // 2. Analytics sample - production planner config, deterministic level.
+  const wallStart = Date.now();
+  type Trial = {
+    score: number;
+    heightMeters: number;
+    ticks: number;
+    cpuMs: number;
+    analytics: {
+      summary: {
+        jumps: number;
+        wheelStays: number;
+        actionsPerMinute: { jumpsPerMinute: number; pressesPerMinute: number };
+        phaseTime: { wheelPercent: number; flightPercent: number; wallPercent: number; classifiedPercent: number };
+        wheelStayRevolutions: { count: number; median: number; p95: number; max: number };
+        planner: { plans: number; planMs: { count: number; p95: number; max: number } };
+      };
+      events: {
+        jumps: unknown[];
+        wheelStays: unknown[];
+        wallDrifts: unknown[];
+        flights: unknown[];
+      };
+    };
+  };
+  const result: { trials: Trial[]; stats: { height_m: { p95: number } } } =
+    await page.evaluate(async () => {
+      const w = window as unknown as {
+        __interwheelAnalytics__: {
+          runAnalyze: (opts: { trials: number; seedBase: number; maxTicks: number }) => Promise<{
+            trials: Trial[];
+            stats: { height_m: { p95: number } };
+          }>;
+        };
+      };
+      return await w.__interwheelAnalytics__.runAnalyze({ trials: 1, seedBase: 42, maxTicks: 1200 });
+    });
+  const results = result.trials;
+  const wallMs = Date.now() - wallStart;
+
+  const scores = results.map((r) => r.score).sort((a, b) => a - b);
+  const heights = results.map((r) => r.heightMeters).sort((a, b) => a - b);
+  const cpuTotal = results.reduce((s, r) => s + r.cpuMs, 0);
+  const median = (a: number[]) => a[Math.floor(a.length / 2)];
+  const p10 = (a: number[]) => a[Math.floor(a.length * 0.1)];
+  const p90 = (a: number[]) => a[Math.floor(a.length * 0.9)];
+  const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+
+  // eslint-disable-next-line no-console
+  console.log(`\n=== ANALYTICS (${results.length} trial, ${(wallMs / 1000).toFixed(1)}s wall, ${(cpuTotal / 1000).toFixed(1)}s CPU) ===`);
+  // eslint-disable-next-line no-console
+  console.log(
+    `score:    p10=${p10(scores)}  median=${median(scores)}  p90=${p90(scores)}  max=${scores[scores.length - 1]}  mean=${Math.round(meanScore)}`,
+  );
+  // eslint-disable-next-line no-console
+  console.log(
+    `height_m: p10=${p10(heights)}  median=${median(heights)}  p90=${p90(heights)}  max=${heights[heights.length - 1]}`,
+  );
+
+  expect(consoleErrors, `errors: ${consoleErrors.join('\n')}`).toEqual([]);
+  expect(results).toHaveLength(1);
+  expect(scores[scores.length - 1]).toBeGreaterThan(0);
+  expect(result.stats.height_m.p95).toBeGreaterThanOrEqual(results[0].heightMeters);
+  expect(results[0].analytics.summary.jumps).toBe(results[0].analytics.events.jumps.length);
+  expect(results[0].analytics.summary.wheelStays).toBe(results[0].analytics.events.wheelStays.length);
+  expect(results[0].analytics.summary.wheelStayRevolutions.count).toBe(results[0].analytics.events.wheelStays.length);
+  expect(results[0].analytics.summary.actionsPerMinute.jumpsPerMinute).toBeGreaterThan(0);
+  expect(results[0].analytics.summary.actionsPerMinute.pressesPerMinute).toBeGreaterThan(0);
+  expect(results[0].analytics.summary.phaseTime.classifiedPercent).toBeGreaterThan(90);
+  expect(results[0].analytics.summary.planner.plans).toBeGreaterThan(0);
+  expect(results[0].analytics.summary.planner.planMs.p95).toBeGreaterThanOrEqual(0);
+});

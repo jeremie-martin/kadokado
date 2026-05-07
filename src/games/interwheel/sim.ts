@@ -2,8 +2,8 @@
 // function in this file is pure JS. The visual InterwheelGame in index.ts
 // owns an InterwheelSim instance, advances it once per real tick via
 // `sim.step(press, Math.random)`, and synchronises Pixi views to the
-// simulator's logical state. The bench/AI use the same `sim.step` directly,
-// passing their own RNG; this guarantees the bench runs the production
+// simulator's logical state. The headless AI tooling uses the same `sim.step` directly,
+// passing its own RNG; this guarantees analytics runs follow the production
 // gameplay code path bit-for-bit.
 
 // ============================================================================
@@ -534,7 +534,7 @@ export class InterwheelSim {
         // same cadence whether a search clone runs or not — the renderer
         // uses a SEPARATE RNG for the visual splatter, so the random value
         // is still consumed even though we don't act on it. This keeps
-        // bench parity exact.
+        // headless parity exact.
         if (wheel.boomAngle !== null) rng();
       }
     }

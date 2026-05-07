@@ -12,10 +12,10 @@ import {
   type Wheel as SimWheel, type Pastille as SimPastille, type Spark as SimSpark,
 } from './sim';
 
-// Re-export sim's blob-state constants so the playground / bench /
+// Re-export sim's blob-state constants so the playground / analytics /
 // AI planner can import them from this game module.
 export { BLOB_STATE_FLY, BLOB_STATE_GRAB, BLOB_STATE_WALL, BLOB_STATE_DEAD } from './sim';
-// Sim type and class are re-exported so AI/bench code can drive the
+// Sim type and class are re-exported so AI/analytics code can drive the
 // simulator directly without reaching through `InterwheelGame`.
 export { InterwheelSim, type RNG, type SimSnapshot } from './sim';
 

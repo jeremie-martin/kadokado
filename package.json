@@ -11,8 +11,8 @@
     "start": "node server/index.mjs",
     "test:api": "node --test server/*.test.mjs",
     "test:e2e": "playwright test",
-    "bench": "node scripts/bench.mjs",
-    "bench:quick": "node scripts/bench.mjs --quick",
+    "analyze:interwheel": "node scripts/analyze-interwheel.mjs",
+    "analyze:interwheel:quick": "node scripts/analyze-interwheel.mjs --quick",
     "capture:interwheel": "node scripts/capture-interwheel.mjs"
   },
   "dependencies": {
