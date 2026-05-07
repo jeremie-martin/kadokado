@@ -22,6 +22,12 @@ const DEFAULT_BITRATE = 25_000_000;
 const DEFAULT_CRF = 15;
 const DEFAULT_SECONDS = 10;
 const DEFAULT_OUT = '.tmp/captures/interwheel-1080p.webm';
+const ASSET_PRESETS = {
+  x1: { root: '/assets/interwheel', scale: 1 },
+  x2: { root: '/assets/interwheel-2x/median-all', scale: 2 },
+  x4: { root: '/assets/interwheel-4x/median-all', scale: 4 },
+  'x4-aa': { root: '/assets/interwheel-4x-alpha-aa/median-all', scale: 4 },
+};
 
 function parseArgs(argv) {
   const args = {
@@ -34,6 +40,9 @@ function parseArgs(argv) {
     width: DEFAULT_WIDTH,
     height: DEFAULT_HEIGHT,
     mode: 'frames',
+    assetPreset: 'x1',
+    assetRoot: null,
+    assetScale: null,
     headed: false,
     help: false,
   };
@@ -50,6 +59,9 @@ function parseArgs(argv) {
     else if (raw.startsWith('--width=')) args.width = Number(raw.slice('--width='.length));
     else if (raw.startsWith('--height=')) args.height = Number(raw.slice('--height='.length));
     else if (raw.startsWith('--mode=')) args.mode = raw.slice('--mode='.length);
+    else if (raw.startsWith('--asset-preset=')) args.assetPreset = raw.slice('--asset-preset='.length);
+    else if (raw.startsWith('--asset-root=')) args.assetRoot = raw.slice('--asset-root='.length);
+    else if (raw.startsWith('--asset-scale=')) args.assetScale = Number(raw.slice('--asset-scale='.length));
     else {
       console.error(`Unknown argument: ${raw}`);
       args.help = true;
@@ -74,8 +86,28 @@ function parseArgs(argv) {
     console.error('--mode must be either "frames" or "live"');
     args.help = true;
   }
+  if (!(args.assetPreset in ASSET_PRESETS)) {
+    console.error(`--asset-preset must be one of: ${Object.keys(ASSET_PRESETS).join(', ')}`);
+    args.help = true;
+  }
+  if (args.assetScale !== null && ![1, 2, 4].includes(args.assetScale)) {
+    console.error('--asset-scale must be 1, 2, or 4');
+    args.help = true;
+  }
+  if (args.assetRoot !== null && !args.assetRoot.startsWith('/assets/interwheel')) {
+    console.error('--asset-root must be an /assets/interwheel path');
+    args.help = true;
+  }
 
   return args;
+}
+
+function resolveAssets(args) {
+  const preset = ASSET_PRESETS[args.assetPreset];
+  return {
+    root: (args.assetRoot ?? preset.root).replace(/\/+$/, ''),
+    scale: args.assetScale ?? preset.scale,
+  };
 }
 
 function help() {
@@ -94,10 +126,16 @@ OPTIONS:
   --bitrate=N      Video bitrate in bits per second. Default ${DEFAULT_BITRATE}.
   --crf=N          VP9 CRF for frame-sequence encoding. Default ${DEFAULT_CRF}.
   --mode=frames    "frames" for archival output, "live" for MediaRecorder.
+  --asset-preset=P Asset set: x1, x2, x4, or x4-aa. Default x1.
+  --asset-root=PATH
+                  Advanced asset root override under /assets/interwheel.
+  --asset-scale=N  Advanced texture resolution override: 1, 2, or 4.
   --headed         Show Chromium while recording.
 
 The output is a 1920x1080 WebM. Interwheel's 1080x1080 render is centered
 with no scaling, so the game pixels are not blurred by page or video layout.
+x2/x4 presets are opt-in local capture assets; generate them before using
+those presets, or keep the default x1 preset.
 `);
 }
 
@@ -258,6 +296,8 @@ async function recordInPage(page, opts) {
       score: game.score,
       heightMeters: Math.floor(game.maxHeight * 0.2),
       tick: game.tick,
+      assetRoot: game.assetRoot,
+      assetScale: game.assetScale,
     };
   }, opts);
 
@@ -335,6 +375,8 @@ async function setupFrameCapture(page, opts) {
       sourceHeight,
       gameX: dx,
       gameY: dy,
+      assetRoot: game.assetRoot,
+      assetScale: game.assetScale,
     };
   }, opts);
 
@@ -396,6 +438,7 @@ async function main() {
 
   const repoRoot = path.dirname(fileURLToPath(new URL('../package.json', import.meta.url)));
   const outPath = path.resolve(repoRoot, args.out);
+  const assets = resolveAssets(args);
   await mkdir(path.dirname(outPath), { recursive: true });
 
   const gameScale = args.height / GAME_STAGE_SIZE;
@@ -407,7 +450,9 @@ async function main() {
   await vite.listen();
   const addr = vite.httpServer?.address();
   const port = typeof addr === 'object' && addr ? addr.port : 5173;
-  const url = `http://127.0.0.1:${port}/playground.html`;
+  const url = new URL(`http://127.0.0.1:${port}/playground.html`);
+  url.searchParams.set('assetRoot', assets.root);
+  url.searchParams.set('assetScale', String(assets.scale));
 
   const browser = await chromium.launch({ headless: !args.headed });
   let exitCode = 0;
@@ -432,7 +477,7 @@ async function main() {
       }
     });
 
-    await page.goto(url);
+    await page.goto(url.href);
     await page.waitForFunction(() => Boolean(window.__game__), null, { timeout: 30_000 });
 
     if (args.mode === 'frames') {
@@ -451,6 +496,7 @@ async function main() {
       console.log('  format:     video/webm;codecs=vp9');
       console.log(`  output:     ${meta.width}x${meta.height} @ ${meta.fps}fps`);
       console.log(`  game:       ${meta.sourceWidth}x${meta.sourceHeight} at (${meta.gameX}, ${meta.gameY})`);
+      console.log(`  assets:     ${meta.assetRoot} @ ${meta.assetScale}x`);
       console.log(`  quality:    VP9 CRF ${meta.crf}`);
       console.log(`  frames:     ${meta.frameCount}`);
       console.log(`  tick:       ${meta.tick}`);
@@ -472,6 +518,7 @@ async function main() {
       console.log(`  format:     ${meta.mimeType}`);
       console.log(`  output:     ${meta.width}x${meta.height} @ ${meta.fps}fps`);
       console.log(`  game:       ${meta.sourceWidth}x${meta.sourceHeight} at (${meta.gameX}, ${meta.gameY})`);
+      console.log(`  assets:     ${meta.assetRoot} @ ${meta.assetScale}x`);
       console.log(`  bitrate:    ${Math.round(meta.bitrate / 1_000_000)}Mbps target`);
       console.log(`  size:       ${(meta.size / 1_000_000).toFixed(1)}MB`);
       console.log(`  frames:     ${meta.frameCount}`);

@@ -18,8 +18,12 @@ test.describe('AI playground', () => {
       timeout: 15000,
     });
 
-    // Let the AI ticks roll for a moment.
-    await page.waitForTimeout(2000);
+    // Let the AI ticks roll without assuming a fixed local planner speed.
+    await page.waitForFunction(
+      () => ((window as { __game__?: { tick: number } }).__game__?.tick ?? 0) > 20,
+      null,
+      { timeout: 15000 },
+    );
 
     const probe = await page.evaluate(() => {
       const w = window as unknown as {

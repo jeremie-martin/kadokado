@@ -1,7 +1,7 @@
-import { Application, Container, Graphics, Sprite, Text } from 'pixi.js';
+import { Application, Assets, Container, Graphics, Sprite, Text, type Texture } from 'pixi.js';
 import { noopGameHost } from '../types';
 import type { GameHost, GameInstance, GameMountContext } from '../types';
-import { type Frame, loadFrame, loadSeries, makeSprite, setFrame } from '../_shared/frames';
+import { type Frame, makeSprite, setFrame } from '../_shared/frames';
 import {
   STAGE_WIDTH, STAGE_HEIGHT, FPS, STEP_SECONDS,
   SIDE, START_WHEEL_ID,
@@ -36,7 +36,21 @@ const PANEL_Y = 265;
 const PANEL_TEXT_X = 263;
 const PANEL_TEXT_Y = 280;
 
-const ASSET_ROOT = '/assets/interwheel';
+const DEFAULT_ASSET_ROOT = '/assets/interwheel';
+const DEFAULT_ASSET_SCALE = 1;
+const ASSET_PRESETS = {
+  x1: { root: '/assets/interwheel', scale: 1 },
+  x2: { root: '/assets/interwheel-2x/median-all', scale: 2 },
+  x4: { root: '/assets/interwheel-4x/median-all', scale: 4 },
+  'x4-aa': { root: '/assets/interwheel-4x-alpha-aa/median-all', scale: 4 },
+} as const;
+
+type AssetPreset = keyof typeof ASSET_PRESETS;
+
+type InterwheelRuntimeAssets = {
+  assetRoot: string;
+  assetScale: number;
+};
 
 type InterwheelAssets = {
   bg: Frame;
@@ -68,6 +82,62 @@ type InterwheelAssets = {
   eyes: Frame;
   starTache: Frame;
 };
+
+function normalizedAssetRoot(root: string | null): string {
+  if (!root) return DEFAULT_ASSET_ROOT;
+  const normalized = root.trim().replace(/\/+$/, '');
+  if (!normalized.startsWith('/assets/interwheel')) return DEFAULT_ASSET_ROOT;
+  return normalized || DEFAULT_ASSET_ROOT;
+}
+
+function normalizedAssetScale(scale: string | null): number {
+  const parsed = Number(scale);
+  if ([1, 2, 4].includes(parsed)) return parsed;
+  return DEFAULT_ASSET_SCALE;
+}
+
+function runtimeAssetsFromLocation(location: Location = window.location): InterwheelRuntimeAssets {
+  const params = new URLSearchParams(location.search);
+  const preset = params.get('assetPreset');
+  if (preset && preset in ASSET_PRESETS) {
+    const selected = ASSET_PRESETS[preset as AssetPreset];
+    return { assetRoot: selected.root, assetScale: selected.scale };
+  }
+  return {
+    assetRoot: normalizedAssetRoot(params.get('assetRoot')),
+    assetScale: normalizedAssetScale(params.get('assetScale')),
+  };
+}
+
+async function loadRuntimeFrame(
+  assetRoot: string,
+  assetScale: number,
+  path: string,
+  pivotX: number,
+  pivotY: number,
+): Promise<Frame> {
+  const src = `${assetRoot}/${path}`;
+  const texture = path.endsWith('.png') && assetScale !== DEFAULT_ASSET_SCALE
+    ? await Assets.load<Texture>({ src, data: { resolution: assetScale } })
+    : await Assets.load<Texture>(src);
+  return { texture, pivotX, pivotY };
+}
+
+async function loadRuntimeSeries(
+  assetRoot: string,
+  assetScale: number,
+  folder: string,
+  count: number,
+  pivotX: number,
+  pivotY: number,
+): Promise<Frame[]> {
+  return Promise.all(
+    Array.from(
+      { length: count },
+      (_, i) => loadRuntimeFrame(assetRoot, assetScale, `${folder}/${i + 1}.png`, pivotX, pivotY),
+    ),
+  );
+}
 
 // View bundles that parallel each logical sim entity. The sim never sees
 // these — they live entirely in the renderer.
@@ -140,7 +210,10 @@ function syncMap<E, V>(
   }
 }
 
-async function loadAssets(): Promise<InterwheelAssets> {
+async function loadAssets(
+  assetRoot = DEFAULT_ASSET_ROOT,
+  assetScale = DEFAULT_ASSET_SCALE,
+): Promise<InterwheelAssets> {
   const [
     bg, background, water, mine, side, panel, oil, star,
     blob, wheelBase, wheelLight, mask, dust,
@@ -148,34 +221,34 @@ async function loadAssets(): Promise<InterwheelAssets> {
     tile, motif, frise, explosion, startExplo, smoke, mineParts, tache, wallTache,
     goutte, bubble, eyes, starTache,
   ] = await Promise.all([
-    loadFrame(`${ASSET_ROOT}/bg.png`, 0, 0),
-    loadFrame(`${ASSET_ROOT}/background.png`, 0, 599.95),
-    loadFrame(`${ASSET_ROOT}/water.png`, 0, 0),
-    loadFrame(`${ASSET_ROOT}/mine.png`, 8.65, 11.85),
-    loadFrame(`${ASSET_ROOT}/side.png`, 1, 0.45),
-    loadFrame(`${ASSET_ROOT}/panel-template.svg`, -1.45, -1.4),
-    loadFrame(`${ASSET_ROOT}/oil.png`, 2.5, 2.5),
-    loadFrame(`${ASSET_ROOT}/star.png`, 7, 7),
-    loadSeries(`${ASSET_ROOT}/blob`, 173, 35.95, 34.9),
-    loadSeries(`${ASSET_ROOT}/wheel-base`, 5, 50.5, 50.5),
-    loadSeries(`${ASSET_ROOT}/wheel-light`, 3, 37.5, 7.4),
-    loadSeries(`${ASSET_ROOT}/mask`, 17, 50.5, 50.5),
-    loadSeries(`${ASSET_ROOT}/dust`, 18, 31, 23.5),
-    loadSeries(`${ASSET_ROOT}/pastille`, 2, 20, 20),
-    loadSeries(`${ASSET_ROOT}/pastille-core`, 3, 5, 5),
-    loadSeries(`${ASSET_ROOT}/tile`, 40, 0.1, 0.35),
-    loadSeries(`${ASSET_ROOT}/motif`, 51, 78.5, 71),
-    loadSeries(`${ASSET_ROOT}/frise`, 12, 140, 57.5),
-    loadSeries(`${ASSET_ROOT}/explosion`, 14, 75.55, 86.6),
-    loadSeries(`${ASSET_ROOT}/start-explo`, 15, 53.95, 53.95),
-    loadSeries(`${ASSET_ROOT}/smoke`, 25, 18, 18),
-    loadSeries(`${ASSET_ROOT}/mine-parts`, 2, 6, 6),
-    loadSeries(`${ASSET_ROOT}/tache`, 19, 6.5, 6),
-    loadSeries(`${ASSET_ROOT}/wall-tache`, 4, 18, 13.5),
-    loadFrame(`${ASSET_ROOT}/goutte/1.png`, 4, 4),
-    loadSeries(`${ASSET_ROOT}/bubble`, 2, 7, 6),
-    loadFrame(`${ASSET_ROOT}/eyes/1.png`, 2.5, 4.5),
-    loadFrame(`${ASSET_ROOT}/star-tache/1.png`, 69, 54),
+    loadRuntimeFrame(assetRoot, assetScale, 'bg.png', 0, 0),
+    loadRuntimeFrame(assetRoot, assetScale, 'background.png', 0, 599.95),
+    loadRuntimeFrame(assetRoot, assetScale, 'water.png', 0, 0),
+    loadRuntimeFrame(assetRoot, assetScale, 'mine.png', 8.65, 11.85),
+    loadRuntimeFrame(assetRoot, assetScale, 'side.png', 1, 0.45),
+    loadRuntimeFrame(assetRoot, assetScale, 'panel-template.svg', -1.45, -1.4),
+    loadRuntimeFrame(assetRoot, assetScale, 'oil.png', 2.5, 2.5),
+    loadRuntimeFrame(assetRoot, assetScale, 'star.png', 7, 7),
+    loadRuntimeSeries(assetRoot, assetScale, 'blob', 173, 35.95, 34.9),
+    loadRuntimeSeries(assetRoot, assetScale, 'wheel-base', 5, 50.5, 50.5),
+    loadRuntimeSeries(assetRoot, assetScale, 'wheel-light', 3, 37.5, 7.4),
+    loadRuntimeSeries(assetRoot, assetScale, 'mask', 17, 50.5, 50.5),
+    loadRuntimeSeries(assetRoot, assetScale, 'dust', 18, 31, 23.5),
+    loadRuntimeSeries(assetRoot, assetScale, 'pastille', 2, 20, 20),
+    loadRuntimeSeries(assetRoot, assetScale, 'pastille-core', 3, 5, 5),
+    loadRuntimeSeries(assetRoot, assetScale, 'tile', 40, 0.1, 0.35),
+    loadRuntimeSeries(assetRoot, assetScale, 'motif', 51, 78.5, 71),
+    loadRuntimeSeries(assetRoot, assetScale, 'frise', 12, 140, 57.5),
+    loadRuntimeSeries(assetRoot, assetScale, 'explosion', 14, 75.55, 86.6),
+    loadRuntimeSeries(assetRoot, assetScale, 'start-explo', 15, 53.95, 53.95),
+    loadRuntimeSeries(assetRoot, assetScale, 'smoke', 25, 18, 18),
+    loadRuntimeSeries(assetRoot, assetScale, 'mine-parts', 2, 6, 6),
+    loadRuntimeSeries(assetRoot, assetScale, 'tache', 19, 6.5, 6),
+    loadRuntimeSeries(assetRoot, assetScale, 'wall-tache', 4, 18, 13.5),
+    loadRuntimeFrame(assetRoot, assetScale, 'goutte/1.png', 4, 4),
+    loadRuntimeSeries(assetRoot, assetScale, 'bubble', 2, 7, 6),
+    loadRuntimeFrame(assetRoot, assetScale, 'eyes/1.png', 2.5, 4.5),
+    loadRuntimeFrame(assetRoot, assetScale, 'star-tache/1.png', 69, 54),
   ]);
   return {
     bg, background, water, mine, side, panel, oil, star,
@@ -189,6 +262,8 @@ export class InterwheelGame {
   readonly app: Application;
   readonly assets: InterwheelAssets;
   readonly host: GameHost;
+  readonly assetRoot: string;
+  readonly assetScale: number;
 
   // Pixi layer hierarchy.
   readonly world = new Container();
@@ -242,10 +317,20 @@ export class InterwheelGame {
   // exposed because the kadokado launcher checks `spaceHeld` there too.
   spaceHeld = false;
 
-  constructor(app: Application, assets: InterwheelAssets, host: GameHost) {
+  constructor(
+    app: Application,
+    assets: InterwheelAssets,
+    host: GameHost,
+    runtimeAssets: InterwheelRuntimeAssets = {
+      assetRoot: DEFAULT_ASSET_ROOT,
+      assetScale: DEFAULT_ASSET_SCALE,
+    },
+  ) {
     this.app = app;
     this.assets = assets;
     this.host = host;
+    this.assetRoot = runtimeAssets.assetRoot;
+    this.assetScale = runtimeAssets.assetScale;
 
     const bg = makeSprite(assets.bg);
     this.app.stage.addChild(bg, this.world, this.hudLayer);
@@ -977,6 +1062,7 @@ export class InterwheelGame {
 
 export async function mount(container: HTMLElement, context?: GameMountContext): Promise<GameInstance> {
   const app = new Application();
+  const runtimeAssets = runtimeAssetsFromLocation();
   const [, assets] = await Promise.all([
     app.init({
       width: STAGE_WIDTH,
@@ -986,11 +1072,11 @@ export async function mount(container: HTMLElement, context?: GameMountContext):
       autoDensity: true,
       resolution: window.devicePixelRatio || 1,
     }),
-    loadAssets(),
+    loadAssets(runtimeAssets.assetRoot, runtimeAssets.assetScale),
   ]);
   container.appendChild(app.canvas);
 
-  const game = new InterwheelGame(app, assets, context?.host ?? noopGameHost);
+  const game = new InterwheelGame(app, assets, context?.host ?? noopGameHost, runtimeAssets);
   context?.onReady?.(game);
 
   const onKeyDown = (event: KeyboardEvent) => {

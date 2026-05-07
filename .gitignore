@@ -8,3 +8,7 @@ playwright-report/
 *.log
 tools/
 extracted-assets/
+generated-assets/
+public/assets/interwheel-2x/
+public/assets/interwheel-4x/
+public/assets/interwheel-4x-alpha-aa/
