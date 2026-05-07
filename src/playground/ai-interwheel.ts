@@ -1,16 +1,25 @@
 import { mount, type InterwheelGame } from '../games/interwheel/index';
 import { noopGameHost } from '../games/types';
-import { InterwheelPlanner } from './interwheel-planner';
+import { DEFAULT_PLANNER_POLICY, InterwheelPlanner, type PlannerPolicy, type PlanResult } from './interwheel-planner';
 import { TrajectoryOverlay } from './trajectory-overlay';
 
 const stage = document.getElementById('stage');
 const stats = document.getElementById('stats');
 if (!stage) throw new Error('missing #stage');
 
+type PolicyKey = keyof PlannerPolicy;
+
+const POLICY_KEYS: PolicyKey[] = ['climb', 'collectibles', 'wallRoutes', 'pace'];
+const policyInputs = new Map<PolicyKey, HTMLInputElement>();
+const policyOutputs = new Map<PolicyKey, HTMLOutputElement>();
+const policyReset = document.getElementById('policy-reset') as HTMLButtonElement | null;
+
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
 let overlay: TrajectoryOverlay | null = null;
 let aiActive = true;
+let policy: PlannerPolicy = { ...DEFAULT_PLANNER_POLICY };
+let previewFrame: number | null = null;
 let lastPlanMs = 0;
 let lastSegmentCount = 0;
 let lastEdges = 0;
@@ -19,44 +28,127 @@ let lastPerceived = '0w/0p';
 let lastShownSegments = 0;
 let lastShownEdges = 0;
 
+function isPolicyKey(value: string): value is PolicyKey {
+  return (POLICY_KEYS as string[]).includes(value);
+}
+
+function formatPolicyValue(value: number): string {
+  return value.toFixed(2);
+}
+
+function syncPolicyControls(): void {
+  for (const key of POLICY_KEYS) {
+    const input = policyInputs.get(key);
+    const output = policyOutputs.get(key);
+    if (input) input.value = String(policy[key]);
+    if (output) output.value = formatPolicyValue(policy[key]);
+  }
+}
+
+function readPolicyControls(): PlannerPolicy {
+  const next: PlannerPolicy = { ...DEFAULT_PLANNER_POLICY };
+  for (const key of POLICY_KEYS) {
+    const input = policyInputs.get(key);
+    if (!input) continue;
+    const value = Number(input.value);
+    next[key] = Number.isFinite(value) ? value : DEFAULT_PLANNER_POLICY[key];
+  }
+  return next;
+}
+
+function applyPolicy(next: PlannerPolicy): void {
+  policy = { ...next };
+  planner?.setPolicy(policy);
+  syncPolicyControls();
+  refreshStats();
+  schedulePolicyPreview();
+}
+
+function setupPolicyControls(): void {
+  document.querySelectorAll<HTMLInputElement>('input[data-policy-key]').forEach((input) => {
+    const rawKey = input.dataset.policyKey;
+    if (!rawKey || !isPolicyKey(rawKey)) return;
+    const output = document.getElementById(`${input.id}-value`) as HTMLOutputElement | null;
+    policyInputs.set(rawKey, input);
+    if (output) policyOutputs.set(rawKey, output);
+    input.addEventListener('input', () => applyPolicy(readPolicyControls()));
+  });
+
+  policyReset?.addEventListener('click', () => applyPolicy({ ...DEFAULT_PLANNER_POLICY }));
+  syncPolicyControls();
+}
+
+function recordPlanResult(result: PlanResult): void {
+  lastPlanMs = result.stats.planMs;
+  lastSegmentCount = result.segments.length;
+  lastEdges = result.stats.edgesEvaluated;
+  lastNodes = result.stats.stableNodesExpanded;
+  lastPerceived = `${result.stats.perceivedWheels}w/${result.stats.perceivedPastilles}p`;
+  overlay?.draw(result.segments);
+  refreshOverlayStats();
+}
+
+function schedulePolicyPreview(): void {
+  if (previewFrame !== null) return;
+  previewFrame = window.requestAnimationFrame(() => {
+    previewFrame = null;
+    if (!game || !planner || game.ended || game.ending) return;
+    const { result } = planner.step();
+    if (result) recordPlanResult(result);
+    refreshStats();
+  });
+}
+
 function refreshOverlayStats(): void {
   const drawn = overlay?.lastDrawnStats();
   lastShownSegments = drawn?.segments ?? 0;
   lastShownEdges = drawn?.edges ?? 0;
 }
 
+function statItem(label: string, value: string): HTMLElement {
+  const item = document.createElement('div');
+  item.className = 'stat';
+
+  const labelEl = document.createElement('span');
+  labelEl.className = 'stat-label';
+  labelEl.textContent = label;
+
+  const valueEl = document.createElement('span');
+  valueEl.className = 'stat-value';
+  valueEl.textContent = value;
+
+  item.append(labelEl, valueEl);
+  return item;
+}
+
 function refreshStats(): void {
   if (!stats || !game) return;
   const heightMeters = Math.floor(game.maxHeight * 0.2);
-  stats.textContent = [
-    `AI:        ${aiActive ? 'on ' : 'off'}    [A] toggle`,
-    `Overlay:   ${overlay?.getMode() ?? 'off'}    [D] cycle`,
-    `Height:    ${heightMeters}m`,
-    `Score:     ${game.score}`,
-    `Last plan: ${lastPlanMs.toFixed(1)}ms / ${lastSegmentCount} segments / ${lastEdges} edges`,
-    `Shown:     ${lastShownSegments} seg / ${lastShownEdges} edges`,
-    `Tree:      ${lastNodes} nodes / ${lastPerceived}`,
-  ].join('\n');
+  stats.replaceChildren(
+    statItem('AI', aiActive ? 'on' : 'off'),
+    statItem('Overlay', overlay?.getMode() ?? 'off'),
+    statItem('Height', `${heightMeters}m`),
+    statItem('Score', String(game.score)),
+    statItem('Last plan', `${lastPlanMs.toFixed(1)}ms`),
+    statItem('Candidates', `${lastSegmentCount} seg`),
+    statItem('Search', `${lastEdges} edges`),
+    statItem('Tree', `${lastNodes} nodes`),
+    statItem('Visible', lastPerceived),
+    statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
+  );
 }
 
 function attachAI(g: InterwheelGame): void {
-  planner = new InterwheelPlanner(g.sim);
+  planner = new InterwheelPlanner(g.sim, { policy });
   overlay = new TrajectoryOverlay(g.world);
+  (window as unknown as { __planner__: InterwheelPlanner }).__planner__ = planner;
 
   const originalUpdate = g.update.bind(g);
   let wasEnded = g.ended || g.ending;
   g.update = (() => {
     if (aiActive && !g.ended && !g.ending && planner) {
       const { press, result } = planner.step();
-      if (result) {
-        lastPlanMs = result.stats.planMs;
-        lastSegmentCount = result.segments.length;
-        lastEdges = result.stats.edgesEvaluated;
-        lastNodes = result.stats.stableNodesExpanded;
-        lastPerceived = `${result.stats.perceivedWheels}w/${result.stats.perceivedPastilles}p`;
-        overlay?.draw(result.segments);
-        refreshOverlayStats();
-      }
+      if (result) recordPlanResult(result);
       // Only set the flag — checkPress() consumes by resetting to false, and
       // we mustn't clobber a player tap when AI is off.
       if (press) g.spacePressed = true;
@@ -65,6 +157,7 @@ function attachAI(g: InterwheelGame): void {
     const isEnded = g.ended || g.ending;
     if (isEnded && !wasEnded) {
       planner?.invalidate();
+      planner?.setPolicy(policy);
       overlay?.draw([]);
       refreshOverlayStats();
     }
@@ -97,6 +190,7 @@ mount(stage as HTMLElement, {
     game = g as InterwheelGame;
     (window as unknown as { __game__: InterwheelGame }).__game__ = game;
     attachAI(game);
+    setupPolicyControls();
     refreshStats();
   },
 }).catch((err) => {

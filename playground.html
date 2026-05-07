@@ -7,40 +7,74 @@
     <style>
       :root { color-scheme: dark; }
       html, body { margin: 0; padding: 0; background: #0e1418; color: #c8d6dc; font-family: 'Trebuchet MS', sans-serif; }
-      .wrap { display: grid; grid-template-columns: auto 1fr; gap: 24px; padding: 24px; align-items: start; }
-      .stage { background: #1c2c34; padding: 12px; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
+      .wrap { --stage-shell-width: 324px; display: grid; grid-template-columns: var(--stage-shell-width) minmax(320px, 420px); gap: 24px; padding: 24px; align-items: start; justify-content: start; }
+      .wrap > * { min-width: 0; }
+      .game-column { width: var(--stage-shell-width); max-width: 100%; }
+      .stage { width: fit-content; max-width: 100%; overflow: auto; background: #1c2c34; padding: 12px; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
       .stage canvas { display: block; image-rendering: pixelated; }
-      .panel { max-width: 360px; line-height: 1.5; font-size: 14px; }
+      .panel { line-height: 1.5; font-size: 14px; }
       .panel h1 { font-size: 18px; margin: 0 0 12px; color: #e1bd6a; letter-spacing: .04em; }
+      .panel h2 { font-size: 13px; margin: 20px 0 12px; color: #d8e5e9; letter-spacing: .08em; text-transform: uppercase; }
       .panel kbd { background: #2a3a44; padding: 1px 6px; border-radius: 3px; font-family: monospace; font-size: 12px; }
-      .stats { font-family: monospace; font-size: 12px; opacity: .8; margin-top: 8px; white-space: pre; }
+      .stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 9px 12px; max-width: 100%; margin-top: 12px; font-size: 12px; }
+      .stat { min-width: 0; border-top: 1px solid rgba(200, 214, 220, .18); padding-top: 6px; }
+      .stat-label { display: block; color: #78919b; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+      .stat-value { display: block; overflow: hidden; color: #edf6f8; font: 13px/1.35 monospace; text-overflow: ellipsis; white-space: nowrap; }
+      .controls { display: grid; gap: 14px; margin-top: 8px; }
+      .control { display: grid; grid-template-columns: 1fr auto; gap: 8px 12px; align-items: center; }
+      .control label { color: #edf6f8; font-size: 13px; }
+      .control output { min-width: 44px; font: 12px/1.2 monospace; color: #9fd5e2; text-align: right; }
+      .control input { grid-column: 1 / -1; width: 100%; accent-color: #72c7d6; }
+      .actions { display: flex; gap: 8px; margin-top: 14px; }
+      .actions button { border: 1px solid #365866; background: #18282f; color: #dbecef; border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
+      .actions button:hover { background: #20343d; }
+      @media (max-width: 760px) {
+        .wrap { grid-template-columns: 1fr; padding: 12px; }
+        .game-column { width: 100%; }
+        .stage canvas { max-width: 100%; height: auto; }
+        .panel { min-width: 0; }
+      }
     </style>
   </head>
   <body>
     <div class="wrap">
-      <div>
+      <div class="game-column">
         <div class="stage" id="stage"></div>
         <div class="stats" id="stats"></div>
       </div>
       <div class="panel">
         <h1>Interwheel — A* agent</h1>
         <p>
-          A search-tree planner for the climbing blob, in the spirit of
-          Robin Baumgarten's 2009 Mario A* agent. Every replan, the planner
-          forward-simulates many candidate futures from a snapshot of the
-          live game; the trees you see overlaid on the wheels are those
-          candidate futures, with the chosen path drawn brightest.
-        </p>
-        <p>
           <kbd>D</kbd> toggle the candidate-line overlay.<br>
           <kbd>A</kbd> toggle the AI on/off (you can take over with <kbd>Space</kbd>).<br>
           <kbd>R</kbd> reload the page for a fresh level.
         </p>
-        <p style="opacity:.7;font-size:12px">
-          Live game from <code>src/games/interwheel/index.ts</code>, unchanged
-          gameplay code paths. The AI runs on snapshot clones of the same
-          game instance.
-        </p>
+        <h2>Policy</h2>
+        <div class="controls" id="policy-controls">
+          <div class="control">
+            <label for="policy-climb">Climb</label>
+            <output id="policy-climb-value">1.00</output>
+            <input id="policy-climb" type="range" min="0.5" max="1.6" step="0.05" value="1" data-policy-key="climb">
+          </div>
+          <div class="control">
+            <label for="policy-collectibles">Collectibles</label>
+            <output id="policy-collectibles-value">1.00</output>
+            <input id="policy-collectibles" type="range" min="0" max="3" step="0.05" value="1" data-policy-key="collectibles">
+          </div>
+          <div class="control">
+            <label for="policy-wallRoutes">Wall routes</label>
+            <output id="policy-wallRoutes-value">0.00</output>
+            <input id="policy-wallRoutes" type="range" min="0" max="2" step="0.05" value="0" data-policy-key="wallRoutes">
+          </div>
+          <div class="control">
+            <label for="policy-pace">Pace</label>
+            <output id="policy-pace-value">1.00</output>
+            <input id="policy-pace" type="range" min="0.5" max="1.8" step="0.05" value="1" data-policy-key="pace">
+          </div>
+        </div>
+        <div class="actions">
+          <button id="policy-reset" type="button">Reset</button>
+        </div>
       </div>
     </div>
     <script type="module" src="/src/playground/ai-interwheel.ts"></script>

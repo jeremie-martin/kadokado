@@ -228,6 +228,15 @@ export class InterwheelPlanner {
     return this.lastResult?.stats ?? null;
   }
 
+  policy(): PlannerPolicy {
+    return { ...this.cfg.policy };
+  }
+
+  setPolicy(policy: Partial<PlannerPolicy>): void {
+    this.cfg.policy = resolvePlannerPolicy(policy);
+    this.lastResult = null;
+  }
+
   invalidate(): void {
     this.lastResult = null;
     this.knownWheelIdx.clear();
