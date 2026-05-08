@@ -185,6 +185,11 @@ function randomInt(max: number): number {
   return Math.floor(Math.random() * max);
 }
 
+function snapToRendererPixel(value: number, resolution: number): number {
+  const step = 1 / Math.max(1, resolution || 1);
+  return Math.round(value / step) * step;
+}
+
 /**
  * Reconciles a Map<Entity, View> to match a current entities array. Adds
  * views for entities new to the array, removes views whose entity is no
@@ -987,7 +992,10 @@ export class InterwheelGame {
   // ============================================================================
 
   render(): void {
-    this.world.y = this.sim.mapY;
+    // Keep the smoothed camera in sim space, but render world-space art on the
+    // device-pixel grid so wall tiles and debug trajectory endpoints do not
+    // shimmer when the camera lands between pixels.
+    this.world.y = snapToRendererPixel(this.sim.mapY, this.app.renderer.resolution);
 
     for (let i = 0; i < this.sim.wheels.length; i += 1) {
       const wheel = this.sim.wheels[i];

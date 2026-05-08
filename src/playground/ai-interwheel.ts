@@ -1,6 +1,14 @@
 import { mount, type InterwheelGame } from '../games/interwheel/index';
 import { noopGameHost } from '../games/types';
-import { DEFAULT_PLANNER_POLICY, InterwheelPlanner, LINEAGE_DEFAULTS, type PlannerPolicy, type PlanResult } from './interwheel-planner';
+import {
+  DEFAULT_PLANNER_POLICY,
+  InterwheelPlanner,
+  LINEAGE_DEFAULTS,
+  OBJECTIVE_DEFAULTS,
+  type ObjectiveFlags,
+  type PlannerPolicy,
+  type PlanResult,
+} from './interwheel-planner';
 import { OVERLAY_DEFAULTS, TrajectoryOverlay } from './trajectory-overlay';
 
 const stage = document.getElementById('stage');
@@ -46,6 +54,7 @@ const overlayParamInputs = new Map<OverlayParamKey, HTMLInputElement>();
 const overlayParamOutputs = new Map<OverlayParamKey, HTMLOutputElement>();
 const overlayReset = document.getElementById('overlay-reset') as HTMLButtonElement | null;
 const colorInput = document.getElementById('overlay-color') as HTMLInputElement | null;
+const colorByGenerationInput = document.getElementById('overlay-colorByGeneration') as HTMLInputElement | null;
 let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
 let overlayColor: number = OVERLAY_DEFAULTS.color;
 
@@ -64,6 +73,8 @@ let lastShownSegments = 0;
 let lastShownEdges = 0;
 let lastBuckets = '0/0/0';
 let lastSupportRange = '—';
+let pendingPress: boolean | null = null;
+let isPaused = false;
 
 function isPolicyKey(value: string): value is PolicyKey {
   return (POLICY_KEYS as string[]).includes(value);
@@ -222,6 +233,13 @@ function setupOverlayParamControls(): void {
     if (Number.isFinite(num)) applyOverlayColor(num);
   });
 
+  colorByGenerationInput?.addEventListener('change', () => {
+    overlay?.setColorByGeneration(colorByGenerationInput.checked);
+    overlay?.draw(planner?.lastSegments() ?? []);
+    refreshOverlayStats();
+    refreshStats();
+  });
+
   overlayReset?.addEventListener('click', () => {
     for (const key of OVERLAY_PARAM_KEYS) {
       applyOverlayParam(key, OVERLAY_PARAM_DEFAULTS[key]);
@@ -238,6 +256,31 @@ function setupOverlayParamControls(): void {
   syncOverlayParamControls();
 }
 
+const OBJECTIVE_KEYS = Object.keys(OBJECTIVE_DEFAULTS) as (keyof ObjectiveFlags)[];
+let objectiveFlags: ObjectiveFlags = { ...OBJECTIVE_DEFAULTS };
+
+function isObjectiveKey(value: string): value is keyof ObjectiveFlags {
+  return (OBJECTIVE_KEYS as string[]).includes(value);
+}
+
+function applyObjectiveFlag(key: keyof ObjectiveFlags, value: boolean): void {
+  objectiveFlags = { ...objectiveFlags, [key]: value };
+  planner?.setObjectiveFlags({ [key]: value });
+  schedulePolicyPreview();
+  refreshStats();
+}
+
+function setupObjectiveControls(): void {
+  document.querySelectorAll<HTMLInputElement>('input[data-objective-flag]').forEach((input) => {
+    const rawKey = input.dataset.objectiveFlag;
+    if (!rawKey || !isObjectiveKey(rawKey)) return;
+    input.checked = objectiveFlags[rawKey];
+    input.addEventListener('change', () => applyObjectiveFlag(rawKey, input.checked));
+  });
+  // Push current state into planner so toggles default to OFF coherently.
+  planner?.setObjectiveFlags(objectiveFlags);
+}
+
 function recordPlanResult(result: PlanResult): void {
   lastPlanMs = result.stats.planMs;
   lastSegmentCount = result.segments.length;
@@ -248,13 +291,19 @@ function recordPlanResult(result: PlanResult): void {
   refreshOverlayStats();
 }
 
+function planAndRecordNextPress(): void {
+  if (!planner) return;
+  const { press, result } = planner.step();
+  pendingPress = press;
+  if (result) recordPlanResult(result);
+}
+
 function schedulePolicyPreview(): void {
   if (previewFrame !== null) return;
   previewFrame = window.requestAnimationFrame(() => {
     previewFrame = null;
     if (!game || !planner || game.ended || game.ending) return;
-    const { result } = planner.step();
-    if (result) recordPlanResult(result);
+    planAndRecordNextPress();
     refreshStats();
   });
 }
@@ -295,6 +344,7 @@ function refreshStats(): void {
   const heightMeters = Math.floor(game.maxHeight * 0.2);
   stats.replaceChildren(
     statItem('AI', aiActive ? 'on' : 'off'),
+    statItem('Game', isPaused ? 'paused' : 'running'),
     statItem('Overlay', overlay?.getMode() ?? 'off'),
     statItem('Height', `${heightMeters}m`),
     statItem('Score', String(game.score)),
@@ -313,13 +363,16 @@ function attachAI(g: InterwheelGame): void {
   planner = new InterwheelPlanner(g.sim, { policy });
   overlay = new TrajectoryOverlay(g.world);
   (window as unknown as { __planner__: InterwheelPlanner }).__planner__ = planner;
+  (window as unknown as { __overlay__: TrajectoryOverlay }).__overlay__ = overlay;
+  planAndRecordNextPress();
 
   const originalUpdate = g.update.bind(g);
   let wasEnded = g.ended || g.ending;
   g.update = (() => {
+    if (isPaused && !g.ended && !g.ending) return;
     if (aiActive && !g.ended && !g.ending && planner) {
-      const { press, result } = planner.step();
-      if (result) recordPlanResult(result);
+      const press = pendingPress ?? false;
+      pendingPress = null;
       // Only set the flag — checkPress() consumes by resetting to false, and
       // we mustn't clobber a player tap when AI is off.
       if (press) g.spacePressed = true;
@@ -333,14 +386,28 @@ function attachAI(g: InterwheelGame): void {
       refreshOverlayStats();
     }
     wasEnded = isEnded;
+    if (aiActive && !isEnded && planner) {
+      planAndRecordNextPress();
+    }
     refreshStats();
   }) as typeof g.update;
 }
+
+const pauseButton = document.getElementById('game-pause') as HTMLButtonElement | null;
+
+function setPaused(p: boolean): void {
+  isPaused = p;
+  if (pauseButton) pauseButton.textContent = isPaused ? 'Resume' : 'Pause';
+  refreshStats();
+}
+
+pauseButton?.addEventListener('click', () => setPaused(!isPaused));
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyA') {
     aiActive = !aiActive;
     if (!aiActive) {
+      pendingPress = null;
       overlay?.draw([]);
       refreshOverlayStats();
     }
@@ -350,6 +417,8 @@ window.addEventListener('keydown', (e) => {
     overlay?.draw(planner?.lastSegments() ?? []);
     refreshOverlayStats();
     refreshStats();
+  } else if (e.code === 'KeyP') {
+    setPaused(!isPaused);
   } else if (e.code === 'KeyR') {
     location.reload();
   }
@@ -362,6 +431,7 @@ mount(stage as HTMLElement, {
     (window as unknown as { __game__: InterwheelGame }).__game__ = game;
     attachAI(game);
     setupPolicyControls();
+    setupObjectiveControls();
     setupOverlayParamControls();
     refreshStats();
   },

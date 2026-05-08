@@ -19,7 +19,12 @@ const MAX_GRAB_WAIT = 100;
 const MAX_WALL_WAIT = 24;
 const MAX_FLIGHT_TICKS = 260;
 const WATER_SAFETY_MARGIN = 160;
-const TRAJECTORY_SAMPLE_TICKS = 3;
+// The overlay is redrawn from a fresh plan every live tick. If trajectory
+// samples are sparse, the final chord into a stable launch/landing endpoint
+// changes phase each frame (`remainingTicks % samplePeriod`), which looks like
+// endpoint flicker even when the contact point itself is unchanged. Keep
+// display trajectories tick-accurate; this is playground-only debug data.
+const TRAJECTORY_SAMPLE_TICKS = 1;
 const ROOT_GRAB_WAIT_STEP = 1;
 const ROOT_WALL_WAIT_STEP = 1;
 const DEEP_GRAB_WAIT_STEP = 4;
@@ -40,6 +45,24 @@ const DEFAULT_LONG_WAIT_PENALTY = 0.08;
 export const LINEAGE_DEFAULTS: { gamma: number; decay: number } = {
   gamma: 3,
   decay: 0.65,
+};
+
+// Temporary objective tweak kept as an A/B knob while tuning follow-up jumps.
+// asymmetricYGain: in scoreCandidate, weight the local `yGain * 4` term
+//   asymmetrically so going down hurts more than going up rewards.
+//   Up keeps the existing weight (4); down multiplies by
+//   ASYMMETRIC_DOWN_FACTOR. This should stay optional until wall-slide
+//   collectible routes have been playtested against it.
+const ASYMMETRIC_DOWN_FACTOR = 3;
+// If a launch is still flying after MAX_FLIGHT_TICKS, the planner has no
+// stable surface or terminal outcome to reason about. Treat it as an unresolved
+// frontier, not as a high-value "went upward" candidate.
+const UNRESOLVED_FLIGHT_PENALTY = 50_000;
+export type ObjectiveFlags = {
+  asymmetricYGain: boolean;
+};
+export const OBJECTIVE_DEFAULTS: ObjectiveFlags = {
+  asymmetricYGain: false,
 };
 // "Miss" detection: how close does the trajectory get to an uncollected
 // pastille before we count it as a foregone opportunity? Pickup radius is
@@ -114,9 +137,13 @@ export type Segment = {
   localTick: number;
   support: number;
   onChosenChain: boolean;
+  // Search-tree depth of this edge's child node. 1 = first jump from root,
+  // 2 = second jump, etc. Used by the playground's "color by generation"
+  // overlay mode for debugging.
+  generation: number;
 };
 
-type SegmentBody = Omit<Segment, 'edgeId' | 'support' | 'onChosenChain'>;
+type SegmentBody = Omit<Segment, 'edgeId' | 'support' | 'onChosenChain' | 'generation'>;
 
 export type PlannerStats = {
   mode: 'dead' | 'flight' | 'idle' | 'stable';
@@ -219,6 +246,7 @@ export class InterwheelPlanner {
   private currentPerceived: PerceivedSnapshot | null = null;
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
+  private objective: ObjectiveFlags = { ...OBJECTIVE_DEFAULTS };
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
@@ -278,6 +306,15 @@ export class InterwheelPlanner {
     return { gamma: this.lineageGamma, decay: this.lineageDecay };
   }
 
+  setObjectiveFlags(flags: Partial<ObjectiveFlags>): void {
+    this.objective = { ...this.objective, ...flags };
+    this.lastResult = null;
+  }
+
+  getObjectiveFlags(): ObjectiveFlags {
+    return { ...this.objective };
+  }
+
   invalidate(): void {
     this.lastResult = null;
     this.knownWheelIdx.clear();
@@ -317,6 +354,7 @@ export class InterwheelPlanner {
     const rootState = perceived.snap;
     const startTime = performance.now();
     const rootScore = this.scoreCandidate(
+      rootState,
       rootState,
       rootState,
       0,
@@ -379,7 +417,7 @@ export class InterwheelPlanner {
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
     const support = this.lineageSupportForEdges(nodes, edges);
-    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, support) : [];
+    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, support, nodes) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
     return {
       plan: plan.length > 0 ? plan : [false],
@@ -428,6 +466,7 @@ export class InterwheelPlanner {
           localTick: ticks,
           support: 0,
           onChosenChain: true,
+          generation: 1,
         });
         sx = sim.blob.x;
         sy = sim.blob.y;
@@ -548,6 +587,7 @@ export class InterwheelPlanner {
     route.endedOnWall = endState.blob.state === BLOB_STATE_WALL;
     const scoreBreakdown = this.scoreCandidate(
       rootState,
+      parent.state,
       endState,
       parent.totalTicks + plan.length,
       waitTicks,
@@ -584,6 +624,7 @@ export class InterwheelPlanner {
 
   private scoreCandidate(
     root: SimSnapshot,
+    start: SimSnapshot,
     end: SimSnapshot,
     totalTicks: number,
     waitTicks: number,
@@ -606,20 +647,28 @@ export class InterwheelPlanner {
     }
 
     const heightGain = end.maxHeight - root.maxHeight;
-    const yGain = root.blob.y - end.blob.y;
+    // `heightGain` remains global: it rewards discovering a new run max from
+    // the live root. Directional terms are local to this edge, so a third-gen
+    // candidate that jumps down from a future upper wheel is scored as a local
+    // backtrack instead of being rewarded just because it still ends above the
+    // original live wheel.
+    const yGain = start.blob.y - end.blob.y;
     const waterMargin = end.waterY - end.blob.y;
     const waterUrgency = this.waterUrgency(waterMargin);
     const waterPenalty = waterMargin < WATER_SAFETY_MARGIN
       ? (WATER_SAFETY_MARGIN - waterMargin) * 30
       : 0;
     const stateBonus = STATE_BONUS[end.blob.state] ?? STATE_BONUS_FALLBACK;
-    const backtrackPenalty = end.blob.y > root.blob.y + 20
-      ? (end.blob.y - root.blob.y) * 25
+    const backtrackPenalty = end.blob.y > start.blob.y + 20
+      ? (end.blob.y - start.blob.y) * 25
       : 0;
+    const yGainWeight = this.objective.asymmetricYGain && yGain < 0
+      ? 4 * ASYMMETRIC_DOWN_FACTOR
+      : 4;
     const heightPolicy =
       end.maxHeight +
       heightGain * 9 +
-      yGain * 4;
+      yGain * yGainWeight;
     const scorePolicy =
       reward.sparkScore * 3 +
       reward.pickedValue * 1.5;
@@ -633,7 +682,10 @@ export class InterwheelPlanner {
     const wallRoute = this.cfg.policy.wallRoutes * this.wallRouteValue(route);
     const stability = stateBonus;
     const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
-    const safetyCost = waterPenalty;
+    const unresolvedFlightPenalty = end.blob.state === BLOB_STATE_FLY
+      ? UNRESOLVED_FLIGHT_PENALTY
+      : 0;
+    const safetyCost = waterPenalty + unresolvedFlightPenalty;
     const backtrackCost = backtrackPenalty;
     const loopCost = loopPenalty;
     return {
@@ -646,7 +698,8 @@ export class InterwheelPlanner {
       safetyCost,
       backtrackCost,
       loopCost,
-      total: height + collectibles + wallRoute + stability - missedCollect - paceCost - safetyCost - backtrackCost - loopCost,
+      total: height + collectibles + wallRoute + stability
+        - missedCollect - paceCost - safetyCost - backtrackCost - loopCost,
     };
   }
 
@@ -741,7 +794,8 @@ export class InterwheelPlanner {
 
   private nodePriority(node: SearchNode, root: SimSnapshot): number {
     const yGain = root.blob.y - node.state.blob.y;
-    return node.value + Math.max(0, yGain) * 2 - node.totalTicks * 1.5 + node.collectibleBias;
+    const yGainTerm = Math.max(0, yGain) * 2;
+    return node.value + yGainTerm - node.totalTicks * 1.5 + node.collectibleBias;
   }
 
   private bestEdgeIds(nodes: SearchNode[], target: SearchNode): Set<number> {
@@ -800,15 +854,22 @@ export class InterwheelPlanner {
     return support;
   }
 
-  private segmentsForEdges(edges: SearchEdge[], bestEdgeIds: Set<number>, support: number[]): Segment[] {
+  private segmentsForEdges(
+    edges: SearchEdge[],
+    bestEdgeIds: Set<number>,
+    support: number[],
+    nodes: SearchNode[],
+  ): Segment[] {
     const out: Segment[] = [];
     for (const edge of edges) {
       const onChosenChain = bestEdgeIds.has(edge.id);
+      const generation = edge.childId >= 0 ? nodes[edge.childId].depth : 1;
       for (const segment of edge.segments) {
         const s = segment as Segment;
         s.edgeId = edge.id;
         s.support = support[edge.id] ?? 0;
         s.onChosenChain = onChosenChain;
+        s.generation = generation;
         out.push(s);
       }
     }

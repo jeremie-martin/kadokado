@@ -224,12 +224,11 @@ Execution jitter is disabled while this model is tuned. Stable-state waits carry
 a gentle explicit scoring penalty, with an accelerating non-linear overstay cost
 after a short grace window, so multi-revolution idling has to justify itself.
 
-The overlay has separate projections of that same tree. The default cinematic
-mode always keeps best, death, score, and best-neighborhood branches, then thins
-ordinary alternatives by launch-time bucket. Long non-best wheel-wait prefixes
-are trimmed to the last few ticks before launch so long delays do not paint dense
-circular trails. Debug mode shows the full tree and restores score/bonus
-coloring for planner inspection.
+The overlay renders the same tree with explicit lineage support: each edge gets
+visual credit for its own score and for competitive descendants it enables.
+Alpha is rank-based, width is support-magnitude based, and an optional
+generation-color mode helps identify whether noise comes from first jumps or
+deeper continuations. Current details live in `docs/interwheel-ai-overlay.md`.
 
 ### Pioupiou
 

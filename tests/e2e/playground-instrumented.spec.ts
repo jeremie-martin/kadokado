@@ -59,8 +59,8 @@ test('AI agent observably plays Interwheel', async ({ page }) => {
         __game__: { tick: number; maxHeight: number };
       };
       const stats = document.getElementById('stats')?.textContent ?? '';
-      // Extract segments count from the stats line.
-      const m = stats.match(/(\d+) segments/);
+      // Extract the visible segment count from the "Shown" stat.
+      const m = stats.match(/Shown\s*(\d+)\s*seg\b/i);
       return {
         tick: w.__game__.tick,
         maxHeight: w.__game__.maxHeight,

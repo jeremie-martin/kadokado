@@ -47,8 +47,12 @@
         <p>
           <kbd>D</kbd> toggle the candidate-line overlay.<br>
           <kbd>A</kbd> toggle the AI on/off (you can take over with <kbd>Space</kbd>).<br>
+          <kbd>P</kbd> pause / resume.<br>
           <kbd>R</kbd> reload the page for a fresh level.
         </p>
+        <div class="actions">
+          <button id="game-pause" type="button">Pause</button>
+        </div>
         <h2>Policy</h2>
         <div class="controls" id="policy-controls">
           <div class="control">
@@ -69,6 +73,13 @@
         </div>
         <div class="actions">
           <button id="policy-reset" type="button">Reset</button>
+        </div>
+        <h2>Planner experiment</h2>
+        <div class="controls" id="objective-controls">
+          <div class="control" style="grid-template-columns: 1fr auto;">
+            <label for="objective-asymmetricYGain">Asymmetric yGain (temporary)</label>
+            <input id="objective-asymmetricYGain" type="checkbox" data-objective-flag="asymmetricYGain" style="grid-column: auto; width: auto;">
+          </div>
         </div>
         <h2>Overlay</h2>
         <div class="controls" id="overlay-controls">
@@ -105,6 +116,10 @@
           <div class="control">
             <label for="overlay-color">Line color</label>
             <input id="overlay-color" type="color" value="#9be8ff" style="grid-column: auto; width: 60px; height: 24px; padding: 0; border: 1px solid #365866; background: transparent;">
+          </div>
+          <div class="control" style="grid-template-columns: 1fr auto;">
+            <label for="overlay-colorByGeneration">Color by generation (debug)</label>
+            <input id="overlay-colorByGeneration" type="checkbox" style="grid-column: auto; width: auto;">
           </div>
         </div>
         <div class="actions">
