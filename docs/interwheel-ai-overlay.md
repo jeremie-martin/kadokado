@@ -11,8 +11,8 @@ Reference for the Interwheel A* playground planner and candidate-line overlay.
   competitive leaves.
 - Keep expansion hints separate from final value. `nodePriority` may bias search
   toward promising states, but it must not become the path score.
-- Local terms are only for local motion constraints: wait cost, local y movement,
-  backtrack, wall touch, water safety, and unresolved flights. Any objective
+- Local terms are only for local motion constraints: local y movement,
+  backtrack, loop avoidance, water safety, and unresolved flights. Any objective
   based on future route outcome should be accumulated root-to-node first.
 - Debug rendering is not planner behavior. Chosen-chain highlighting and
   generation coloring are inspection tools, off by default.
@@ -38,6 +38,8 @@ visible decision space stops at generation 3.
 
 ## Path Scoring
 
+The planner records edge facts and extends node-level path accumulators.
+
 Each edge records a `CollectReward`:
 
 - unique pastilles collected on that edge
@@ -58,11 +60,19 @@ This is the important invariant: a valuable collectible leaf makes the whole
 route to that leaf valuable. Do not reintroduce local-only collectible score as
 the ranking signal.
 
+Wall routes follow the same principle. Each edge records whether it started on a
+wall, touched a wall, and ended on a wall. The edge's wall-route value is added
+to the node's cumulative `pathWallRouteValue`, and `scoreCandidate()` reads that
+path value instead of only the currently evaluated edge.
+
+Pace is also path-level. Nodes carry total elapsed ticks and cumulative
+nonlinear wait penalty; `paceCost` is computed from the full root-to-node cost.
+
 Height is currently mixed:
 
 - `heightGain` is global from the live root, rewarding new run max height.
-- `yGain`, backtrack cost, loop behavior, wall-route value, wait cost, and water
-  safety are local to the evaluated edge.
+- `yGain`, backtrack cost, loop behavior, water safety, and unresolved-flight
+  penalty are local to the evaluated edge.
 
 That local/global split is intentional for now. If future objectives behave more
 like collectibles, implement them as path accumulators first.

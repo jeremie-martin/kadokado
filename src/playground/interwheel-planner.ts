@@ -102,6 +102,8 @@ type SearchNode = {
   state: SimSnapshot;
   depth: number;
   totalTicks: number;
+  pathWaitPenalty: number;
+  pathWallRouteValue: number;
   value: number;
   collectibleBias: number;
   pathReward: CollectReward;
@@ -117,6 +119,10 @@ type SearchEdge = {
   isDead: boolean;
   isStable: boolean;
   value: number;
+  edgeWaitPenalty: number;
+  pathWaitPenalty: number;
+  edgeWallRouteValue: number;
+  pathWallRouteValue: number;
   reward: CollectReward;
   pathReward: CollectReward;
   scoreBreakdown: CandidateScoreBreakdown;
@@ -433,10 +439,10 @@ export class InterwheelPlanner {
       rootState,
       rootState,
       0,
+      this.emptyCollectReward(0),
+      this.emptyCollectReward(0),
       0,
-      this.emptyCollectReward(0),
-      this.emptyCollectReward(0),
-      this.emptyRoute(rootState),
+      0,
       false,
     );
     const rootReward = this.emptyCollectReward(this.currentPerceivedKeys.length);
@@ -447,6 +453,8 @@ export class InterwheelPlanner {
       state: rootState,
       depth: 0,
       totalTicks: 0,
+      pathWaitPenalty: 0,
+      pathWallRouteValue: 0,
       value: rootScore.total,
       collectibleBias: this.collectibleBias(rootState),
       pathReward: rootReward,
@@ -477,6 +485,8 @@ export class InterwheelPlanner {
           state: edge.endState,
           depth: node.depth + 1,
           totalTicks: node.totalTicks + edge.plan.length,
+          pathWaitPenalty: edge.pathWaitPenalty,
+          pathWallRouteValue: edge.pathWallRouteValue,
           value: edge.value,
           collectibleBias: this.collectibleBias(edge.endState),
           pathReward: edge.pathReward,
@@ -658,15 +668,19 @@ export class InterwheelPlanner {
     const isStable = endState.blob.state === BLOB_STATE_GRAB || endState.blob.state === BLOB_STATE_WALL;
     route.endedOnWall = endState.blob.state === BLOB_STATE_WALL;
     const pathReward = this.extendCollectReward(parent.pathReward, reward);
+    const edgeWaitPenalty = this.waitPenalty(waitTicks);
+    const pathWaitPenalty = parent.pathWaitPenalty + edgeWaitPenalty;
+    const edgeWallRouteValue = this.wallRouteValue(route);
+    const pathWallRouteValue = parent.pathWallRouteValue + edgeWallRouteValue;
     const scoreBreakdown = this.scoreCandidate(
       rootState,
       parent.state,
       endState,
       parent.totalTicks + plan.length,
-      waitTicks,
       pathReward,
       reward,
-      route,
+      pathWaitPenalty,
+      pathWallRouteValue,
       this.isSameStableTarget(parent.state, endState),
     );
     const value = scoreBreakdown.total;
@@ -680,6 +694,10 @@ export class InterwheelPlanner {
       isDead,
       isStable,
       value,
+      edgeWaitPenalty,
+      pathWaitPenalty,
+      edgeWallRouteValue,
+      pathWallRouteValue,
       reward,
       pathReward,
       scoreBreakdown,
@@ -748,16 +766,15 @@ export class InterwheelPlanner {
     start: SimSnapshot,
     end: SimSnapshot,
     totalTicks: number,
-    waitTicks: number,
     pathReward: CollectReward,
     edgeReward: CollectReward,
-    route: EdgeRoute,
+    pathWaitPenalty: number,
+    pathWallRouteValue: number,
     sameStableTarget: boolean,
   ): CandidateScoreBreakdown {
-    const waitPenalty = this.waitPenalty(waitTicks);
     if (this.isTerminal(end)) {
       const collectibles = this.cfg.policy.collectibles * this.collectibleScorePolicy(pathReward);
-      const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
+      const paceCost = this.cfg.policy.pace * (totalTicks * 4 + pathWaitPenalty);
       const safetyCost = 1_000_000;
       return {
         ...emptyScoreBreakdown(),
@@ -800,9 +817,9 @@ export class InterwheelPlanner {
       * this.missedCollectibleValue(pathReward)
       * MISS_PENALTY_FACTOR
       * (1 - waterUrgency * 0.85);
-    const wallRoute = this.cfg.policy.wallRoutes * this.wallRouteValue(route);
+    const wallRoute = this.cfg.policy.wallRoutes * pathWallRouteValue;
     const stability = stateBonus;
-    const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
+    const paceCost = this.cfg.policy.pace * (totalTicks * 4 + pathWaitPenalty);
     const unresolvedFlightPenalty = end.blob.state === BLOB_STATE_FLY
       ? UNRESOLVED_FLIGHT_PENALTY
       : 0;
