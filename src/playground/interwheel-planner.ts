@@ -43,32 +43,15 @@ const DEFAULT_LONG_WAIT_PENALTY = 0.08;
 // decay: fraction of a child's support a parent inherits in the bottom-up
 //   pass. decay=0 makes only leaves visible as important; decay near 1
 //   amplifies common prefixes that lead to many strong futures.
-// claimAmp: optional per-pastille uniqueness amplifier for leaf seeds. This is
-//   a debug/tuning lens, not part of the core planner objective: claimAmp=0
-//   keeps lineage support purely path-value based.
-export const LINEAGE_DEFAULTS: { gamma: number; decay: number; claimAmp: number } = {
+export const LINEAGE_DEFAULTS: { gamma: number; decay: number } = {
   gamma: 4,
   decay: 0.65,
-  claimAmp: 0,
 };
 
-// Temporary objective tweak kept as an A/B knob while tuning follow-up jumps.
-// asymmetricYGain: in scoreCandidate, weight the local `yGain * 4` term
-//   asymmetrically so going down hurts more than going up rewards.
-//   Up keeps the existing weight (4); down multiplies by
-//   ASYMMETRIC_DOWN_FACTOR. This should stay optional until wall-slide
-//   collectible routes have been playtested against it.
-const ASYMMETRIC_DOWN_FACTOR = 3;
 // If a launch is still flying after MAX_FLIGHT_TICKS, the planner has no
 // stable surface or terminal outcome to reason about. Treat it as an unresolved
 // frontier, not as a high-value "went upward" candidate.
 const UNRESOLVED_FLIGHT_PENALTY = 50_000;
-export type ObjectiveFlags = {
-  asymmetricYGain: boolean;
-};
-export const OBJECTIVE_DEFAULTS: ObjectiveFlags = {
-  asymmetricYGain: false,
-};
 // "Miss" detection: how close does the trajectory get to an uncollected
 // pastille before we count it as a foregone opportunity? Pickup radius is
 // 70px, so anything <70 was either grabbed or barely missed; out to ~300
@@ -172,11 +155,6 @@ export type PlannerDiagnostics = {
   leafValueP75: number;
   leafValueP90: number;
   leafValueMax: number;
-  // Number of unique pastille keys claimed across leaves (size of the
-  // pastille-winner map). 0 when no leaf captured anything.
-  totalClaimedPastilles: number;
-  // How many leaves had any captured pastille at all.
-  leavesWithCaptures: number;
   // Post-propagation support distribution across all rendered edges. Useful
   // to test whether one chain visibly dominates: a sharp tree has high
   // top-share, a flat fan has low top-share.
@@ -210,8 +188,6 @@ export function emptyDiagnostics(): PlannerDiagnostics {
     leafValueP75: 0,
     leafValueP90: 0,
     leafValueMax: 0,
-    totalClaimedPastilles: 0,
-    leavesWithCaptures: 0,
     supportTopShare: 0,
     supportTop3Share: 0,
     supportChosenShare: 0,
@@ -320,8 +296,6 @@ export class InterwheelPlanner {
   private currentPerceivedKeys: string[] = [];
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
-  private lineageClaimAmp = LINEAGE_DEFAULTS.claimAmp;
-  private objective: ObjectiveFlags = { ...OBJECTIVE_DEFAULTS };
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
@@ -371,15 +345,14 @@ export class InterwheelPlanner {
     this.lastResult = null;
   }
 
-  setLineage(params: { gamma?: number; decay?: number; claimAmp?: number }): void {
+  setLineage(params: { gamma?: number; decay?: number }): void {
     if (params.gamma !== undefined) this.lineageGamma = Math.max(0.1, params.gamma);
     if (params.decay !== undefined) this.lineageDecay = clamp(params.decay, 0, 1);
-    if (params.claimAmp !== undefined) this.lineageClaimAmp = Math.max(0, params.claimAmp);
     this.lastResult = null;
   }
 
-  getLineage(): { gamma: number; decay: number; claimAmp: number } {
-    return { gamma: this.lineageGamma, decay: this.lineageDecay, claimAmp: this.lineageClaimAmp };
+  getLineage(): { gamma: number; decay: number } {
+    return { gamma: this.lineageGamma, decay: this.lineageDecay };
   }
 
   setRevealScreensAbove(screens: number): void {
@@ -414,15 +387,6 @@ export class InterwheelPlanner {
       maxEdgeRollouts: this.cfg.maxEdgeRollouts,
       budgetMs: this.cfg.budgetMs,
     };
-  }
-
-  setObjectiveFlags(flags: Partial<ObjectiveFlags>): void {
-    this.objective = { ...this.objective, ...flags };
-    this.lastResult = null;
-  }
-
-  getObjectiveFlags(): ObjectiveFlags {
-    return { ...this.objective };
   }
 
   invalidate(): void {
@@ -820,13 +784,10 @@ export class InterwheelPlanner {
     const backtrackPenalty = end.blob.y > start.blob.y + 20
       ? (end.blob.y - start.blob.y) * 25
       : 0;
-    const yGainWeight = this.objective.asymmetricYGain && yGain < 0
-      ? 4 * ASYMMETRIC_DOWN_FACTOR
-      : 4;
     const heightPolicy =
       end.maxHeight +
       heightGain * 9 +
-      yGain * yGainWeight;
+      yGain * 4;
     const scorePolicy = this.collectibleScorePolicy(pathReward);
     const scoreTerm = scorePolicy * this.cfg.scoreBias * (1 - waterUrgency * 0.85);
     const loopPenalty = sameStableTarget && edgeReward.pickedValue + edgeReward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
@@ -1021,11 +982,9 @@ export class InterwheelPlanner {
     support: number[];
     leafEdges: SearchEdge[];
     leafIdsSorted: number[];
-    totalClaimedPastilles: number;
-    leavesWithCaptures: number;
   } {
     if (edges.length === 0) {
-      return { support: [], leafEdges: [], leafIdsSorted: [], totalClaimedPastilles: 0, leavesWithCaptures: 0 };
+      return { support: [], leafEdges: [], leafIdsSorted: [] };
     }
 
     // Visual decision-space support, separate from planner score. Only
@@ -1041,48 +1000,18 @@ export class InterwheelPlanner {
       .map((edge) => edge.id)
       .sort((a, b) => edges[a].value - edges[b].value || a - b);
 
-    // Optional per-pastille claim: assign each captured pastille to the
-    // highest-valued leaf that captured it. This is only a support-shaping
-    // debug/tuning multiplier when lineageClaimAmp > 0; diagnostics are
-    // computed regardless.
-    const claim = new Map<number, number>();
-    let totalClaimedPastilles = 0;
-    let leavesWithCaptures = 0;
-    const leafCaptures = new Map<number, Set<string>>();
-    for (const leaf of leafEdges) {
-      const captured = new Set(nodes[leaf.childId]?.pathReward.collectedKeys ?? []);
-      leafCaptures.set(leaf.id, captured);
-      if (captured.size > 0) leavesWithCaptures += 1;
-    }
-    const winner = new Map<string, number>();
-    for (let i = leafIds.length - 1; i >= 0; i -= 1) {
-      const id = leafIds[i];
-      const captured = leafCaptures.get(id);
-      if (!captured) continue;
-      for (const k of captured) {
-        if (!winner.has(k)) winner.set(k, id);
-      }
-    }
-    totalClaimedPastilles = winner.size;
-    if (this.lineageClaimAmp > 0 && leafIds.length > 1) {
-      for (const id of winner.values()) claim.set(id, (claim.get(id) ?? 0) + 1);
-    }
-
-    const claimDenom = Math.max(1, totalClaimedPastilles);
     const denom = Math.max(1, leafIds.length - 1);
     for (let i = 0; i < leafIds.length; i += 1) {
       const id = leafIds[i];
       const rank = leafIds.length <= 1 ? 1 : i / denom;
-      const rankSeed = Math.pow(rank, this.lineageGamma);
-      const claimBoost = (claim.get(id) ?? 0) / claimDenom;
-      support[id] = rankSeed * (1 + this.lineageClaimAmp * claimBoost);
+      support[id] = Math.pow(rank, this.lineageGamma);
     }
 
     for (let i = edges.length - 1; i >= 0; i -= 1) {
       const parentEdgeId = nodes[edges[i].parentId]?.edgeId ?? -1;
       if (parentEdgeId >= 0) support[parentEdgeId] += support[edges[i].id] * this.lineageDecay;
     }
-    return { support, leafEdges, leafIdsSorted: leafIds, totalClaimedPastilles, leavesWithCaptures };
+    return { support, leafEdges, leafIdsSorted: leafIds };
   }
 
   private computeDiagnostics(
@@ -1091,7 +1020,7 @@ export class InterwheelPlanner {
     supportResult: ReturnType<typeof this.lineageSupportForEdges>,
     chosenEdgeIds: Set<number>,
   ): PlannerDiagnostics {
-    const { support, leafEdges, leafIdsSorted, totalClaimedPastilles, leavesWithCaptures } = supportResult;
+    const { support, leafEdges, leafIdsSorted } = supportResult;
     if (edges.length === 0 || support.length === 0) return emptyDiagnostics();
 
     const leafDepthCounts: number[] = [];
@@ -1128,8 +1057,6 @@ export class InterwheelPlanner {
       leafValueP75: pct(0.75),
       leafValueP90: pct(0.9),
       leafValueMax,
-      totalClaimedPastilles,
-      leavesWithCaptures,
       supportTopShare: top1 / totalSafe,
       supportTop3Share: top3 / totalSafe,
       supportChosenShare: chosenSum / totalSafe,

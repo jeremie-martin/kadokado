@@ -6,10 +6,8 @@ import {
   DEFAULT_PLANNER_POLICY,
   InterwheelPlanner,
   LINEAGE_DEFAULTS,
-  OBJECTIVE_DEFAULTS,
   PLANNER_PERCEPTION_DEFAULTS,
   PLANNER_SEARCH_DEFAULTS,
-  type ObjectiveFlags,
   type PlannerPolicy,
   type PlanResult,
 } from './interwheel-planner';
@@ -42,13 +40,11 @@ const FOCUS_CLIMB_MAX = 1.6;
 const FOCUS_CLIMB_MIN = 0.3;
 const FOCUS_COLLECT_MAX = 3;
 
-// Renderer params trigger a redraw of the cached segments; planner params
-// (lineageGamma, lineageDecay, lineageClaimAmp) require a re-plan to
-// recompute support.
+// Renderer params trigger a redraw of the cached segments; lineage params
+// require a re-plan to recompute support.
 const OVERLAY_PARAM_DEFAULTS = {
   lineageDecay: LINEAGE_DEFAULTS.decay,
   lineageGamma: LINEAGE_DEFAULTS.gamma,
-  lineageClaimAmp: LINEAGE_DEFAULTS.claimAmp,
   minSupportRank: OVERLAY_DEFAULTS.minSupportRank,
   widthMin: OVERLAY_DEFAULTS.widthMin,
   widthMax: OVERLAY_DEFAULTS.widthMax,
@@ -65,7 +61,6 @@ const OVERLAY_PARAM_KEYS = Object.keys(OVERLAY_PARAM_DEFAULTS) as OverlayParamKe
 const OVERLAY_PARAM_PRECISION: Record<OverlayParamKey, number> = {
   lineageDecay: 2,
   lineageGamma: 1,
-  lineageClaimAmp: 1,
   minSupportRank: 2,
   widthMin: 2,
   widthMax: 1,
@@ -103,10 +98,6 @@ let lastShownSegments = 0;
 let lastShownEdges = 0;
 let lastCulledEdges = 0;
 let lastSupportRange = '—';
-let lastDiagnosticsLeaves = '—';
-let lastDiagnosticsValueSpread = '—';
-let lastDiagnosticsSupportShare = '—';
-let lastDiagnosticsClaim = '—';
 let pendingPress: boolean | null = null;
 let isPaused = false;
 
@@ -268,10 +259,6 @@ function applyOverlayParam(key: OverlayParamKey, value: number): void {
       planner?.setLineage({ gamma: value });
       schedulePolicyPreview();
       break;
-    case 'lineageClaimAmp':
-      planner?.setLineage({ claimAmp: value });
-      schedulePolicyPreview();
-      break;
     case 'minSupportRank':
       overlay?.setMinSupportRank(value);
       redrawOverlayFromCache();
@@ -375,65 +362,14 @@ function setupOverlayParamControls(): void {
   syncOverlayParamControls();
 }
 
-const OBJECTIVE_KEYS = Object.keys(OBJECTIVE_DEFAULTS) as (keyof ObjectiveFlags)[];
-let objectiveFlags: ObjectiveFlags = { ...OBJECTIVE_DEFAULTS };
-
-function isObjectiveKey(value: string): value is keyof ObjectiveFlags {
-  return (OBJECTIVE_KEYS as string[]).includes(value);
-}
-
-function applyObjectiveFlag(key: keyof ObjectiveFlags, value: boolean): void {
-  objectiveFlags = { ...objectiveFlags, [key]: value };
-  planner?.setObjectiveFlags({ [key]: value });
-  schedulePolicyPreview();
-  refreshStats();
-}
-
-function setupObjectiveControls(): void {
-  document.querySelectorAll<HTMLInputElement>('input[data-objective-flag]').forEach((input) => {
-    const rawKey = input.dataset.objectiveFlag;
-    if (!rawKey || !isObjectiveKey(rawKey)) return;
-    input.checked = objectiveFlags[rawKey];
-    input.addEventListener('change', () => applyObjectiveFlag(rawKey, input.checked));
-  });
-  // Push current state into planner so toggles default to OFF coherently.
-  planner?.setObjectiveFlags(objectiveFlags);
-}
-
 function recordPlanResult(result: PlanResult): void {
   lastPlanMs = result.stats.planMs;
   lastSegmentCount = result.segments.length;
   lastEdges = result.stats.edgesEvaluated;
   lastNodes = result.stats.stableNodesExpanded;
   lastPerceived = `${result.stats.perceivedWheels}w/${result.stats.perceivedPastilles}p`;
-  recordDiagnostics(result);
   overlay?.draw(result.segments);
   refreshOverlayStats();
-}
-
-function recordDiagnostics(result: PlanResult): void {
-  const d = result.stats.diagnostics;
-  if (d.leafCount === 0) {
-    lastDiagnosticsLeaves = '—';
-    lastDiagnosticsValueSpread = '—';
-    lastDiagnosticsSupportShare = '—';
-    lastDiagnosticsClaim = '—';
-    return;
-  }
-  // Compact depth histogram: "12·1, 4·2, 0·3, 1·4" → 12 leaves at depth 1, 4 at 2, etc.
-  const depthParts: string[] = [];
-  for (let d2 = 1; d2 < d.leafDepthCounts.length; d2 += 1) {
-    const c = d.leafDepthCounts[d2] ?? 0;
-    depthParts.push(`${c}·${d2}`);
-  }
-  lastDiagnosticsLeaves = `${d.leafCount} (${depthParts.join(', ')})`;
-  const range = d.leafValueMax - d.leafValueMin;
-  lastDiagnosticsValueSpread = `[${Math.round(d.leafValueP25)}, ${Math.round(d.leafValueP50)}, ${Math.round(d.leafValueP75)}] Δ${Math.round(range)}`;
-  lastDiagnosticsSupportShare =
-    `top ${(d.supportTopShare * 100).toFixed(1)}% · top3 ${(d.supportTop3Share * 100).toFixed(1)}% · chosen ${(d.supportChosenShare * 100).toFixed(1)}%`;
-  lastDiagnosticsClaim = d.totalClaimedPastilles > 0
-    ? `${d.totalClaimedPastilles} past · ${d.leavesWithCaptures}/${d.leafCount} leaves`
-    : '0';
 }
 
 function planAndRecordNextPress(): void {
@@ -502,10 +438,6 @@ function refreshStats(): void {
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
     statItem('Culled', `${lastCulledEdges} edges`),
     statItem('Support', lastSupportRange),
-    statItem('Leaves', lastDiagnosticsLeaves),
-    statItem('Leaf values (p25/50/75)', lastDiagnosticsValueSpread),
-    statItem('Support share', lastDiagnosticsSupportShare),
-    statItem('Claimed', lastDiagnosticsClaim),
   );
 }
 
@@ -653,7 +585,6 @@ mount(stage as HTMLElement, {
     attachAI(game);
     setupPolicyControls();
     setupPlannerExperimentControls();
-    setupObjectiveControls();
     setupOverlayParamControls();
     refreshStats();
   },

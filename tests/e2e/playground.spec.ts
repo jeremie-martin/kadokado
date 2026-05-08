@@ -78,7 +78,8 @@ test.describe('AI playground', () => {
     await expect(page.locator('#planner-planBudgetMs-value')).toHaveText('5ms');
     await expect(page.locator('#overlay-lineageDecay-value')).toHaveText('0.65');
     await expect(page.locator('#overlay-lineageGamma-value')).toHaveText('4.0');
-    await expect(page.locator('#overlay-lineageClaimAmp-value')).toHaveText('0.0');
+    await expect(page.locator('#overlay-lineageClaimAmp')).toHaveCount(0);
+    await expect(page.locator('#objective-asymmetricYGain')).toHaveCount(0);
     await expect(page.locator('#overlay-minSupportRank-value')).toHaveText('0.70');
     await expect(page.locator('#overlay-widthMin-value')).toHaveText('0.30');
     await expect(page.locator('#overlay-widthMax-value')).toHaveText('7.0');
@@ -203,18 +204,6 @@ test.describe('AI playground', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await expect(page.locator('#overlay-generationWeight3-value')).toHaveText('0.25');
-
-    await page.locator('#overlay-lineageClaimAmp').evaluate((el) => {
-      const input = el as HTMLInputElement;
-      input.value = '2.5';
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-    });
-    await expect(page.locator('#overlay-lineageClaimAmp-value')).toHaveText('2.5');
-    const lineage = await page.evaluate(() => {
-      const planner = (window as { __planner__: { getLineage: () => { gamma: number; decay: number; claimAmp: number } } }).__planner__;
-      return planner.getLineage();
-    });
-    expect(lineage.claimAmp).toBe(2.5);
 
     const generationWeights = await page.evaluate(() => {
       const overlay = (window as { __overlay__: { getGenerationWidthWeights: () => number[] } }).__overlay__;
