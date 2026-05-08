@@ -42,59 +42,55 @@ The planner records edge facts and extends node-level path accumulators.
 
 Each edge records a `CollectReward`:
 
-- unique pastilles collected on that edge
-- spark score collected on that edge
-- minimum sampled distance to each perceived pastille
+- unique pastilles physically collected on that edge
+- spark count collected on that edge
 
 Each child node stores a cumulative `pathReward` built from its parent path plus
-the edge reward. Pastilles are unioned by key, sparks accumulate, and minimum
-distances take the best seen anywhere on the path.
+the edge reward. Pastilles are unioned by key and sparks accumulate.
 
-`pathReward` uses collectible claims, not just immediate pickup events. A
-pastille is claimed when the simulated path physically collects it, and also
-when a stable wheel reached by the path can naturally collect it by rotation.
-That stable-surface claim is added to the node accumulator, so descendants
-inherit it exactly like an actual pickup.
+`pathReward` currently uses simulator pickup events: a pastille is credited
+when the simulated path physically collects it with the live game's 70px
+blob-to-pastille pickup geometry. The earlier stable-surface orbit claim path
+was removed because it over-credited pickups that the live game had not
+actually collected.
 
 An edge that launches away and lands back on the same stable target does not
 add its transient pickups to `pathReward`. It has not improved the stable route;
-if the collectible really belongs to that wheel, the stable-surface claim will
-cover it, and otherwise the scoop is treated as a detour rather than path
-progress.
+the scoop is treated as a detour rather than path progress.
 
-`scoreCandidate()` uses the cumulative path reward for both:
+`scoreCandidate()` uses the cumulative path reward for:
 
-- `collectibles`: collected pastille/spark value on the whole path
-- `missedCollect`: perceived pastilles passed near anywhere on the path but not
-  collected
+- `thoroughness`: count of pastilles physically grabbed on the whole path,
+  optionally discounted by `patience` when the pastille is also reachable from a
+  higher wheel.
 
-This keeps the collectible knob from meaning "grab it as early as possible".
-If one route spends a jump to grab a pastille immediately, while another route
-reaches the wheel that will naturally collect that same pastille, both paths
-can carry the same collectible claim. Other objective terms can then prefer the
-route that climbs cleanly instead of the route that only banks the pickup
-earlier.
+This keeps the pickup score path-cumulative: a later leaf that has grabbed more
+pastilles makes its ancestor route valuable. It does not, by itself, model
+"secured later by a stable route"; that question is tracked separately in
+`docs/interwheel-collectibles-objective.md` and summarized in
+`docs/interwheel-planner-spec.md`.
 
-This is the important invariant: a valuable collectible leaf makes the whole
-route to that leaf valuable. Do not reintroduce local-only collectible score as
+This is the important invariant: a valuable pickup leaf makes the whole
+route to that leaf valuable. Do not reintroduce local-only pickup score as
 the ranking signal.
 
-Wall routes follow the same principle. Each edge records whether it started on a
-wall, touched a wall, and ended on a wall. The edge's wall-route value is added
-to the node's cumulative `pathWallRouteValue`, and `scoreCandidate()` reads that
-path value instead of only the currently evaluated edge.
+Wall routes follow the same principle. Each edge records wall ticks and the
+canonical wall-jump-and-land event. These are added to `pathWallTicks` and
+`pathWallLandings`, and `scoreCandidate()` reads those path values instead of
+only the currently evaluated edge.
 
-Pace is also path-level. Nodes carry total elapsed ticks and cumulative
-nonlinear wait penalty; `paceCost` is computed from the full root-to-node cost.
+Pace is also path-level. Nodes carry total elapsed ticks; `pace` is computed
+from the full root-to-node time cost.
 
-Height is currently mixed:
+Height is path-level too:
 
-- `heightGain` is global from the live root, rewarding new run max height.
-- `yGain`, backtrack cost, loop behavior, water safety, and unresolved-flight
-  penalty are local to the evaluated edge.
+- `pathHeight = max(0, root.blob.y - pathApexY)` rewards the highest point
+  reached anywhere on the path.
+- backtrack cost, loop behavior, water safety, and unresolved-flight penalty
+  remain local/frontier planner-physics terms.
 
-That local/global split is intentional for now. If future objectives behave more
-like collectibles, implement them as path accumulators first.
+If future objectives behave like route outcomes, implement them as path
+accumulators first.
 
 ## Lineage Support
 
@@ -141,8 +137,10 @@ Policy controls affect planner score:
 
 - Focus
 - Climb
-- Collectibles
-- Wall routes
+- Thoroughness
+- Detour
+- Patience
+- Wall
 - Pace
 
 Planner controls affect search/perception limits:

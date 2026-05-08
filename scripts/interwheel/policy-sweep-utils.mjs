@@ -14,11 +14,10 @@ export const DEFAULT_SWEEP_FIELDS = [
   'planMs',
   'edges',
   'scoreClimb',
-  'scoreCollect',
+  'scoreThoroughness',
   'scoreWall',
   'scorePace',
   'scoreDetour',
-  'scoreMiss',
   'scoreTotal',
   'pastilles',
   'sparks',
@@ -100,13 +99,12 @@ export function compactTrial(trial) {
     missedPerceived: Math.max(0, (trial.uniquePerceivedPastilles ?? 0) - summary.pastilles),
     planMs: trial.planner.avgPlanMs,
     edges: trial.planner.avgEdges,
-    scoreClimb:   planner.bestScoreBreakdown.climb?.mean   ?? 0,
-    scoreCollect: planner.bestScoreBreakdown.collect?.mean ?? 0,
-    scoreWall:    planner.bestScoreBreakdown.wall?.mean    ?? 0,
-    scorePace:    planner.bestScoreBreakdown.pace?.mean    ?? 0,
-    scoreDetour:  planner.bestScoreBreakdown.detour?.mean  ?? 0,
-    scoreMiss:    planner.bestScoreBreakdown.miss?.mean    ?? 0,
-    scoreTotal:   planner.bestScoreBreakdown.total?.mean   ?? 0,
+    scoreClimb:        planner.bestScoreBreakdown.climb?.mean        ?? 0,
+    scoreThoroughness: planner.bestScoreBreakdown.thoroughness?.mean ?? 0,
+    scoreWall:         planner.bestScoreBreakdown.wall?.mean         ?? 0,
+    scorePace:         planner.bestScoreBreakdown.pace?.mean         ?? 0,
+    scoreDetour:       planner.bestScoreBreakdown.detour?.mean       ?? 0,
+    scoreTotal:        planner.bestScoreBreakdown.total?.mean        ?? 0,
   };
 }
 
@@ -191,6 +189,6 @@ export function summarizeSweep(raw) {
       [...new Set(summaries.map((summary) => summary.group).filter((group) => group.startsWith('sweep:')))]
         .map((group) => [group, compactTable(summaries.filter((summary) => summary.group === group), ['height', 'bonusScorePerMin', 'wallJumpsPerMin'])]),
     ),
-    interactionTable: compactTable(summaries.filter((summary) => summary.group === 'collectibles_wallRoutes'), ['height', 'bonusScorePerMin', 'wallJumpsPerMin']),
+    interactionTable: compactTable(summaries.filter((summary) => summary.group === 'thoroughness_wall'), ['height', 'bonusScorePerMin', 'wallJumpsPerMin']),
   };
 }

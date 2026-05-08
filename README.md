@@ -34,8 +34,8 @@ npm run test:e2e
 npm run analyze:interwheel:quick
 npm run analyze:interwheel -- --max-seconds=30 --trials=3 --seed=42
 npm run analyze:interwheel -- --runner=pure --concurrency=4 --trials=20 --seed=42 --max-seconds=30
-npm run analyze:interwheel -- --runner=pure --policy.wallRoutes=0.5 --trials=10 --seed=42 --max-seconds=30
-npm run analyze:interwheel -- --runner=pure --policy.climb=1.2 --policy.collectibles=0.5 --trials=10 --seed=42 --max-seconds=30
+npm run analyze:interwheel -- --runner=pure --policy.wall=0.5 --trials=10 --seed=42 --max-seconds=30
+npm run analyze:interwheel -- --runner=pure --policy.climb=1.2 --policy.thoroughness=0.5 --trials=10 --seed=42 --max-seconds=30
 npm run analyze:interwheel -- --verify-pure-planner --trials=3 --seed=42 --max-seconds=30
 npm run analyze:interwheel:policies -- --trials=40 --seed=4200 --max-seconds=30
 npm run analyze:interwheel:policies:summary -- .tmp/interwheel-policy-sweeps/<run>/raw.json
@@ -50,7 +50,7 @@ For fast Interwheel AI sanity checks before committing, prefer `npm run analyze:
 
 Interwheel analytics has two trusted execution modes. The default `mounted` runner uses the browser-mounted game with rendering and particles disabled. The `pure` runner uses the same simulator and planner without Pixi game updates, and can run multiple browser pages in parallel with `--concurrency=N` for larger seed batches. Before relying on the pure runner after planner/gameplay changes, run `npm run analyze:interwheel -- --verify-pure-planner --trials=N --seed=S --max-seconds=M`; it compares the pure runner against mounted headless tick by tick.
 
-Interwheel planner behavior is controlled through a small numeric policy object instead of scattered scoring constants. Set individual knobs with `--policy.climb=N`, `--policy.collectibles=N`, `--policy.wallRoutes=N`, or `--policy.pace=N`. The analytics output includes the chosen policy and average score components for the selected plans, so policy changes can be compared against movement stats such as height, bonus pickups, wall jumps, waits, and phase time.
+Interwheel planner behavior is controlled through a small numeric policy object instead of scattered scoring constants. Set individual knobs with `--policy.climb=N`, `--policy.thoroughness=N`, `--policy.wall=N`, `--policy.pace=N`, `--policy.detour=N`, or `--policy.patience=N`. The analytics output includes the chosen policy and average score components for the selected plans, so policy changes can be compared against movement stats such as height, bonus pickups, wall jumps, waits, and phase time.
 
 For broader policy characterization, run `npm run analyze:interwheel:policies`. It sweeps the numeric policy knobs over a fixed seed population and writes `raw.json`, `summary.json`, and `report.md` under `.tmp/interwheel-policy-sweeps/<timestamp>/`. Re-run `npm run analyze:interwheel:policies:summary -- <raw.json>` to analyze an existing sweep without regenerating gameplay.
 

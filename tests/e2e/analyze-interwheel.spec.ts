@@ -48,6 +48,7 @@ test('analytics harness is faithful to live game and records movement stats', as
     heightMeters: number;
     ticks: number;
     cpuMs: number;
+    uniquePerceivedPastilles: number;
     analytics: {
       summary: {
         jumps: number;
@@ -138,6 +139,34 @@ test('analytics harness is faithful to live game and records movement stats', as
   expect(results[0].analytics.summary.planner.bestScoreBreakdown.total.count).toBe(results[0].analytics.summary.planner.plans);
   expect(results[0].analytics.summary.planner.bestScoreBreakdown.climb.mean).toBeGreaterThan(0);
   expect(results[0].analytics.summary.planner.bestScoreBreakdown.pace.mean).toBeGreaterThanOrEqual(0);
+
+  const noPastilles = await page.evaluate(async () => {
+    const w = window as unknown as {
+      __interwheelAnalytics__: {
+        setPastilleSpawnChanceOverride: (value: number | null) => void;
+        runAnalyze: (opts: {
+          trials: number;
+          seedBase: number;
+          maxTicks: number;
+          policy?: { thoroughness?: number };
+        }) => Promise<{ trials: Trial[] }>;
+      };
+    };
+    w.__interwheelAnalytics__.setPastilleSpawnChanceOverride(0);
+    try {
+      return await w.__interwheelAnalytics__.runAnalyze({
+        trials: 1,
+        seedBase: 42,
+        maxTicks: 300,
+        policy: { thoroughness: 4 },
+      });
+    } finally {
+      w.__interwheelAnalytics__.setPastilleSpawnChanceOverride(null);
+    }
+  });
+  expect(noPastilles.trials[0].uniquePerceivedPastilles).toBe(0);
+  expect(noPastilles.trials[0].analytics.summary.pastilles).toBe(0);
+  expect(noPastilles.trials[0].analytics.summary.planner.bestScoreBreakdown.thoroughness.mean).toBe(0);
 
   const replayEquivalence = await page.evaluate(async () => {
     const w = window as unknown as {

@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { summarizeSweep } from './policy-sweep-utils.mjs';
 
 const GAME_FPS = 40;
-const POLICY_KEYS = ['climb', 'collectibles', 'wallRoutes', 'pace'];
+const POLICY_KEYS = ['climb', 'thoroughness', 'wall', 'pace', 'detour', 'patience'];
 
 function parseArgs(argv) {
   const args = {
@@ -97,11 +97,13 @@ function interaction(group, knobA, valuesA, knobB, valuesB) {
 function makeConditions() {
   return [
     { group: 'baseline', name: 'default', policy: {} },
-    ...sweep('collectibles', [0, 0.5, 1, 1.5, 2, 3]),
-    ...sweep('wallRoutes', [0, 0.25, 0.5, 1, 1.5, 2]),
+    ...sweep('thoroughness', [0, 0.5, 1, 1.5, 2, 3]),
+    ...sweep('wall', [0, 0.25, 0.5, 1, 1.5, 2]),
     ...sweep('climb', [0.6, 0.8, 1, 1.2, 1.5]),
     ...sweep('pace', [0.5, 0.8, 1, 1.2, 1.6]),
-    ...interaction('collectibles_wallRoutes', 'collectibles', [0.5, 1, 2], 'wallRoutes', [0, 0.5, 1.5]),
+    ...sweep('detour', [0, 0.5, 1, 1.5, 2]),
+    ...sweep('patience', [0, 0.5, 1]),
+    ...interaction('thoroughness_wall', 'thoroughness', [0.5, 1, 2], 'wall', [0, 0.5, 1.5]),
   ];
 }
 
@@ -142,7 +144,6 @@ async function runCondition(browser, url, condition, args) {
           budgetMs,
           maxEdgeRollouts: 240,
           maxStableDepth: 3,
-          targetClimb: 400,
           collectSegments: false,
           policy: condition.policy,
         };
@@ -175,11 +176,17 @@ async function runCondition(browser, url, condition, args) {
             bonusScore: summary.bonusScore,
             planMs: trial.planner.avgPlanMs,
             edges: trial.planner.avgEdges,
-            scoreHeightTerm: planner.bestScoreBreakdown.height.mean,
-            scoreCollectTerm: planner.bestScoreBreakdown.collectibles.mean,
-            scoreWallTerm: planner.bestScoreBreakdown.wallRoute.mean,
-            scorePaceCost: planner.bestScoreBreakdown.paceCost.mean,
-            scoreTotal: planner.bestScoreBreakdown.total.mean,
+            uniquePerceivedPastilles: trial.uniquePerceivedPastilles ?? 0,
+            captureRate: trial.uniquePerceivedPastilles > 0
+              ? summary.pastilles / trial.uniquePerceivedPastilles
+              : 0,
+            missedPerceived: Math.max(0, (trial.uniquePerceivedPastilles ?? 0) - summary.pastilles),
+            scoreClimb: planner.bestScoreBreakdown.climb?.mean ?? 0,
+            scoreThoroughness: planner.bestScoreBreakdown.thoroughness?.mean ?? 0,
+            scoreWall: planner.bestScoreBreakdown.wall?.mean ?? 0,
+            scorePace: planner.bestScoreBreakdown.pace?.mean ?? 0,
+            scoreDetour: planner.bestScoreBreakdown.detour?.mean ?? 0,
+            scoreTotal: planner.bestScoreBreakdown.total?.mean ?? 0,
           };
         });
       }, { chunk, condition, maxTicks: args.maxTicks, budgetMs: args.budgetMs });
@@ -219,7 +226,7 @@ function reportMarkdown(report) {
     lines.push('');
   }
   if (report.interactionTable.length > 0) {
-    lines.push('### collectibles_wallRoutes', '');
+    lines.push('### thoroughness_wall', '');
     lines.push('| condition | height | height Δ% | bonus/min | bonus Δ% | wallJ/min | wallJ Δ% |');
     lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: |');
     for (const row of report.interactionTable) {

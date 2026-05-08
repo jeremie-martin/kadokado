@@ -35,45 +35,45 @@ function parseArgs(argv) {
 }
 
 function help() {
-  console.log(`Interwheel collectibles-focused sweep.
+  console.log(`Interwheel thoroughness-focused sweep.
 
 Default: trials=24 concurrency=16 max-ticks=1200 (=30s) budget-ms=5
 
 USAGE:
   node scripts/interwheel/sweep-collectibles.mjs [--trials=24] [--seed=4200] [--max-seconds=30] [--concurrency=16] [--quick]
 
-  --quick: 6-condition subset (default + collectibles ∈ {0,1,3,5} + c=3,climb=0.3) for faster iteration.
+  --quick: 6-condition subset (default + thoroughness in {0,1,3,5} + t=3,climb=0.3) for faster iteration.
 `);
 }
 
 function timestamp() { return new Date().toISOString().replace(/[:.]/g, '-'); }
 
 // Aggressive sweep so we can see both saturation and over-driving behavior of
-// the now-uncapped collectibles term.
+// the current physical-pickup thoroughness term.
 function makeConditions(quick = false) {
   if (quick) {
     return [
       { group: 'baseline', name: 'default', policy: {} },
-      { group: 'sweep:collectibles', name: 'collectibles=0', policy: { collectibles: 0 }, knob: 'collectibles', value: 0 },
-      { group: 'sweep:collectibles', name: 'collectibles=1', policy: { collectibles: 1 }, knob: 'collectibles', value: 1 },
-      { group: 'sweep:collectibles', name: 'collectibles=3', policy: { collectibles: 3 }, knob: 'collectibles', value: 3 },
-      { group: 'sweep:collectibles', name: 'collectibles=5', policy: { collectibles: 5 }, knob: 'collectibles', value: 5 },
-      { group: 'collect+lowClimb', name: 'c=3,climb=0.3', policy: { collectibles: 3, climb: 0.3 } },
+      { group: 'sweep:thoroughness', name: 'thoroughness=0', policy: { thoroughness: 0 }, knob: 'thoroughness', value: 0 },
+      { group: 'sweep:thoroughness', name: 'thoroughness=1', policy: { thoroughness: 1 }, knob: 'thoroughness', value: 1 },
+      { group: 'sweep:thoroughness', name: 'thoroughness=3', policy: { thoroughness: 3 }, knob: 'thoroughness', value: 3 },
+      { group: 'sweep:thoroughness', name: 'thoroughness=5', policy: { thoroughness: 5 }, knob: 'thoroughness', value: 5 },
+      { group: 'thorough+lowClimb', name: 't=3,climb=0.3', policy: { thoroughness: 3, climb: 0.3 } },
     ];
   }
   const conditions = [
     { group: 'baseline', name: 'default', policy: {} },
   ];
-  // Wide collectibles sweep including extreme values.
+  // Wide thoroughness sweep including extreme values.
   for (const v of [0, 0.5, 1, 2, 3, 5, 8, 12, 20]) {
-    conditions.push({ group: 'sweep:collectibles', name: `collectibles=${v}`, policy: { collectibles: v }, knob: 'collectibles', value: v });
+    conditions.push({ group: 'sweep:thoroughness', name: `thoroughness=${v}`, policy: { thoroughness: v }, knob: 'thoroughness', value: v });
   }
-  // Pair high collectibles with lower climb/pace so the height term isn't dwarfing it.
+  // Pair high thoroughness with lower climb/pace so the height term isn't dwarfing it.
   for (const c of [3, 8, 20]) {
-    conditions.push({ group: 'collect+lowClimb', name: `c=${c},climb=0.3`, policy: { collectibles: c, climb: 0.3 } });
+    conditions.push({ group: 'thorough+lowClimb', name: `t=${c},climb=0.3`, policy: { thoroughness: c, climb: 0.3 } });
   }
   for (const c of [3, 8, 20]) {
-    conditions.push({ group: 'collect+lowPace', name: `c=${c},pace=0.3`, policy: { collectibles: c, pace: 0.3 } });
+    conditions.push({ group: 'thorough+lowPace', name: `t=${c},pace=0.3`, policy: { thoroughness: c, pace: 0.3 } });
   }
   return conditions;
 }
@@ -108,7 +108,6 @@ async function runCondition(browser, url, condition, args) {
           budgetMs,
           maxEdgeRollouts: 240,
           maxStableDepth: 3,
-          targetClimb: 400,
           collectSegments: false,
           policy: condition.policy,
         };
@@ -146,12 +145,12 @@ async function runCondition(browser, url, condition, args) {
             missedPerceived: Math.max(0, trial.uniquePerceivedPastilles - summary.pastilles),
             planMs: trial.planner.avgPlanMs,
             edges: trial.planner.avgEdges,
-            scoreHeightTerm: planner.bestScoreBreakdown.height.mean,
-            scoreCollectTerm: planner.bestScoreBreakdown.collectibles.mean,
-            scoreMissedTerm: planner.bestScoreBreakdown.missedCollect?.mean ?? 0,
-            scoreWallTerm: planner.bestScoreBreakdown.wallRoute.mean,
-            scorePaceCost: planner.bestScoreBreakdown.paceCost.mean,
-            scoreTotal: planner.bestScoreBreakdown.total.mean,
+            scoreClimb: planner.bestScoreBreakdown.climb?.mean ?? 0,
+            scoreThoroughness: planner.bestScoreBreakdown.thoroughness?.mean ?? 0,
+            scoreWall: planner.bestScoreBreakdown.wall?.mean ?? 0,
+            scorePace: planner.bestScoreBreakdown.pace?.mean ?? 0,
+            scoreDetour: planner.bestScoreBreakdown.detour?.mean ?? 0,
+            scoreTotal: planner.bestScoreBreakdown.total?.mean ?? 0,
           };
         });
       }, { chunk, condition, maxTicks: args.maxTicks, budgetMs: args.budgetMs });
@@ -162,7 +161,7 @@ async function runCondition(browser, url, condition, args) {
 
 function reportMarkdown(report) {
   const lines = [
-    '# Interwheel Collectibles Investigation',
+    '# Interwheel Thoroughness Investigation',
     '',
     `- trials per condition: ${report.meta.trials}`,
     `- seed base: ${report.meta.seedBase}`,
@@ -216,14 +215,14 @@ async function main() {
       const result = await runCondition(browser, url, condition, args);
       raw.push(result);
       const quick = summarizeSweep(raw).summaries.at(-1);
-      const policyVal = condition.policy?.collectibles ?? 1;
-      const ratio = policyVal === 0 ? 0 : quick.metrics.scoreCollectTerm.mean / policyVal;
+      const policyVal = condition.policy?.thoroughness ?? 1;
+      const ratio = policyVal === 0 ? 0 : quick.metrics.scoreThoroughness.mean / policyVal;
       console.error(
         `  h=${quick.metrics.height.mean.toFixed(1)}m` +
           ` past/min=${quick.metrics.pastillesPerMin.mean.toFixed(2)}` +
           ` spk/min=${quick.metrics.sparksPerMin.mean.toFixed(2)}` +
           ` bonus/min=${quick.metrics.bonusScorePerMin.mean.toFixed(0)}` +
-          ` collectTerm=${quick.metrics.scoreCollectTerm.mean.toFixed(0)}` +
+          ` thorTerm=${quick.metrics.scoreThoroughness.mean.toFixed(0)}` +
           ` (ratio/policy=${ratio.toFixed(0)})` +
           ` wall=${(result.wallMs / 1000).toFixed(1)}s`,
       );

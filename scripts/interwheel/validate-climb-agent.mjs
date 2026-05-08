@@ -174,12 +174,11 @@ async function main() {
         budgetMs: 5,
         maxEdgeRollouts: 240,
         maxStableDepth: 3,
-        targetClimb: 500,
         collectSegments: false,
         policy: {
           climb: 1.6,
-          collectibles: 0,
-          wallRoutes: 0,
+          thoroughness: 0,
+          wall: 0,
           pace: 0.8,
         },
       };

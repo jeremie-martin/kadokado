@@ -8,7 +8,8 @@
 //   npm run analyze:interwheel -- --trials=10 --seed=42
 //   npm run analyze:interwheel -- --runner=pure     # browser pure sim/planner runner
 //   npm run analyze:interwheel -- --runner=pure --concurrency=8
-//   npm run analyze:interwheel -- --policy.wallRoutes=0.5 --policy.climb=1.2
+//   npm run analyze:interwheel -- --policy.wall=0.5 --policy.climb=1.2
+//   npm run analyze:interwheel -- --policy.thoroughness=0.5 --policy.climb=0.8
 //   npm run analyze:interwheel -- --quick           # 1 seeded trial, capped at 30 in-game seconds
 //   npm run analyze:interwheel -- --max-seconds=30  # cap each trial's simulated duration
 //   npm run analyze:interwheel -- --verify-pure     # compare pure sim replay against mounted headless
@@ -31,7 +32,7 @@ import { chromium } from '@playwright/test';
 const GAME_FPS = 40;
 const DEFAULT_MAX_TICKS = 24_000;
 const QUICK_MAX_SECONDS = 30;
-const POLICY_KEYS = ['climb', 'collectibles', 'wallRoutes', 'pace'];
+const POLICY_KEYS = ['climb', 'thoroughness', 'wall', 'pace', 'detour', 'patience'];
 
 function parseArgs(argv) {
   const args = {
@@ -322,12 +323,13 @@ function printMovementAnalytics(trials) {
   console.log(`  edges       p95(max trial)=${fmtNumber(edgesP95, '', 0)}  max=${fmtNumber(edgesMax, '', 0)}`);
   if (scoreBreakdown) {
     console.log(
-      `  best score  height=${fmtNumber(scoreBreakdown.height, '', 0)}  ` +
-        `collect=${fmtNumber(scoreBreakdown.collectibles, '', 0)}  ` +
-        `wall=${fmtNumber(scoreBreakdown.wallRoute, '', 0)}  ` +
+      `  best score  climb=${fmtNumber(scoreBreakdown.climb, '', 0)}  ` +
+        `thor=${fmtNumber(scoreBreakdown.thoroughness, '', 0)}  ` +
+        `wall=${fmtNumber(scoreBreakdown.wall, '', 0)}  ` +
         `stable=${fmtNumber(scoreBreakdown.stability, '', 0)}  ` +
-        `paceCost=${fmtNumber(scoreBreakdown.paceCost, '', 0)}  ` +
-        `riskCost=${fmtNumber(scoreBreakdown.safetyCost, '', 0)}  ` +
+        `pace=${fmtNumber(scoreBreakdown.pace, '', 0)}  ` +
+        `detour=${fmtNumber(scoreBreakdown.detour, '', 0)}  ` +
+        `safety=${fmtNumber(scoreBreakdown.safety, '', 0)}  ` +
         `total=${fmtNumber(scoreBreakdown.total, '', 0)}`,
     );
   }

@@ -6,6 +6,13 @@ the repro/test loop. It is intentionally separate from
 `interwheel-ai-overlay.md`, which is the cleaner reference for the overlay and
 planner controls.
 
+Status note: this brief describes the collectible-objective problem and some
+historical experiments. The current planner contract is summarized in
+`docs/interwheel-planner-spec.md`: the live pickup knob is `thoroughness`, and
+it counts physical simulator pickup events in a path-cumulative
+`CollectReward`. Stable-surface orbit claims are not active in the current
+planner.
+
 ## Goal
 
 The `collectibles` policy should make the agent choose paths that secure

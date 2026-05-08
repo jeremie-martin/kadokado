@@ -15,16 +15,14 @@ import { DEFAULT_SWEEP_FIELDS, summarizeCondition } from './policy-sweep-utils.m
 // Score-breakdown line aliases (compactTrial keys, one per planner term).
 // Maps the post-redesign breakdown fields to sweep-CSV column names.
 const KNOB_FIELDS = [
-  // Filter out the old DEFAULT_SWEEP_FIELDS that referenced the pre-redesign
-  // breakdown keys (height/collectibles/wallRoute/missedCollect, etc.) — the
-  // breakdown was renamed to climb/collect/wall/miss in Phase 2.5b.
-  ...DEFAULT_SWEEP_FIELDS.filter((f) => !f.startsWith('score')),
+  // Filter out the shared score fields so this script can append the full
+  // current breakdown, including internal physics terms.
+  ...DEFAULT_SWEEP_FIELDS.filter((f) => f === 'score' || !f.startsWith('score')),
   'scoreClimb',
-  'scoreCollect',
+  'scoreThoroughness',
   'scoreWall',
   'scorePace',
   'scoreDetour',
-  'scoreMiss',
   'scoreStability',
   'scoreSafety',
   'scoreTotal',
@@ -91,13 +89,13 @@ function parseArgs(argv) {
 function help() {
   console.log(`Interwheel knob characterization sweep.
 
-Default: trials=12 concurrency=12 max-ticks=2400 (=60s) budget-ms=5
+Default: trials=24 concurrency=12 max-ticks=4800 (=120s) budget-ms=5
 
 USAGE:
-  node scripts/interwheel/sweep-knobs.mjs [--trials=12] [--seed=4200] [--max-seconds=60] [--quick]
+  node scripts/interwheel/sweep-knobs.mjs [--trials=24] [--seed=4200] [--max-seconds=120] [--quick]
 
   --quick:    fewer conditions (one level per knob) AND trials defaults to 4
-              (vs 12) for fast iteration. Override with --trials=N.
+              (vs 24) for fast iteration. Override with --trials=N.
   --trials=N: explicit trial count per condition (always wins over --quick).
 `);
 }
@@ -106,26 +104,26 @@ USAGE:
 // a comparison anchor (configs are measured against this height) and as a
 // rejection filter (configs below 75% of climb-only's mean height are flagged
 // as underperforming).
-const CLIMB_BASE = { climb: 1.0, collect: 0, wall: 0, pace: 0, detour: 0, patience: 0 };
+const CLIMB_BASE = { climb: 1.0, thoroughness: 0, wall: 0, pace: 0, detour: 0, patience: 0 };
 // Old-style: prior default policy values mapped onto the new knob names.
 // Rough comparison only — the formulas changed, so exact-equivalence to the
 // pre-redesign planner is impossible without a git checkout.
-const OLD_STYLE = { climb: 1.08, collect: 1.2, wall: 0.65, pace: 1, detour: 0, patience: 0 };
-// New default (post-redesign operating point).
-const NEW_DEFAULT = { climb: 1.0, collect: 1.0, wall: 0.65, pace: 1, detour: 0.5, patience: 0.65 };
+const OLD_STYLE = { climb: 1.08, thoroughness: 1.2, wall: 0.65, pace: 1, detour: 0, patience: 0 };
+// Current default operating point from DEFAULT_PLANNER_POLICY.
+const NEW_DEFAULT = { climb: 1.0, thoroughness: 0, wall: 0.5, pace: 1.5, detour: 1.0, patience: 0 };
 
 const HEIGHT_FLOOR_FRACTION = 0.75;
 
 // Focus-axis lerp endpoints (must mirror policyFromFocus in ai-interwheel.ts).
 const FOCUS_CLIMB_MAX = 1.6;
 const FOCUS_CLIMB_MIN = 0.3;
-const FOCUS_COLLECT_MAX = 3;
+const FOCUS_THOROUGHNESS_MAX = 2;
 
 function policyFromFocus(focus) {
   return {
     ...NEW_DEFAULT,
     climb: FOCUS_CLIMB_MAX - (FOCUS_CLIMB_MAX - FOCUS_CLIMB_MIN) * focus,
-    collect: FOCUS_COLLECT_MAX * focus,
+    thoroughness: FOCUS_THOROUGHNESS_MAX * focus,
   };
 }
 
@@ -144,8 +142,8 @@ function makeConditions(_quick = false) {
   // === Per-knob isolation around the new default ===
   probe('climb=0.5',     { climb: 0.5 });
   probe('climb=1.5',     { climb: 1.5 });
-  probe('collect=0.5',   { collect: 0.5 });
-  probe('collect=2.0',   { collect: 2.0 });
+  probe('thoroughness=0.5', { thoroughness: 0.5 });
+  probe('thoroughness=2.0', { thoroughness: 2.0 });
   probe('detour=0.25',   { detour: 0.25 });
   probe('detour=1.0',    { detour: 1.0 });
   probe('patience=0',    { patience: 0 });
@@ -295,15 +293,14 @@ async function runCondition(browser, url, condition, args) {
             missedPerceived: Math.max(0, trial.uniquePerceivedPastilles - summary.pastilles),
             planMs: trial.planner.avgPlanMs,
             edges: trial.planner.avgEdges,
-            scoreClimb:     planner.bestScoreBreakdown.climb?.mean     ?? 0,
-            scoreCollect:   planner.bestScoreBreakdown.collect?.mean   ?? 0,
-            scoreWall:      planner.bestScoreBreakdown.wall?.mean      ?? 0,
-            scorePace:      planner.bestScoreBreakdown.pace?.mean      ?? 0,
-            scoreDetour:    planner.bestScoreBreakdown.detour?.mean    ?? 0,
-            scoreMiss:      planner.bestScoreBreakdown.miss?.mean      ?? 0,
-            scoreStability: planner.bestScoreBreakdown.stability?.mean ?? 0,
-            scoreSafety:    planner.bestScoreBreakdown.safety?.mean    ?? 0,
-            scoreTotal:     planner.bestScoreBreakdown.total?.mean     ?? 0,
+            scoreClimb:        planner.bestScoreBreakdown.climb?.mean        ?? 0,
+            scoreThoroughness: planner.bestScoreBreakdown.thoroughness?.mean ?? 0,
+            scoreWall:         planner.bestScoreBreakdown.wall?.mean         ?? 0,
+            scorePace:         planner.bestScoreBreakdown.pace?.mean         ?? 0,
+            scoreDetour:       planner.bestScoreBreakdown.detour?.mean       ?? 0,
+            scoreStability:    planner.bestScoreBreakdown.stability?.mean    ?? 0,
+            scoreSafety:       planner.bestScoreBreakdown.safety?.mean       ?? 0,
+            scoreTotal:        planner.bestScoreBreakdown.total?.mean        ?? 0,
             died,
             climbRateMs,
             peakHeight: peak,
@@ -371,7 +368,7 @@ function reportMarkdown(report) {
   }
 
   lines.push('## Headline metrics per condition', '');
-  lines.push('Each knob row uses CLIMB_BASE (climb=1.0, collectibles=0, wallRoutes=0, pace=0) plus the named knob.');
+  lines.push('Each knob row uses the current planner policy shape (`climb`, `thoroughness`, `wall`, `pace`, `detour`, `patience`).');
   lines.push('');
   lines.push('| condition | h(m) | peak(m) | score | total past | past/min | capture% | climb m/s | wheelLand% | flight% | wheel% | died |');
   lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
@@ -395,12 +392,12 @@ function reportMarkdown(report) {
   }
 
   lines.push('', '## Score breakdown means', '');
-  lines.push('| condition | climb | collect | wall | pace | detour | miss | total |');
-  lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |');
+  lines.push('| condition | climb | thoroughness | wall | pace | detour | total |');
+  lines.push('| --- | ---: | ---: | ---: | ---: | ---: | ---: |');
   for (const s of report.summaries) {
     const m = s.metrics;
     lines.push(
-      `| ${s.name} | ${m.scoreClimb.mean.toFixed(0)} | ${m.scoreCollect.mean.toFixed(0)} | ${m.scoreWall.mean.toFixed(0)} | ${m.scorePace.mean.toFixed(0)} | ${m.scoreDetour.mean.toFixed(0)} | ${m.scoreMiss.mean.toFixed(0)} | ${m.scoreTotal.mean.toFixed(0)} |`,
+      `| ${s.name} | ${m.scoreClimb.mean.toFixed(0)} | ${m.scoreThoroughness.mean.toFixed(0)} | ${m.scoreWall.mean.toFixed(0)} | ${m.scorePace.mean.toFixed(0)} | ${m.scoreDetour.mean.toFixed(0)} | ${m.scoreTotal.mean.toFixed(0)} |`,
     );
   }
 
