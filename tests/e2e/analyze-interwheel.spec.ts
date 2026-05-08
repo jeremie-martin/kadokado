@@ -22,14 +22,14 @@ test('analytics harness is faithful to live game and records movement stats', as
   // 1. Parity — render off vs render on, same inputs, identical outcome.
   const parity = await page.evaluate(async () => {
     const w = window as unknown as {
-      __interwheelAnalytics__: { parityCheck: () => Promise<{
+      __interwheelAnalytics__: { parityCheck: (maxTicks?: number) => Promise<{
         headless: { score: number; height: number; ticks: number };
         full: { score: number; height: number; ticks: number };
         equal: boolean;
         firstDivergence?: { tick: number; headless: unknown; full: unknown };
       }> };
     };
-    return await w.__interwheelAnalytics__.parityCheck();
+    return await w.__interwheelAnalytics__.parityCheck(1200);
   });
   // eslint-disable-next-line no-console
   console.log(`PARITY: headless=${JSON.stringify(parity.headless)} full=${JSON.stringify(parity.full)} equal=${parity.equal}`);

@@ -55,6 +55,8 @@
         </p>
         <div class="actions">
           <button id="game-pause" type="button">Pause</button>
+          <input id="game-seed" type="number" placeholder="seed" style="width: 8em;">
+          <button id="game-reseed" type="button">Reseed</button>
         </div>
         <h2>Policy</h2>
         <div class="controls" id="policy-controls">
@@ -62,6 +64,16 @@
             <label for="policy-focus">Focus (climb ↔ collect)</label>
             <output id="policy-focus-value">0.40</output>
             <input id="policy-focus" type="range" min="0" max="1" step="0.01" value="0.4">
+          </div>
+          <div class="control">
+            <label for="policy-climb">Climb</label>
+            <output id="policy-climb-value">1.08</output>
+            <input id="policy-climb" type="range" min="0" max="3" step="0.01" value="1.08" data-policy-key="climb">
+          </div>
+          <div class="control">
+            <label for="policy-collectibles">Collectibles</label>
+            <output id="policy-collectibles-value">1.20</output>
+            <input id="policy-collectibles" type="range" min="0" max="20" step="0.1" value="1.2" data-policy-key="collectibles">
           </div>
           <div class="control">
             <label for="policy-wallRoutes">Wall routes</label>
@@ -117,6 +129,11 @@
             <label for="overlay-lineageGamma">Lineage γ (descendant filter)</label>
             <output id="overlay-lineageGamma-value">4.0</output>
             <input id="overlay-lineageGamma" type="range" min="1" max="5" step="0.5" value="4" data-overlay-key="lineageGamma">
+          </div>
+          <div class="control">
+            <label for="overlay-lineageClaimAmp">Pastille claim amp</label>
+            <output id="overlay-lineageClaimAmp-value">0.0</output>
+            <input id="overlay-lineageClaimAmp" type="range" min="0" max="10" step="0.5" value="0" data-overlay-key="lineageClaimAmp">
           </div>
           <div class="control">
             <label for="overlay-minSupportRank">Low-support cull</label>
@@ -175,6 +192,10 @@
           <div class="control" style="grid-template-columns: 1fr auto;">
             <label for="overlay-colorByGeneration">Color by generation (debug)</label>
             <input id="overlay-colorByGeneration" type="checkbox" style="grid-column: auto; width: auto;">
+          </div>
+          <div class="control" style="grid-template-columns: 1fr auto;">
+            <label for="overlay-highlightChosen">Highlight chosen chain (debug)</label>
+            <input id="overlay-highlightChosen" type="checkbox" style="grid-column: auto; width: auto;">
           </div>
         </div>
         <div class="actions">

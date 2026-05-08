@@ -1,6 +1,7 @@
 import { mount, type InterwheelGame } from '../games/interwheel/index';
 import { clamp } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
+import { makeSeededRng } from './interwheel-edge-validator';
 import {
   DEFAULT_PLANNER_POLICY,
   InterwheelPlanner,
@@ -42,10 +43,12 @@ const FOCUS_CLIMB_MIN = 0.3;
 const FOCUS_COLLECT_MAX = 3;
 
 // Renderer params trigger a redraw of the cached segments; planner params
-// (lineageGamma, lineageDecay) require a re-plan to recompute support.
+// (lineageGamma, lineageDecay, lineageClaimAmp) require a re-plan to
+// recompute support.
 const OVERLAY_PARAM_DEFAULTS = {
   lineageDecay: LINEAGE_DEFAULTS.decay,
   lineageGamma: LINEAGE_DEFAULTS.gamma,
+  lineageClaimAmp: LINEAGE_DEFAULTS.claimAmp,
   minSupportRank: OVERLAY_DEFAULTS.minSupportRank,
   widthMin: OVERLAY_DEFAULTS.widthMin,
   widthMax: OVERLAY_DEFAULTS.widthMax,
@@ -62,6 +65,7 @@ const OVERLAY_PARAM_KEYS = Object.keys(OVERLAY_PARAM_DEFAULTS) as OverlayParamKe
 const OVERLAY_PARAM_PRECISION: Record<OverlayParamKey, number> = {
   lineageDecay: 2,
   lineageGamma: 1,
+  lineageClaimAmp: 1,
   minSupportRank: 2,
   widthMin: 2,
   widthMax: 1,
@@ -78,6 +82,7 @@ const overlayParamOutputs = new Map<OverlayParamKey, HTMLOutputElement>();
 const overlayReset = document.getElementById('overlay-reset') as HTMLButtonElement | null;
 const colorInput = document.getElementById('overlay-color') as HTMLInputElement | null;
 const colorByGenerationInput = document.getElementById('overlay-colorByGeneration') as HTMLInputElement | null;
+const highlightChosenInput = document.getElementById('overlay-highlightChosen') as HTMLInputElement | null;
 let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
 let overlayColor: number = OVERLAY_DEFAULTS.color;
 let lookaheadScreens = PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove;
@@ -98,6 +103,10 @@ let lastShownSegments = 0;
 let lastShownEdges = 0;
 let lastCulledEdges = 0;
 let lastSupportRange = '—';
+let lastDiagnosticsLeaves = '—';
+let lastDiagnosticsValueSpread = '—';
+let lastDiagnosticsSupportShare = '—';
+let lastDiagnosticsClaim = '—';
 let pendingPress: boolean | null = null;
 let isPaused = false;
 
@@ -259,6 +268,10 @@ function applyOverlayParam(key: OverlayParamKey, value: number): void {
       planner?.setLineage({ gamma: value });
       schedulePolicyPreview();
       break;
+    case 'lineageClaimAmp':
+      planner?.setLineage({ claimAmp: value });
+      schedulePolicyPreview();
+      break;
     case 'minSupportRank':
       overlay?.setMinSupportRank(value);
       redrawOverlayFromCache();
@@ -336,14 +349,29 @@ function setupOverlayParamControls(): void {
     refreshStats();
   });
 
+  highlightChosenInput?.addEventListener('change', () => {
+    overlay?.setHighlightChosenChain(highlightChosenInput.checked);
+    redrawOverlayFromCache();
+    refreshStats();
+  });
+
   overlayReset?.addEventListener('click', () => {
     for (const key of OVERLAY_PARAM_KEYS) {
       applyOverlayParam(key, OVERLAY_PARAM_DEFAULTS[key]);
     }
     applyOverlayColor(OVERLAY_DEFAULTS.color);
+    if (colorByGenerationInput) colorByGenerationInput.checked = false;
+    overlay?.setColorByGeneration(false);
+    if (highlightChosenInput) highlightChosenInput.checked = OVERLAY_DEFAULTS.highlightChosenChain;
+    overlay?.setHighlightChosenChain(OVERLAY_DEFAULTS.highlightChosenChain);
+    redrawOverlayFromCache();
     schedulePolicyPreview();
   });
 
+  if (colorByGenerationInput) colorByGenerationInput.checked = false;
+  overlay?.setColorByGeneration(false);
+  if (highlightChosenInput) highlightChosenInput.checked = OVERLAY_DEFAULTS.highlightChosenChain;
+  overlay?.setHighlightChosenChain(OVERLAY_DEFAULTS.highlightChosenChain);
   syncOverlayParamControls();
 }
 
@@ -378,8 +406,34 @@ function recordPlanResult(result: PlanResult): void {
   lastEdges = result.stats.edgesEvaluated;
   lastNodes = result.stats.stableNodesExpanded;
   lastPerceived = `${result.stats.perceivedWheels}w/${result.stats.perceivedPastilles}p`;
+  recordDiagnostics(result);
   overlay?.draw(result.segments);
   refreshOverlayStats();
+}
+
+function recordDiagnostics(result: PlanResult): void {
+  const d = result.stats.diagnostics;
+  if (d.leafCount === 0) {
+    lastDiagnosticsLeaves = '—';
+    lastDiagnosticsValueSpread = '—';
+    lastDiagnosticsSupportShare = '—';
+    lastDiagnosticsClaim = '—';
+    return;
+  }
+  // Compact depth histogram: "12·1, 4·2, 0·3, 1·4" → 12 leaves at depth 1, 4 at 2, etc.
+  const depthParts: string[] = [];
+  for (let d2 = 1; d2 < d.leafDepthCounts.length; d2 += 1) {
+    const c = d.leafDepthCounts[d2] ?? 0;
+    depthParts.push(`${c}·${d2}`);
+  }
+  lastDiagnosticsLeaves = `${d.leafCount} (${depthParts.join(', ')})`;
+  const range = d.leafValueMax - d.leafValueMin;
+  lastDiagnosticsValueSpread = `[${Math.round(d.leafValueP25)}, ${Math.round(d.leafValueP50)}, ${Math.round(d.leafValueP75)}] Δ${Math.round(range)}`;
+  lastDiagnosticsSupportShare =
+    `top ${(d.supportTopShare * 100).toFixed(1)}% · top3 ${(d.supportTop3Share * 100).toFixed(1)}% · chosen ${(d.supportChosenShare * 100).toFixed(1)}%`;
+  lastDiagnosticsClaim = d.totalClaimedPastilles > 0
+    ? `${d.totalClaimedPastilles} past · ${d.leavesWithCaptures}/${d.leafCount} leaves`
+    : '0';
 }
 
 function planAndRecordNextPress(): void {
@@ -448,10 +502,32 @@ function refreshStats(): void {
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
     statItem('Culled', `${lastCulledEdges} edges`),
     statItem('Support', lastSupportRange),
+    statItem('Leaves', lastDiagnosticsLeaves),
+    statItem('Leaf values (p25/50/75)', lastDiagnosticsValueSpread),
+    statItem('Support share', lastDiagnosticsSupportShare),
+    statItem('Claimed', lastDiagnosticsClaim),
   );
 }
 
 function attachAI(g: InterwheelGame): void {
+  // Wrap reset so any reset (initial mount, death-respawn, manual reseed)
+  // honors the current seed. Without this, the seeded RNG would only apply to
+  // the first reset() call.
+  const originalReset = g.reset.bind(g);
+  g.reset = (() => {
+    if (currentSeed === null) {
+      originalReset();
+      return;
+    }
+    const savedRandom = Math.random;
+    Math.random = makeSeededRng(currentSeed);
+    try {
+      originalReset();
+    } finally {
+      Math.random = savedRandom;
+    }
+  }) as typeof g.reset;
+
   planner = new InterwheelPlanner(g.sim, {
     policy,
     revealScreensAbove: lookaheadScreens,
@@ -492,6 +568,9 @@ function attachAI(g: InterwheelGame): void {
 }
 
 const pauseButton = document.getElementById('game-pause') as HTMLButtonElement | null;
+const seedInput = document.getElementById('game-seed') as HTMLInputElement | null;
+const reseedButton = document.getElementById('game-reseed') as HTMLButtonElement | null;
+let currentSeed: number | null = null;
 
 function setPaused(p: boolean): void {
   isPaused = p;
@@ -500,6 +579,37 @@ function setPaused(p: boolean): void {
 }
 
 pauseButton?.addEventListener('click', () => setPaused(!isPaused));
+
+// Read ?seed=... from the URL on load so a particular scene URL is shareable.
+function readSeedFromUrl(): number | null {
+  const raw = new URLSearchParams(window.location.search).get('seed');
+  if (raw === null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function readSeedFromInput(): number | null {
+  if (!seedInput) return null;
+  const raw = seedInput.value.trim();
+  if (raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+function reseedGame(): void {
+  if (!game) return;
+  currentSeed = readSeedFromInput();
+  // Re-applying the seed counts as a fresh scene; clear planner memory.
+  planner?.invalidate();
+  game.reset();
+  pendingPress = null;
+  overlay?.draw([]);
+  refreshOverlayStats();
+  refreshStats();
+}
+
+reseedButton?.addEventListener('click', reseedGame);
+seedInput?.addEventListener('change', () => { currentSeed = readSeedFromInput(); });
 
 window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyA') {
@@ -522,9 +632,22 @@ window.addEventListener('keydown', (e) => {
   }
 });
 
+// Apply ?seed=... before mount so the very first scene (built in the game's
+// constructor) is reproducible. Subsequent resets honor the input field via
+// the wrapper installed in attachAI.
+const urlSeed = readSeedFromUrl();
+if (urlSeed !== null) {
+  currentSeed = urlSeed;
+  if (seedInput) seedInput.value = String(urlSeed);
+}
+
+const savedRandomForMount = Math.random;
+if (currentSeed !== null) Math.random = makeSeededRng(currentSeed);
+
 mount(stage as HTMLElement, {
   host: noopGameHost,
   onReady: (g) => {
+    Math.random = savedRandomForMount;
     game = g as InterwheelGame;
     (window as unknown as { __game__: InterwheelGame }).__game__ = game;
     attachAI(game);

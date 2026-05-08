@@ -1421,7 +1421,7 @@ async function comparePurePlannerCorpus(opts: AnalyzeInterwheelOpts = {}): Promi
   };
 }
 
-async function parityCheck(): Promise<{
+async function parityCheck(maxTicks = 24_000): Promise<{
   headless: { score: number; height: number; ticks: number };
   full:  { score: number; height: number; ticks: number };
   equal: boolean;
@@ -1445,7 +1445,7 @@ async function parityCheck(): Promise<{
   };
   // Use the existing wrapped update; sample after each tick.
   let ticks = 0;
-  while (!game.ended && ticks < 24_000) {
+  while (!game.ended && ticks < maxTicks) {
     game.update();
     sampleInto(headlessSamples);
     ticks += 1;
@@ -1478,7 +1478,7 @@ async function parityCheck(): Promise<{
   // Phase A's recording skips the ending phase (the AI doesn't run during
   // those ~30 ticks). Drain that tail here so Phase B reaches the same
   // ended-state Phase A did. Cap by Phase A's sample count rather than a
-  // fixed tick budget — Phase A's loop runs up to 24k ticks, and a stale
+  // fixed tick budget — Phase A's loop runs up to maxTicks, and a stale
   // smaller cap here would silently mask real divergences as length deltas.
   while (!game.ended && fullSamples.length < headlessSamples.length) {
     game.update();

@@ -69,16 +69,25 @@ The main scoring fix is that directional terms are local to the edge:
   `UNRESOLVED_FLIGHT_PENALTY`; it should not rank as a good candidate just
   because it flew upward into unknown space.
 
-Collectibles influence both edge score and node priority:
+Collectibles are scored on the root-to-node path, not as an independent local
+edge preference:
 
-- Each edge incurs a `missedCollect` cost proportional to
-  `policy.collectibles` for any perceived pastille passed within
-  `MISS_PROXIMITY_PX = 300` but not picked up (`MISS_PENALTY_FACTOR = 1.0`,
-  linear proximity weight).
+- Each edge records only pickup facts: unique pastilles collected, spark score,
+  and minimum distance to each perceived pastille.
+- A child node extends its parent's `pathReward` by unioning picked pastille
+  keys, accumulating spark score, and carrying the best minimum distance seen
+  anywhere along the path.
+- `collectibles` and `missedCollect` are both computed from that path reward.
+  A deep leaf that captures a valuable pastille therefore makes its whole
+  ancestor chain valuable through the selected path and lineage support.
+- `missedCollect` is proportional to `policy.collectibles` for perceived
+  pastilles passed within `MISS_PROXIMITY_PX = 300` anywhere on the path but
+  not picked up (`MISS_PENALTY_FACTOR = 1.0`, cubic proximity weight).
 - `nodePriority` adds a `collectibleBias` term: `exp(-d / NODE_BIAS_DECAY_PX)`
   summed over uncollected pastilles, scaled by `policy.collectibles *
   NODE_BIAS_FACTOR` (`NODE_BIAS_DECAY_PX = 400`, `NODE_BIAS_FACTOR = 1.5`).
-  This pulls best-first expansion toward branches that approach pickups.
+  This only pulls best-first expansion toward branches that approach pickups;
+  it is not the value assigned to the final path.
 
 There is one temporary A/B knob in the playground:
 
@@ -104,14 +113,24 @@ support = isLeaf ? rank(edge.value among leaves)^lineageGamma : 0
 support[parent] += support[child] * lineageDecay
 ```
 
+For leaf edges, `edge.value` is the cumulative root-to-leaf path value of the
+child node, including path-level collectible reward and path-level miss cost.
+
 Defaults:
 
 - `lineageGamma = 4`
 - `lineageDecay = 0.65`
+- `lineageClaimAmp = 0`
 
 This gives a first jump visual credit for the competitive continuations it
 enables. It is the Interwheel equivalent of Mario's additive overdraw, but
 explicit and score-aware instead of ring-buffer accidental.
+
+`lineageClaimAmp` is an optional debug/tuning lens. When it is greater than
+zero, each perceived pastille captured by one or more leaves is assigned to the
+highest-valued leaf that captured it, and that leaf seed gets an extra
+uniqueness multiplier. The default `0` keeps lineage support purely path-value
+based.
 
 ## Renderer
 
@@ -137,7 +156,8 @@ draw = rank(support) >= minSupportRank
 ```
 
 Drawn lines use support rank for alpha, so weak alternatives can recede without
-being fully removed. The chosen chain is not highlighted by the renderer.
+being fully removed. The chosen chain is not highlighted by default; the
+playground has a debug checkbox that draws it over the normal support view.
 
 ```text
 alpha = lerp(alphaMin, alphaMax, rank(support)^alphaGamma)
@@ -179,6 +199,8 @@ future continuations.
 Policy controls affect planner score:
 
 - Focus
+- Climb
+- Collectibles
 - Wall routes
 - Pace
 
@@ -186,6 +208,7 @@ Overlay controls affect rendering or support recomputation:
 
 - Lineage decay
 - Lineage gamma
+- Pastille claim amp
 - Low-support cull
 - Width base / min
 - Width cap / max
@@ -194,6 +217,7 @@ Overlay controls affect rendering or support recomputation:
 - Alpha min/max/gamma
 - Line color
 - Color by generation
+- Highlight chosen chain
 
 Planner experiment:
 

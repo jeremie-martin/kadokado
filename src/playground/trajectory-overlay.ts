@@ -19,6 +19,7 @@ export const OVERLAY_DEFAULTS: {
   alphaGamma: number;
   generationWidthWeights: TrajectoryGenerationWidthWeights;
   color: number;
+  highlightChosenChain: boolean;
 } = {
   minSupportRank: 0.7,
   widthMin: 0.3,
@@ -29,6 +30,7 @@ export const OVERLAY_DEFAULTS: {
   alphaGamma: 4,
   generationWidthWeights: DEFAULT_TRAJECTORY_GENERATION_WIDTH_WEIGHTS,
   color: 0xff3333,
+  highlightChosenChain: false,
 };
 
 // Debug palette for "color by generation" mode. Each search-tree depth gets
@@ -86,6 +88,7 @@ export class TrajectoryOverlay {
   private generationWidthWeights = normalizeTrajectoryGenerationWidthWeights(OVERLAY_DEFAULTS.generationWidthWeights);
   private color = OVERLAY_DEFAULTS.color;
   private colorByGeneration = false;
+  private highlightChosenChain = OVERLAY_DEFAULTS.highlightChosenChain;
 
   constructor(parent: Container) {
     this.graphics.roundPixels = true;
@@ -154,6 +157,10 @@ export class TrajectoryOverlay {
     this.colorByGeneration = on;
   }
 
+  setHighlightChosenChain(on: boolean): void {
+    this.highlightChosenChain = on;
+  }
+
   lastDrawnStats(): OverlayStats {
     return this.stats;
   }
@@ -203,18 +210,23 @@ export class TrajectoryOverlay {
     const drawnEdges = new Set<number>();
     let drawnSegments = 0;
     let maxGeneration = 0;
-    const runs: DrawRun[] = [];
+    const normalRuns: DrawRun[] = [];
+    const chosenRuns: DrawRun[] = [];
 
     for (const s of segments) {
       const generationWidthWeight = this.generationWidthWeight(s.generation);
       if (generationWidthWeight <= 0) continue;
       const supportRank = rankByEdge.get(s.edgeId) ?? 0;
-      if (supportRank < this.minSupportRank) continue;
-      const width = this.widthForSupport(s.support, widthLow, widthHigh, leafSupportTotal) * generationWidthWeight;
-      const alpha = this.alphaForRank(supportRank);
-      const color = this.colorByGeneration
+      const highlightChosen = this.highlightChosenChain && s.onChosenChain;
+      if (supportRank < this.minSupportRank && !highlightChosen) continue;
+      const width = highlightChosen
+        ? Math.max(widthHigh, 6) * generationWidthWeight
+        : this.widthForSupport(s.support, widthLow, widthHigh, leafSupportTotal) * generationWidthWeight;
+      const alpha = highlightChosen ? 1 : this.alphaForRank(supportRank);
+      const color = highlightChosen ? 0x58f4ff : this.colorByGeneration
         ? GENERATION_COLORS[(Math.max(1, s.generation) - 1) % GENERATION_COLORS.length]
         : this.color;
+      const runs = highlightChosen ? chosenRuns : normalRuns;
       const lastRun = runs[runs.length - 1];
       if (lastRun?.edgeId === s.edgeId) {
         lastRun.segments.push(s);
@@ -226,7 +238,7 @@ export class TrajectoryOverlay {
       maxGeneration = Math.max(maxGeneration, s.generation);
     }
 
-    for (const run of runs) {
+    for (const run of [...normalRuns, ...chosenRuns]) {
       let px = Number.NaN;
       let py = Number.NaN;
       for (const s of run.segments) {

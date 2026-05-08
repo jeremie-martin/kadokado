@@ -43,9 +43,13 @@ const DEFAULT_LONG_WAIT_PENALTY = 0.08;
 // decay: fraction of a child's support a parent inherits in the bottom-up
 //   pass. decay=0 makes only leaves visible as important; decay near 1
 //   amplifies common prefixes that lead to many strong futures.
-export const LINEAGE_DEFAULTS: { gamma: number; decay: number } = {
+// claimAmp: optional per-pastille uniqueness amplifier for leaf seeds. This is
+//   a debug/tuning lens, not part of the core planner objective: claimAmp=0
+//   keeps lineage support purely path-value based.
+export const LINEAGE_DEFAULTS: { gamma: number; decay: number; claimAmp: number } = {
   gamma: 4,
   decay: 0.65,
+  claimAmp: 0,
 };
 
 // Temporary objective tweak kept as an A/B knob while tuning follow-up jumps.
@@ -72,6 +76,11 @@ export const OBJECTIVE_DEFAULTS: ObjectiveFlags = {
 const MISS_PROXIMITY_PX = 300;
 const MISS_PROXIMITY_PX_SQ = MISS_PROXIMITY_PX * MISS_PROXIMITY_PX;
 const MISS_PENALTY_FACTOR = 1.0;
+// Cubic falloff on missed-pastille proximity weight: only paths that should
+// plausibly have collected pay a meaningful penalty, instead of the prior
+// linear weight which taxed almost every flight that came within 300px of
+// any pastille and flattened the differentiating signal.
+const MISS_PROXIMITY_EXP = 3;
 const NODE_BIAS_DECAY_PX = 400;
 const NODE_BIAS_FACTOR = 1.5;
 const STATE_BONUS: Record<number, number> = {
@@ -80,13 +89,14 @@ const STATE_BONUS: Record<number, number> = {
 };
 const STATE_BONUS_FALLBACK = -1_000;
 
-type EdgeReward = {
+type CollectReward = {
   pickedValue: number;
   sparkScore: number;
   collectedKeys: Set<string>;
+  pickedValuesByKey: Map<string, number>;
   // Parallel to currentPerceived.snap.pastilles; squared min distance from
-  // any sampled blob position along the edge to that pastille. Used to
-  // penalize routes that bypass nearby uncollected pastilles.
+  // sampled blob positions to that pastille. Edge rewards track one edge;
+  // node path rewards track the whole root-to-node path.
   minDistSq: Float64Array;
 };
 
@@ -111,6 +121,7 @@ type SearchNode = {
   totalTicks: number;
   value: number;
   collectibleBias: number;
+  pathReward: CollectReward;
 };
 
 type SearchEdge = {
@@ -123,7 +134,8 @@ type SearchEdge = {
   isDead: boolean;
   isStable: boolean;
   value: number;
-  reward: EdgeReward;
+  reward: CollectReward;
+  pathReward: CollectReward;
   scoreBreakdown: CandidateScoreBreakdown;
   segments: SegmentBody[];
 };
@@ -147,6 +159,33 @@ export type Segment = {
 
 type SegmentBody = Omit<Segment, 'edgeId' | 'support' | 'onChosenChain' | 'isLeaf' | 'generation'>;
 
+export type PlannerDiagnostics = {
+  // Leaves (frontier edges) of the search tree.
+  leafCount: number;
+  // leafDepthCounts[d] = number of leaves at depth d. Index 0 is unused.
+  leafDepthCounts: number[];
+  // Leaf-edge value distribution. p10/p25/p50/p75/p90 are sample percentiles.
+  leafValueMin: number;
+  leafValueP10: number;
+  leafValueP25: number;
+  leafValueP50: number;
+  leafValueP75: number;
+  leafValueP90: number;
+  leafValueMax: number;
+  // Number of unique pastille keys claimed across leaves (size of the
+  // pastille-winner map). 0 when no leaf captured anything.
+  totalClaimedPastilles: number;
+  // How many leaves had any captured pastille at all.
+  leavesWithCaptures: number;
+  // Post-propagation support distribution across all rendered edges. Useful
+  // to test whether one chain visibly dominates: a sharp tree has high
+  // top-share, a flat fan has low top-share.
+  supportTopShare: number;
+  supportTop3Share: number;
+  supportChosenShare: number;
+  supportTotal: number;
+};
+
 export type PlannerStats = {
   mode: 'dead' | 'flight' | 'idle' | 'stable';
   planMs: number;
@@ -157,7 +196,28 @@ export type PlannerStats = {
   segments: number;
   bestScore: number;
   bestScoreBreakdown: CandidateScoreBreakdown;
+  diagnostics: PlannerDiagnostics;
 };
+
+export function emptyDiagnostics(): PlannerDiagnostics {
+  return {
+    leafCount: 0,
+    leafDepthCounts: [],
+    leafValueMin: 0,
+    leafValueP10: 0,
+    leafValueP25: 0,
+    leafValueP50: 0,
+    leafValueP75: 0,
+    leafValueP90: 0,
+    leafValueMax: 0,
+    totalClaimedPastilles: 0,
+    leavesWithCaptures: 0,
+    supportTopShare: 0,
+    supportTop3Share: 0,
+    supportChosenShare: 0,
+    supportTotal: 0,
+  };
+}
 
 export type PlanResult = {
   plan: boolean[];
@@ -260,6 +320,7 @@ export class InterwheelPlanner {
   private currentPerceivedKeys: string[] = [];
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
+  private lineageClaimAmp = LINEAGE_DEFAULTS.claimAmp;
   private objective: ObjectiveFlags = { ...OBJECTIVE_DEFAULTS };
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
@@ -310,14 +371,15 @@ export class InterwheelPlanner {
     this.lastResult = null;
   }
 
-  setLineage(params: { gamma?: number; decay?: number }): void {
+  setLineage(params: { gamma?: number; decay?: number; claimAmp?: number }): void {
     if (params.gamma !== undefined) this.lineageGamma = Math.max(0.1, params.gamma);
     if (params.decay !== undefined) this.lineageDecay = clamp(params.decay, 0, 1);
+    if (params.claimAmp !== undefined) this.lineageClaimAmp = Math.max(0, params.claimAmp);
     this.lastResult = null;
   }
 
-  getLineage(): { gamma: number; decay: number } {
-    return { gamma: this.lineageGamma, decay: this.lineageDecay };
+  getLineage(): { gamma: number; decay: number; claimAmp: number } {
+    return { gamma: this.lineageGamma, decay: this.lineageDecay, claimAmp: this.lineageClaimAmp };
   }
 
   setRevealScreensAbove(screens: number): void {
@@ -408,10 +470,12 @@ export class InterwheelPlanner {
       rootState,
       0,
       0,
-      { pickedValue: 0, sparkScore: 0, collectedKeys: new Set<string>(), minDistSq: new Float64Array(0) },
+      this.emptyCollectReward(0),
+      this.emptyCollectReward(0),
       this.emptyRoute(rootState),
       false,
     );
+    const rootReward = this.emptyCollectReward(this.currentPerceivedKeys.length);
     const root: SearchNode = {
       id: 0,
       parentId: -1,
@@ -421,12 +485,12 @@ export class InterwheelPlanner {
       totalTicks: 0,
       value: rootScore.total,
       collectibleBias: this.collectibleBias(rootState),
+      pathReward: rootReward,
     };
 
     const nodes: SearchNode[] = [root];
     const edges: SearchEdge[] = [];
     const open: SearchNode[] = [root];
-    let bestNode: SearchNode | null = null;
     let fallbackEdge: SearchEdge | null = null;
     let stableNodesExpanded = 0;
 
@@ -451,23 +515,26 @@ export class InterwheelPlanner {
           totalTicks: node.totalTicks + edge.plan.length,
           value: edge.value,
           collectibleBias: this.collectibleBias(edge.endState),
+          pathReward: edge.pathReward,
         };
         edge.childId = child.id;
         nodes.push(child);
 
         if (!edge.isDead && edge.isStable) {
-          if (!bestNode || child.value > bestNode.value) bestNode = child;
           open.push(child);
         }
       }
     }
 
-    const targetNode = bestNode ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
+    const targetNode = this.bestStableLeafNode(nodes, edges)
+      ?? this.bestStableNode(nodes, edges)
+      ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
-    const support = this.lineageSupportForEdges(nodes, edges);
-    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, support, nodes) : [];
+    const supportResult = this.lineageSupportForEdges(nodes, edges);
+    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, supportResult.support, nodes) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
+    const diagnostics = this.computeDiagnostics(nodes, edges, supportResult, bestEdgeIds);
     return {
       plan: plan.length > 0 ? plan : [false],
       segments,
@@ -482,6 +549,7 @@ export class InterwheelPlanner {
         segments: segments.length,
         bestScore: targetNode.value,
         bestScoreBreakdown,
+        diagnostics,
       },
     };
   }
@@ -537,6 +605,7 @@ export class InterwheelPlanner {
         segments: segments.length,
         bestScore: 0,
         bestScoreBreakdown: emptyScoreBreakdown(),
+        diagnostics: emptyDiagnostics(),
       },
     };
   }
@@ -546,13 +615,7 @@ export class InterwheelPlanner {
     const plan: boolean[] = [];
     const segments: SegmentBody[] = [];
     const perceivedPastilles = this.currentPerceived?.snap.pastilles ?? [];
-    const minDistSq = new Float64Array(perceivedPastilles.length);
-    for (let i = 0; i < minDistSq.length; i += 1) minDistSq[i] = Infinity;
-    const reward: EdgeReward = {
-      pickedValue: 0, sparkScore: 0,
-      collectedKeys: new Set<string>(),
-      minDistSq,
-    };
+    const reward = this.emptyCollectReward(perceivedPastilles.length);
     const route = this.emptyRoute(parent.state);
     sim.restore(parent.state);
 
@@ -569,7 +632,7 @@ export class InterwheelPlanner {
           const p = perceivedPastilles[i];
           const dx = p.x - bx, dy = p.y - by;
           const d2 = dx * dx + dy * dy;
-          if (d2 < minDistSq[i]) minDistSq[i] = d2;
+          if (d2 < reward.minDistSq[i]) reward.minDistSq[i] = d2;
         }
       }
       if (!this.cfg.collectSegments) return;
@@ -630,12 +693,14 @@ export class InterwheelPlanner {
     const isDead = this.isTerminal(endState);
     const isStable = endState.blob.state === BLOB_STATE_GRAB || endState.blob.state === BLOB_STATE_WALL;
     route.endedOnWall = endState.blob.state === BLOB_STATE_WALL;
+    const pathReward = this.extendCollectReward(parent.pathReward, reward);
     const scoreBreakdown = this.scoreCandidate(
       rootState,
       parent.state,
       endState,
       parent.totalTicks + plan.length,
       waitTicks,
+      pathReward,
       reward,
       route,
       this.isSameStableTarget(parent.state, endState),
@@ -652,15 +717,62 @@ export class InterwheelPlanner {
       isStable,
       value,
       reward,
+      pathReward,
       scoreBreakdown,
       segments,
     };
   }
 
-  private collectStepReward(sim: ScratchInterwheelSim, reward: EdgeReward): void {
+  private emptyCollectReward(pastilleCount: number): CollectReward {
+    const minDistSq = new Float64Array(pastilleCount);
+    for (let i = 0; i < minDistSq.length; i += 1) minDistSq[i] = Infinity;
+    return {
+      pickedValue: 0,
+      sparkScore: 0,
+      collectedKeys: new Set<string>(),
+      pickedValuesByKey: new Map<string, number>(),
+      minDistSq,
+    };
+  }
+
+  private extendCollectReward(parent: CollectReward, edge: CollectReward): CollectReward {
+    const pickedValuesByKey = new Map(parent.pickedValuesByKey);
+    const collectedKeys = new Set(parent.collectedKeys);
+    let pickedValue = parent.pickedValue;
+
+    for (const [key, value] of edge.pickedValuesByKey) {
+      if (collectedKeys.has(key)) continue;
+      collectedKeys.add(key);
+      pickedValuesByKey.set(key, value);
+      pickedValue += value;
+    }
+
+    const n = Math.max(parent.minDistSq.length, edge.minDistSq.length);
+    const minDistSq = new Float64Array(n);
+    for (let i = 0; i < n; i += 1) {
+      const parentDist = i < parent.minDistSq.length ? parent.minDistSq[i] : Infinity;
+      const edgeDist = i < edge.minDistSq.length ? edge.minDistSq[i] : Infinity;
+      minDistSq[i] = Math.min(parentDist, edgeDist);
+    }
+
+    return {
+      pickedValue,
+      sparkScore: parent.sparkScore + edge.sparkScore,
+      collectedKeys,
+      pickedValuesByKey,
+      minDistSq,
+    };
+  }
+
+  private collectStepReward(sim: ScratchInterwheelSim, reward: CollectReward): void {
     for (const pastille of sim.events.collectedPastilles) {
-      reward.pickedValue += SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
-      reward.collectedKeys.add(this.pastilleKey(pastille));
+      const key = this.pastilleKey(pastille);
+      const value = SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
+      if (!reward.collectedKeys.has(key)) {
+        reward.pickedValue += value;
+        reward.collectedKeys.add(key);
+        reward.pickedValuesByKey.set(key, value);
+      }
     }
     for (const spark of sim.events.collectedSparks) {
       reward.sparkScore += spark.score;
@@ -673,13 +785,14 @@ export class InterwheelPlanner {
     end: SimSnapshot,
     totalTicks: number,
     waitTicks: number,
-    reward: EdgeReward,
+    pathReward: CollectReward,
+    edgeReward: CollectReward,
     route: EdgeRoute,
     sameStableTarget: boolean,
   ): CandidateScoreBreakdown {
     const waitPenalty = this.waitPenalty(waitTicks);
     if (this.isTerminal(end)) {
-      const collectibles = this.cfg.policy.collectibles * (reward.pickedValue * 1.5 + reward.sparkScore * 3);
+      const collectibles = this.cfg.policy.collectibles * this.collectibleScorePolicy(pathReward);
       const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
       const safetyCost = 1_000_000;
       return {
@@ -714,14 +827,18 @@ export class InterwheelPlanner {
       end.maxHeight +
       heightGain * 9 +
       yGain * yGainWeight;
-    const scorePolicy =
-      reward.sparkScore * 3 +
-      reward.pickedValue * 1.5;
+    const scorePolicy = this.collectibleScorePolicy(pathReward);
     const scoreTerm = scorePolicy * this.cfg.scoreBias * (1 - waterUrgency * 0.85);
-    const loopPenalty = sameStableTarget && reward.pickedValue + reward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
+    const loopPenalty = sameStableTarget && edgeReward.pickedValue + edgeReward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
     const height = this.cfg.policy.climb * heightPolicy * (1 + waterUrgency * 1.2);
     const collectibles = this.cfg.policy.collectibles * scoreTerm;
-    const missedCollect = this.cfg.policy.collectibles * this.missedCollectibleValue(reward) * MISS_PENALTY_FACTOR;
+    // Same waterUrgency dampening as `collectibles` reward above so the miss
+    // penalty doesn't keep full strength while the corresponding pickup
+    // reward is being quenched near the water.
+    const missedCollect = this.cfg.policy.collectibles
+      * this.missedCollectibleValue(pathReward)
+      * MISS_PENALTY_FACTOR
+      * (1 - waterUrgency * 0.85);
     const wallRoute = this.cfg.policy.wallRoutes * this.wallRouteValue(route);
     const stability = stateBonus;
     const paceCost = this.cfg.policy.pace * (totalTicks * 4 + waitPenalty);
@@ -746,10 +863,17 @@ export class InterwheelPlanner {
     };
   }
 
+  private collectibleScorePolicy(reward: CollectReward): number {
+    return reward.sparkScore * 3 + reward.pickedValue * 1.5;
+  }
+
   // Sum perceived pastille values that the route passed within
-  // MISS_PROXIMITY_PX of but did not collect. Linear proximity weight
-  // (1 at the pastille, 0 at the threshold) keeps the signal smooth.
-  private missedCollectibleValue(reward: EdgeReward): number {
+  // MISS_PROXIMITY_PX of but did not collect. Cubic proximity weight: only
+  // path samples that came close enough to plausibly collect pay a meaningful
+  // penalty. The prior linear weight made almost every
+  // flight that came within 300px of any pastille pay something, which
+  // distributed the cost broadly and flattened the collect signal.
+  private missedCollectibleValue(reward: CollectReward): number {
     const perceived = this.currentPerceived?.snap.pastilles;
     if (!perceived || perceived.length === 0) return 0;
     const keys = this.currentPerceivedKeys;
@@ -759,7 +883,8 @@ export class InterwheelPlanner {
       const d2 = reward.minDistSq[i];
       if (!Number.isFinite(d2) || d2 >= MISS_PROXIMITY_PX_SQ) continue;
       const p = perceived[i];
-      const proximity = 1 - Math.sqrt(d2) / MISS_PROXIMITY_PX;
+      const linear = 1 - Math.sqrt(d2) / MISS_PROXIMITY_PX;
+      const proximity = Math.pow(linear, MISS_PROXIMITY_EXP);
       missed += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * proximity;
     }
     return missed;
@@ -842,6 +967,26 @@ export class InterwheelPlanner {
     return node.value + yGainTerm - node.totalTicks * 1.5 + node.collectibleBias;
   }
 
+  private bestStableLeafNode(nodes: SearchNode[], edges: SearchEdge[]): SearchNode | null {
+    let best: SearchNode | null = null;
+    for (const edge of this.leafEdgeIds(edges)) {
+      if (edge.isDead || !edge.isStable || edge.childId < 0) continue;
+      const node = nodes[edge.childId];
+      if (!best || node.value > best.value) best = node;
+    }
+    return best;
+  }
+
+  private bestStableNode(nodes: SearchNode[], edges: SearchEdge[]): SearchNode | null {
+    let best: SearchNode | null = null;
+    for (const edge of edges) {
+      if (edge.isDead || !edge.isStable || edge.childId < 0) continue;
+      const node = nodes[edge.childId];
+      if (!best || node.value > best.value) best = node;
+    }
+    return best;
+  }
+
   private bestEdgeIds(nodes: SearchNode[], target: SearchNode): Set<number> {
     const ids = new Set<number>();
     let node = target;
@@ -872,8 +1017,16 @@ export class InterwheelPlanner {
     return edges[target.edgeId].scoreBreakdown;
   }
 
-  private lineageSupportForEdges(nodes: SearchNode[], edges: SearchEdge[]): number[] {
-    if (edges.length === 0) return [];
+  private lineageSupportForEdges(nodes: SearchNode[], edges: SearchEdge[]): {
+    support: number[];
+    leafEdges: SearchEdge[];
+    leafIdsSorted: number[];
+    totalClaimedPastilles: number;
+    leavesWithCaptures: number;
+  } {
+    if (edges.length === 0) {
+      return { support: [], leafEdges: [], leafIdsSorted: [], totalClaimedPastilles: 0, leavesWithCaptures: 0 };
+    }
 
     // Visual decision-space support, separate from planner score. Only
     // leaf/frontier edges seed support from their outcome value; internal edges
@@ -883,21 +1036,105 @@ export class InterwheelPlanner {
     // and a child edge can only be created after its parent node has been
     // popped, so a parent edge always precedes any child edge in `edges`.
     const support = new Array<number>(edges.length).fill(0);
-    const leafIds = this.leafEdgeIds(edges)
+    const leafEdges = this.leafEdgeIds(edges);
+    const leafIds = leafEdges
       .map((edge) => edge.id)
       .sort((a, b) => edges[a].value - edges[b].value || a - b);
 
+    // Optional per-pastille claim: assign each captured pastille to the
+    // highest-valued leaf that captured it. This is only a support-shaping
+    // debug/tuning multiplier when lineageClaimAmp > 0; diagnostics are
+    // computed regardless.
+    const claim = new Map<number, number>();
+    let totalClaimedPastilles = 0;
+    let leavesWithCaptures = 0;
+    const leafCaptures = new Map<number, Set<string>>();
+    for (const leaf of leafEdges) {
+      const captured = new Set(nodes[leaf.childId]?.pathReward.collectedKeys ?? []);
+      leafCaptures.set(leaf.id, captured);
+      if (captured.size > 0) leavesWithCaptures += 1;
+    }
+    const winner = new Map<string, number>();
+    for (let i = leafIds.length - 1; i >= 0; i -= 1) {
+      const id = leafIds[i];
+      const captured = leafCaptures.get(id);
+      if (!captured) continue;
+      for (const k of captured) {
+        if (!winner.has(k)) winner.set(k, id);
+      }
+    }
+    totalClaimedPastilles = winner.size;
+    if (this.lineageClaimAmp > 0 && leafIds.length > 1) {
+      for (const id of winner.values()) claim.set(id, (claim.get(id) ?? 0) + 1);
+    }
+
+    const claimDenom = Math.max(1, totalClaimedPastilles);
     const denom = Math.max(1, leafIds.length - 1);
     for (let i = 0; i < leafIds.length; i += 1) {
+      const id = leafIds[i];
       const rank = leafIds.length <= 1 ? 1 : i / denom;
-      support[leafIds[i]] = Math.pow(rank, this.lineageGamma);
+      const rankSeed = Math.pow(rank, this.lineageGamma);
+      const claimBoost = (claim.get(id) ?? 0) / claimDenom;
+      support[id] = rankSeed * (1 + this.lineageClaimAmp * claimBoost);
     }
 
     for (let i = edges.length - 1; i >= 0; i -= 1) {
       const parentEdgeId = nodes[edges[i].parentId]?.edgeId ?? -1;
       if (parentEdgeId >= 0) support[parentEdgeId] += support[edges[i].id] * this.lineageDecay;
     }
-    return support;
+    return { support, leafEdges, leafIdsSorted: leafIds, totalClaimedPastilles, leavesWithCaptures };
+  }
+
+  private computeDiagnostics(
+    nodes: SearchNode[],
+    edges: SearchEdge[],
+    supportResult: ReturnType<typeof this.lineageSupportForEdges>,
+    chosenEdgeIds: Set<number>,
+  ): PlannerDiagnostics {
+    const { support, leafEdges, leafIdsSorted, totalClaimedPastilles, leavesWithCaptures } = supportResult;
+    if (edges.length === 0 || support.length === 0) return emptyDiagnostics();
+
+    const leafDepthCounts: number[] = [];
+    for (const leaf of leafEdges) {
+      const depth = leaf.childId >= 0 ? nodes[leaf.childId].depth : 1;
+      leafDepthCounts[depth] = (leafDepthCounts[depth] ?? 0) + 1;
+    }
+
+    const sortedValues = leafIdsSorted.map((id) => edges[id].value);
+    const pct = (p: number): number => {
+      if (sortedValues.length === 0) return 0;
+      const idx = Math.min(sortedValues.length - 1, Math.max(0, Math.floor(p * sortedValues.length)));
+      return sortedValues[idx];
+    };
+    const leafValueMin = sortedValues.length > 0 ? sortedValues[0] : 0;
+    const leafValueMax = sortedValues.length > 0 ? sortedValues[sortedValues.length - 1] : 0;
+
+    let supportTotal = 0;
+    for (const s of support) supportTotal += s;
+    const sortedSupports = support.slice().sort((a, b) => b - a);
+    const top1 = sortedSupports[0] ?? 0;
+    const top3 = (sortedSupports[0] ?? 0) + (sortedSupports[1] ?? 0) + (sortedSupports[2] ?? 0);
+    let chosenSum = 0;
+    for (const id of chosenEdgeIds) chosenSum += support[id] ?? 0;
+    const totalSafe = Math.max(1e-9, supportTotal);
+
+    return {
+      leafCount: leafEdges.length,
+      leafDepthCounts,
+      leafValueMin,
+      leafValueP10: pct(0.1),
+      leafValueP25: pct(0.25),
+      leafValueP50: pct(0.5),
+      leafValueP75: pct(0.75),
+      leafValueP90: pct(0.9),
+      leafValueMax,
+      totalClaimedPastilles,
+      leavesWithCaptures,
+      supportTopShare: top1 / totalSafe,
+      supportTop3Share: top3 / totalSafe,
+      supportChosenShare: chosenSum / totalSafe,
+      supportTotal,
+    };
   }
 
   private leafEdgeIds(edges: SearchEdge[]): SearchEdge[] {
@@ -1032,6 +1269,7 @@ export class InterwheelPlanner {
         segments: 0,
         bestScore: 0,
         bestScoreBreakdown: emptyScoreBreakdown(),
+        diagnostics: emptyDiagnostics(),
       },
     };
   }

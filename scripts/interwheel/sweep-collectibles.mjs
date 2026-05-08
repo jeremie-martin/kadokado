@@ -15,10 +15,12 @@ function parseArgs(argv) {
     concurrency: 16,
     budgetMs: 5,
     outDir: null,
+    quick: false,
     help: false,
   };
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
+    else if (raw === '--quick') args.quick = true;
     else if (raw.startsWith('--trials=')) args.trials = Number(raw.slice('--trials='.length));
     else if (raw.startsWith('--seed=')) args.seedBase = Number(raw.slice('--seed='.length));
     else if (raw.startsWith('--max-ticks=')) args.maxTicks = Number(raw.slice('--max-ticks='.length));
@@ -38,7 +40,9 @@ function help() {
 Default: trials=24 concurrency=16 max-ticks=1200 (=30s) budget-ms=5
 
 USAGE:
-  node scripts/interwheel/sweep-collectibles.mjs [--trials=24] [--seed=4200] [--max-seconds=30] [--concurrency=16]
+  node scripts/interwheel/sweep-collectibles.mjs [--trials=24] [--seed=4200] [--max-seconds=30] [--concurrency=16] [--quick]
+
+  --quick: 6-condition subset (default + collectibles ∈ {0,1,3,5} + c=3,climb=0.3) for faster iteration.
 `);
 }
 
@@ -46,7 +50,17 @@ function timestamp() { return new Date().toISOString().replace(/[:.]/g, '-'); }
 
 // Aggressive sweep so we can see both saturation and over-driving behavior of
 // the now-uncapped collectibles term.
-function makeConditions() {
+function makeConditions(quick = false) {
+  if (quick) {
+    return [
+      { group: 'baseline', name: 'default', policy: {} },
+      { group: 'sweep:collectibles', name: 'collectibles=0', policy: { collectibles: 0 }, knob: 'collectibles', value: 0 },
+      { group: 'sweep:collectibles', name: 'collectibles=1', policy: { collectibles: 1 }, knob: 'collectibles', value: 1 },
+      { group: 'sweep:collectibles', name: 'collectibles=3', policy: { collectibles: 3 }, knob: 'collectibles', value: 3 },
+      { group: 'sweep:collectibles', name: 'collectibles=5', policy: { collectibles: 5 }, knob: 'collectibles', value: 5 },
+      { group: 'collect+lowClimb', name: 'c=3,climb=0.3', policy: { collectibles: 3, climb: 0.3 } },
+    ];
+  }
   const conditions = [
     { group: 'baseline', name: 'default', policy: {} },
   ];
@@ -195,7 +209,7 @@ async function main() {
   const started = Date.now();
   try {
     const raw = [];
-    const conditions = makeConditions();
+    const conditions = makeConditions(args.quick);
     for (let i = 0; i < conditions.length; i += 1) {
       const condition = conditions[i];
       console.error(`[${i + 1}/${conditions.length}] ${condition.name}`);

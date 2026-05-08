@@ -15,6 +15,7 @@ export const DEFAULT_SWEEP_FIELDS = [
   'edges',
   'scoreHeightTerm',
   'scoreCollectTerm',
+  'scoreMissedTerm',
   'scoreWallTerm',
   'scorePaceCost',
   'scoreTotal',
@@ -93,10 +94,14 @@ export function compactTrial(trial) {
     pastilles: summary.pastilles,
     sparks: summary.sparks,
     bonusScore: summary.bonusScore,
+    uniquePerceivedPastilles: trial.uniquePerceivedPastilles ?? 0,
+    captureRate: trial.uniquePerceivedPastilles > 0 ? summary.pastilles / trial.uniquePerceivedPastilles : 0,
+    missedPerceived: Math.max(0, (trial.uniquePerceivedPastilles ?? 0) - summary.pastilles),
     planMs: trial.planner.avgPlanMs,
     edges: trial.planner.avgEdges,
     scoreHeightTerm: planner.bestScoreBreakdown.height.mean,
     scoreCollectTerm: planner.bestScoreBreakdown.collectibles.mean,
+    scoreMissedTerm: planner.bestScoreBreakdown.missedCollect?.mean ?? 0,
     scoreWallTerm: planner.bestScoreBreakdown.wallRoute.mean,
     scorePaceCost: planner.bestScoreBreakdown.paceCost.mean,
     scoreTotal: planner.bestScoreBreakdown.total.mean,
@@ -156,7 +161,7 @@ export function analyzeSlopes(summaries) {
     const rows = summaries.filter((summary) => summary.group === group);
     const knob = rows[0]?.knob;
     out[knob] = {};
-    for (const metric of ['height', 'wallJumpsPerMin', 'bonusScorePerMin', 'pastillesPerMin', 'jumpsPerMin', 'flightPercent']) {
+    for (const metric of ['height', 'wallJumpsPerMin', 'bonusScorePerMin', 'pastillesPerMin', 'captureRate', 'jumpsPerMin', 'flightPercent']) {
       out[knob][metric] = slope(rows.map((row) => ({ x: row.value, y: row.metrics[metric].mean })));
     }
   }
