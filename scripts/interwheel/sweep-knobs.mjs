@@ -200,8 +200,9 @@ async function runCondition(browser, url, condition, args) {
         }
         const plannerConfig = {
           budgetMs,
-          maxEdgeRollouts: 240,
-          maxStableDepth: 3,
+          maxEdgeRollouts: 360,
+          maxStableDepth: 4,
+          revealScreensAbove: 0.5,
           collectSegments: false,
           policy,
         };

@@ -142,8 +142,9 @@ async function runCondition(browser, url, condition, args) {
       return await page.evaluate(async ({ chunk, condition, maxTicks, budgetMs }) => {
         const plannerConfig = {
           budgetMs,
-          maxEdgeRollouts: 240,
-          maxStableDepth: 3,
+          maxEdgeRollouts: 360,
+          maxStableDepth: 4,
+          revealScreensAbove: 0.5,
           collectSegments: false,
           policy: condition.policy,
         };
