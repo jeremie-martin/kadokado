@@ -42,6 +42,7 @@ export const INTER_WHEEL_CHANCE_HARD = 0.25;
 export const WATER_SPEED = 1;
 export const WATER_SPEED_INC = 0.0003;
 export const SCORE_PASTILLE = [250, 1000, 5000];
+export const PASTILLE_RATE_FULL_HEIGHT_METERS = 1_600;
 
 // Blob physics
 export const BLOB_RAY = 8;
@@ -102,6 +103,10 @@ export function heightMetersFromY(y: number): number {
 export function generationDifficultyAtHeight(heightMeters: number): number {
   const t = clamp(heightMeters / DIFFICULTY_FULL_HEIGHT_METERS, 0, 1);
   return t * t * (3 - 2 * t);
+}
+
+export function pastilleSpawnChanceAtY(y: number): number {
+  return clamp(heightMetersFromY(y) / PASTILLE_RATE_FULL_HEIGHT_METERS, 0, 1);
 }
 
 // ============================================================================
@@ -530,7 +535,7 @@ export class InterwheelSim {
 
   private initPastilles(rng: RNG): void {
     for (let y = -100; y > this.roof; y -= 20) {
-      if (rng() >= y / this.roof) continue;
+      if (rng() >= pastilleSpawnChanceAtY(y)) continue;
       let type = 0;
       if (randomInt(rng, 30) === 0) type = 1;
       if (randomInt(rng, 200) === 0) type = 2;

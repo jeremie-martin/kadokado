@@ -103,6 +103,18 @@ retain a minimum spawn chance even at full difficulty. This keeps the level
 generator hardening the climb without intentionally removing the route graph
 that the validators need to find.
 
+## Bonuses
+
+Original Interwheel used `Math.random() < y / roof` while generating pastilles,
+with `WMAX = 50` and a typical generated top around `1600m`. Reusing that
+formula directly after extending the world diluted early and mid-run bonuses
+across the much taller generated roof.
+
+The port keeps the original-style pastille ramp but evaluates it against a
+fixed `1600m` reference height instead of the generated roof. Pastille rarity
+within spawned bonuses still matches the original: type 1 is `1/30`, type 2 is
+`1/200`, and type 0 is the default.
+
 Future work: expose this as a tunable generation difficulty value and
 characterize it empirically. One promising measurement is to run intentionally
 imperfect agents over fixed seed populations: delayed jumps, noisy timing,

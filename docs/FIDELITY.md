@@ -192,7 +192,7 @@ cover the important scenarios.
 
 - Route: `/#interwheel`
 - Port: `src/games/interwheel/index.ts`
-- Original: `/home/holo/prog/WebGamesArchives/KadoKado/Games/Interwheel`
+- Original: `/home/holo/WebGamesArchives/KadoKado/Games/Interwheel`
 - Stage: 300x300
 - Status: playable, asset-backed, source-audited in key mechanics.
 - Current focus: wall/collision feel, wheel grab/mine timing, water pressure,
@@ -202,6 +202,10 @@ cover the important scenarios.
 - Mine generation is an intentional port adaptation: the level is extended past
   the original `WMAX = 50`, but mine difficulty is decoupled from total world
   length so the first hazards still appear around the original early-run band.
+- Pastille generation is likewise decoupled from total world length. The
+  original spawn chance used `y / roof`, which matched a roughly `1600m`
+  world; the port keeps that fixed original-scale ramp instead of diluting
+  bonuses across the extended roof.
 
 #### AI planner note
 
