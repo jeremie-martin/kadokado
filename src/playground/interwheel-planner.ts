@@ -10,6 +10,7 @@ import {
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/sim';
+import type { InspectionCandidate, InspectionRecord } from './plan-inspector';
 import { renderedGenerationLimitForSearchDepth } from './trajectory-rendering';
 
 // Constant RNG used during search. The simulator may consume an RNG draw for
@@ -87,42 +88,64 @@ const BACKTRACK_GRADIENT = 25;
 const LOOP_PENALTY = 650;
 const LOOP_GAIN_THRESH_PX = 20;
 
-// --- Game scoring rules (inherent to pastille/spark values) ---
-// Per-pastille and per-spark internal weighting in the collect signal.
-// Pastille values are 250 / 1000 / 5000 (green/blue/gold); sparks have
-// per-event scores. These weights ensure spark-density routes and pastille-
-// density routes are valued comparably.
-const PASTILLE_VALUE_WEIGHT = 1.5;
-const SPARK_VALUE_WEIGHT = 3;
-// Proximity-bounded miss penalty: only count uncollected pastilles the path
-// passed within MISS_PROXIMITY_PX of, with cubic falloff. Anything farther
-// is unreachable from the chosen route; charging it would over-broaden the
-// signal. Cubic exponent peaks the penalty for "barely missed" cases.
-const MISS_PROXIMITY_PX = 300;
-const MISS_PROXIMITY_PX_SQ = MISS_PROXIMITY_PX * MISS_PROXIMITY_PX;
-const MISS_PROXIMITY_EXP = 3;
-// Internal default: missWeight = collect × FIXED_MISS_RATIO. Couples the
-// existing "miss penalty proportional to collect reward" semantics from the
-// old `policy.collectibles` arm. Power users could decouple by exposing a
-// separate `miss` weight; not exposed today.
-const FIXED_MISS_RATIO = 1.0;
+// Thoroughness signal: count of pastilles physically collected by the path
+// (`pathReward.collectedKeys.size`) × per-pastille bonus. Pure positive
+// reward, count-based, no value weighting, no miss penalty. The agent's
+// incentive to detour for one pastille is bounded by THOROUGHNESS_PER_PASTILLE:
+// at coefficient 1 with detour=1, ~12px of lateral detour for one pastille
+// is breakeven.
+//
+// Note: this magnitude is intentionally smaller than the climb / pace /
+// detour normalizations — at coefficient 1 the per-knob steering range
+// from thoroughness scales with the *number of grabs* on a path (typical
+// 0–10), whereas the others scale with continuous integrals (much larger
+// natural magnitudes). To produce climb-comparable steering, coefficients
+// up to ~4 may be needed. This is documented in the policy knob's range
+// (slider 0–4).
+const THOROUGHNESS_PER_PASTILLE = 30;
+
+// === Signal normalization (continuous-integral signals only) ===
+// Each path-cumulative continuous signal has a different intrinsic magnitude.
+// Without these constants, coefficient=1 would mean different things per
+// knob: pathOffAxis leaf-spreads measured ~9000 while pathHeight leaf-spreads
+// measured ~460 (~20× ratio). After normalization, coefficient=1 yields
+// comparable per-knob leaf-steering ranges (~500), so user-facing sliders
+// behave as a true weighted average. Calibrated empirically from
+// .tmp/interwheel-ratios/2026-05-08T17-42-47-440Z (climb=1 reference,
+// climb steering range ≈ 460).
+const CLIMB_NORMALIZE   = 1;            // reference: pathHeight is the gauge
+const DETOUR_NORMALIZE  = 1 / 20;       // pathOffAxis spread ≈ 9500 → ÷20 ≈ 475
+const PACE_NORMALIZE    = 2;            // pathTime spread ≈ 250 → ×2 ≈ 500
+// Wall signal has two parts:
+//   • WALL_LANDING_BONUS: per-edge categorical bonus for the canonical
+//     wall-jump-and-land event (started off the wall, touched it during the
+//     edge, ended on it). Restores the discrete tier of the pre-orthogonal
+//     wallRouteValue (commit 8b65c5b: +450 for "endedOnWall"). Anchors the
+//     "this is a wall-jump-class route" preference.
+//   • WALL_NORMALIZE: continuous per-tick weight on path-cumulative wall
+//     contact. Lower than the old single-term value because most of the
+//     gradient now lives in the categorical landing bonus.
+// Together: a one-jump wall-launch-and-land scores ≈ 300 + ~10×5 = 350,
+// vs a same-height grab→grab path getting 0 from the wall term.
+const WALL_LANDING_BONUS = 300;
+const WALL_NORMALIZE     = 5;
 
 // --- Search-bias decay (not in scoreCandidate, but related) ---
 const NODE_BIAS_DECAY_PX = 400;
 const NODE_BIAS_FACTOR = 1.5;
-// Tube-claim mechanism (currently dormant: claimRadius defaulted to 0 and
-// dropped from UI per the audit; mechanism kept in code for future use).
+// Orbit-tube radius used by `computeStableClaimableSet` for the patience
+// mechanism: a pastille is "claimable from a higher wheel" when its
+// distance from that wheel's orbit ring is within this radius. Geometric
+// reasoning, not a pickup prediction — the live game's pickup is point-
+// to-point `distance(blob, pastille) < 70` (sim.ts:800), not orbit-band.
 const COLLECT_PICKUP_RADIUS = 70;
 
 type CollectReward = {
-  pickedValue: number;
-  sparkScore: number;
+  /** Set of pastille keys physically grabbed during the rollout (live-game
+   *  pickup geometry: `distance(blob, pastille) < 70` per sim.ts:800). */
   collectedKeys: Set<string>;
-  pickedValuesByKey: Map<string, number>;
-  // Parallel to currentPerceived.snap.pastilles; squared min distance from
-  // sampled blob positions to that pastille. Edge rewards track one edge;
-  // node path rewards track the whole root-to-node path.
-  minDistSq: Float64Array;
+  /** Count of sparks (chasing-pastille trails) collected during the rollout. */
+  sparkCount: number;
 };
 
 type PerceivedSnapshot = {
@@ -147,6 +170,9 @@ type SearchNode = {
   pathOffAxis: number;
   /** Cumulative tick count where blob.state was BLOB_STATE_WALL across path edges. */
   pathWallTicks: number;
+  /** Cumulative count of canonical wall-jump-and-land events along this path
+   *  (edge started off the wall, touched it mid-edge, ended on it). */
+  pathWallLandings: number;
 };
 
 type SearchEdge = {
@@ -166,6 +192,7 @@ type SearchEdge = {
   pathApexY: number;
   pathOffAxis: number;
   pathWallTicks: number;
+  pathWallLandings: number;
 };
 
 export type Segment = {
@@ -207,6 +234,9 @@ export type PlannerDiagnostics = {
   supportTop3Share: number;
   supportChosenShare: number;
   supportTotal: number;
+  // Per-knob contribution distribution across leaf edges. Steering diagnostic:
+  // (max-min) per knob says which knob is differentiating route choice.
+  leafScoreSpreads: LeafScoreSpreads;
 };
 
 export type PlannerStats = {
@@ -221,6 +251,21 @@ export type PlannerStats = {
   bestScoreBreakdown: CandidateScoreBreakdown;
   diagnostics: PlannerDiagnostics;
 };
+
+const SPREAD_KEYS = [
+  'climb', 'thoroughness', 'wall', 'pace', 'detour',
+  'stability', 'safety', 'backtrack', 'loop', 'total',
+] as const satisfies ReadonlyArray<keyof CandidateScoreBreakdown>;
+
+export function emptyLeafSpread(): LeafSpread {
+  return { min: 0, max: 0, mean: 0, std: 0 };
+}
+
+export function emptyLeafScoreSpreads(): LeafScoreSpreads {
+  const out = {} as LeafScoreSpreads;
+  for (const key of SPREAD_KEYS) out[key] = emptyLeafSpread();
+  return out;
+}
 
 export function emptyDiagnostics(): PlannerDiagnostics {
   return {
@@ -237,6 +282,7 @@ export function emptyDiagnostics(): PlannerDiagnostics {
     supportTop3Share: 0,
     supportChosenShare: 0,
     supportTotal: 0,
+    leafScoreSpreads: emptyLeafScoreSpreads(),
   };
 }
 
@@ -262,18 +308,33 @@ export type PlannerConfig = {
 export type PlannerPolicy = {
   /** How much to value path height (px climbed from root to leaf apex). */
   climb: number;
-  /** How much to value claimed collectibles (pastilles + sparks, path-cumulative). */
-  collect: number;
-  /** How much to value time spent on a wall (path-cumulative tick count). */
+  /**
+   * Positive reward for each pastille the path physically grabs (live-game
+   * pickup geometry: blob comes within 70px of the pastille). Pure positive
+   * count signal — the planner gets +THOROUGHNESS_PER_PASTILLE per grab
+   * regardless of pastille type. Detour-for-pickup is naturally bounded by
+   * the per-pastille magnitude. Range typically 0–4; higher values trade
+   * altitude for capture rate (the agent waits longer on each wheel).
+   */
+  thoroughness: number;
+  /**
+   * How much to value wall use, scoring `pathWallLandings × WALL_LANDING_BONUS
+   * + pathWallTicks × WALL_NORMALIZE`. The landings term anchors a discrete
+   * preference for canonical wall-jump-and-land routes (started off the wall,
+   * touched it, ended on it); the ticks term softly rewards contact duration.
+   */
   wall: number;
   /** Per-tick time cost on the path. */
   pace: number;
   /** Per-pixel-tick cost of off-axis path travel (lateral wandering). */
   detour: number;
   /**
-   * Defer-grab discount in [0, 1]. When an edge realizes a pickup whose
-   * pastille is also reachable via any other perceived wheel's orbit above
-   * the agent, discount the realized contribution by this fraction. 0 = off.
+   * Defer-grab discount in [0, 1] applied to the thoroughness count. When
+   * the path grabbed a pastille that is also reachable from any wheel above
+   * the agent, scale that grab's contribution by (1 − patience). 0 = full
+   * credit (grab it now); 1 = no credit for above-reachable grabs (trust
+   * that the higher wheel will grab it later, climb instead). Composes
+   * cleanly with thoroughness — at thoroughness=0, patience does nothing.
    */
   patience: number;
 };
@@ -281,12 +342,11 @@ export type PlannerPolicy = {
 export type CandidateScoreBreakdown = {
   // Knob-driven terms (one line per user knob, scaling one signal each).
   climb: number;
-  collect: number;
+  thoroughness: number;
   wall: number;
   pace: number;
   detour: number;
   // Internal mechanisms (planner physics, not user-tunable).
-  miss: number;
   stability: number;
   safety: number;
   backtrack: number;
@@ -294,18 +354,34 @@ export type CandidateScoreBreakdown = {
   total: number;
 };
 
-// Operating point set by the Phase 2 confirmation sweep
-// (docs/interwheel-policy-audit.md, .tmp/interwheel-knobs/2026-05-08T14-23-02-163Z).
-// climb=1.0, collect=1.0, detour=0.5, patience=0.65 beats the prior default
-// (climb=1.08, collect=1.2, detour=0, patience=0) by +231m / +27% score
-// at default planner config.
+// Per-knob distributional stats across all leaf candidates considered in a
+// single plan step. Tells you how much each term *differentiates routes* —
+// a knob whose contribution varies by 5000 across leaves is steering;
+// one that varies by 2 is along for the ride.
+export type LeafSpread = {
+  min: number;
+  max: number;
+  mean: number;
+  std: number;
+};
+export type LeafScoreSpreads = Record<keyof CandidateScoreBreakdown, LeafSpread>;
+
+// Operating point post-orbit-claim-fix. The cleanest defaults are the
+// pace+detour+wall combo (best in the balanced sweep at h=5129m / 183
+// past/min vs climb-only's 4373m / 168, +18% / +9%). Thoroughness defaults
+// to 0 because it intrinsically trades altitude for in-place harvest —
+// even at 0.25, the cost (~-8% past/min) outweighs the marginal capture-%
+// benefit. Users who want explicit "grab the pastilles" behavior can dial
+// it up to 0.25–0.5; thor=4 is what it takes to get capture% above
+// baseline, with a steep altitude cost. Patience defaults to 0 because
+// its mechanism only fires when thoroughness > 0.
 export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
   climb: 1.0,
-  collect: 1.0,
-  wall: 0.65,
-  pace: 1.0,
-  detour: 0.5,
-  patience: 0.65,
+  thoroughness: 0,
+  wall: 0.5,
+  pace: 1.5,
+  detour: 1.0,
+  patience: 0,
 };
 
 export const PLANNER_PERCEPTION_DEFAULTS = {
@@ -329,11 +405,10 @@ export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): Plann
 export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
   return {
     climb: 0,
-    collect: 0,
+    thoroughness: 0,
     wall: 0,
     pace: 0,
     detour: 0,
-    miss: 0,
     stability: 0,
     safety: 0,
     backtrack: 0,
@@ -353,12 +428,21 @@ export class InterwheelPlanner {
   private lastSeenTick = -1;
   private currentPerceived: PerceivedSnapshot | null = null;
   private currentPerceivedKeys: string[] = [];
-  // Set once per plan in planStable() so the patienceDiscount path can look up
-  // "is this pastille reachable from a higher wheel" without re-scanning every
-  // pickup credit.
+  // Set once per plan in planStable() so `thoroughnessSignal` can look up
+  // "is this pastille reachable from any wheel above the agent" without
+  // re-scanning every pickup credit. Used by the patience knob to discount
+  // grabs of pastilles the agent could reach later from a higher wheel.
+  // Geometry note: this uses an orbit-band approximation (planner constants
+  // header) which over-includes pastilles that are not reachable from any
+  // single point on the ring; the discount is therefore mildly over-eager.
   private currentStableClaimable = new Set<string>();
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
+  // Inspector: when armed, the next planStable() call captures a full per-
+  // candidate snapshot for offline analysis. One-shot, opt-in, off in
+  // production. See plan-inspector.ts and scripts/interwheel/inspect-plan.mjs.
+  private inspectorArmed = false;
+  private lastInspectionRecord: InspectionRecord | null = null;
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
@@ -447,6 +531,14 @@ export class InterwheelPlanner {
     };
   }
 
+  armInspection(): void {
+    this.inspectorArmed = true;
+  }
+
+  lastInspection(): InspectionRecord | null {
+    return this.lastInspectionRecord;
+  }
+
   invalidate(): void {
     this.lastResult = null;
     this.knownWheelIdx.clear();
@@ -487,11 +579,13 @@ export class InterwheelPlanner {
     const rootState = perceived.snap;
     const startTime = performance.now();
     this.currentStableClaimable = this.computeStableClaimableSet(rootState);
-    const emptyRootReward = this.emptyCollectReward(this.currentPerceivedKeys.length);
-    const rootReward = this.extendCollectReward(
-      emptyRootReward,
-      this.stableSurfaceCollectReward(rootState, emptyRootReward),
-    );
+    // Root reward starts empty: pathReward.collectedKeys must reflect ONLY
+    // pastilles physically grabbed during this plan's simulation. Pre-credit
+    // here would over-claim (the blob hasn't actually grabbed anything yet
+    // at root). The orbit-tube `stableSurfaceCollectReward` path was removed
+    // because its 70px orbit-band claim does not match the live game's 70px
+    // blob-to-pastille distance pickup geometry — see scoreCandidate header.
+    const rootReward = this.emptyCollectReward();
     const rootScore = this.scoreCandidate(
       rootState,
       rootState,
@@ -500,6 +594,7 @@ export class InterwheelPlanner {
       rootReward,
       rootReward,
       rootState.blob.y,
+      0,
       0,
       0,
       false,
@@ -517,6 +612,7 @@ export class InterwheelPlanner {
       pathApexY: rootState.blob.y,
       pathOffAxis: 0,
       pathWallTicks: 0,
+      pathWallLandings: 0,
     };
 
     const nodes: SearchNode[] = [root];
@@ -550,6 +646,7 @@ export class InterwheelPlanner {
           pathApexY: edge.pathApexY,
           pathOffAxis: edge.pathOffAxis,
           pathWallTicks: edge.pathWallTicks,
+          pathWallLandings: edge.pathWallLandings,
         };
         edge.childId = child.id;
         nodes.push(child);
@@ -569,6 +666,18 @@ export class InterwheelPlanner {
     const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, supportResult.support, nodes) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
     const diagnostics = this.computeDiagnostics(nodes, edges, supportResult, bestEdgeIds);
+    if (this.inspectorArmed) {
+      this.lastInspectionRecord = this.buildInspectionRecord(
+        rootState,
+        nodes,
+        edges,
+        targetNode,
+        stableNodesExpanded,
+        performance.now() - startTime,
+        perceived,
+      );
+      this.inspectorArmed = false;
+    }
     return {
       plan: plan.length > 0 ? plan : [false],
       segments,
@@ -648,8 +757,7 @@ export class InterwheelPlanner {
     const sim = this.scratch;
     const plan: boolean[] = [];
     const segments: SegmentBody[] = [];
-    const perceivedPastilles = this.currentPerceived?.snap.pastilles ?? [];
-    const reward = this.emptyCollectReward(perceivedPastilles.length);
+    const reward = this.emptyCollectReward();
     sim.restore(parent.state);
 
     let sx = sim.blob.x;
@@ -659,7 +767,8 @@ export class InterwheelPlanner {
     // Edge-local accumulators. Tracking start position too gives the off-axis
     // integral and apex-min full path coverage including the resting state.
     let edgeApexY = sim.blob.y;
-    let edgeWallTicks = sim.blob.state === BLOB_STATE_WALL ? 1 : 0;
+    const edgeStartsOnWall = sim.blob.state === BLOB_STATE_WALL;
+    let edgeWallTicks = edgeStartsOnWall ? 1 : 0;
     const samplesX: number[] = [edgeStartX];
     const samplesY: number[] = [edgeStartY];
     const recordStep = (press: boolean): void => {
@@ -670,15 +779,6 @@ export class InterwheelPlanner {
       samplesY.push(sim.blob.y);
       if (sim.blob.y < edgeApexY) edgeApexY = sim.blob.y;
       if (sim.blob.state === BLOB_STATE_WALL) edgeWallTicks += 1;
-      if (perceivedPastilles.length > 0) {
-        const bx = sim.blob.x, by = sim.blob.y;
-        for (let i = 0; i < perceivedPastilles.length; i += 1) {
-          const p = perceivedPastilles[i];
-          const dx = p.x - bx, dy = p.y - by;
-          const d2 = dx * dx + dy * dy;
-          if (d2 < reward.minDistSq[i]) reward.minDistSq[i] = d2;
-        }
-      }
       if (!this.cfg.collectSegments) return;
       const terminal = sim.blob.state !== BLOB_STATE_GRAB && sim.blob.state !== BLOB_STATE_WALL && sim.blob.state !== BLOB_STATE_FLY;
       const shouldRecord =
@@ -737,21 +837,25 @@ export class InterwheelPlanner {
     const isDead = this.isTerminal(endState);
     const isStable = endState.blob.state === BLOB_STATE_GRAB || endState.blob.state === BLOB_STATE_WALL;
     const sameStableTarget = this.isSameStableTarget(parent.state, endState);
-    const effectiveReward = sameStableTarget
-      ? this.emptyCollectReward(perceivedPastilles.length)
-      : reward;
-    let pathReward = this.extendCollectReward(parent.pathReward, effectiveReward);
-    if (isStable) pathReward = this.extendCollectReward(pathReward, this.stableSurfaceCollectReward(endState, pathReward));
-    // sameStableTarget edges are scoops that landed back where they started;
-    // their off-axis integral would dominate detour penalties without
-    // representing real path progress. Skip the integral but keep the apex
-    // because reaching a high arc on the way still happened.
+    // sameStableTarget edges are scoops that landed back where they started.
+    // Skip both the edge's pickups (would double-credit pastilles already
+    // accessible from this wheel via a "real" landing) and the off-axis
+    // integral (dominates detour without representing real progress). Keep
+    // the apex because reaching a high arc on the way still happened.
+    const effectiveReward = sameStableTarget ? this.emptyCollectReward() : reward;
+    const pathReward = this.extendCollectReward(parent.pathReward, effectiveReward);
     const edgeOffAxis = sameStableTarget
       ? 0
       : this.edgeOffAxisIntegral(samplesX, samplesY, edgeStartX, edgeStartY, endState.blob.x, endState.blob.y);
     const pathApexY = Math.min(parent.pathApexY, edgeApexY);
     const pathOffAxis = parent.pathOffAxis + edgeOffAxis;
     const pathWallTicks = parent.pathWallTicks + edgeWallTicks;
+    // Wall-jump-and-land event: started off the wall, touched it during the
+    // edge, ended on it. Categorical per-edge bonus restoring the discrete
+    // tier signal of the pre-orthogonalization wallRouteValue.
+    const edgeEndsOnWall = endState.blob.state === BLOB_STATE_WALL;
+    const edgeWallLandings = !edgeStartsOnWall && edgeWallTicks > 0 && edgeEndsOnWall ? 1 : 0;
+    const pathWallLandings = parent.pathWallLandings + edgeWallLandings;
     const scoreBreakdown = this.scoreCandidate(
       rootState,
       parent.state,
@@ -762,6 +866,7 @@ export class InterwheelPlanner {
       pathApexY,
       pathOffAxis,
       pathWallTicks,
+      pathWallLandings,
       sameStableTarget,
     );
     const value = scoreBreakdown.total;
@@ -782,6 +887,7 @@ export class InterwheelPlanner {
       pathApexY,
       pathOffAxis,
       pathWallTicks,
+      pathWallLandings,
     };
   }
 
@@ -806,74 +912,60 @@ export class InterwheelPlanner {
     return sum;
   }
 
-  private emptyCollectReward(pastilleCount: number): CollectReward {
-    const minDistSq = new Float64Array(pastilleCount);
-    for (let i = 0; i < minDistSq.length; i += 1) minDistSq[i] = Infinity;
+  private emptyCollectReward(): CollectReward {
     return {
-      pickedValue: 0,
-      sparkScore: 0,
       collectedKeys: new Set<string>(),
-      pickedValuesByKey: new Map<string, number>(),
-      minDistSq,
+      sparkCount: 0,
     };
   }
 
   private extendCollectReward(parent: CollectReward, edge: CollectReward): CollectReward {
-    const pickedValuesByKey = new Map(parent.pickedValuesByKey);
     const collectedKeys = new Set(parent.collectedKeys);
-    let pickedValue = parent.pickedValue;
-
-    for (const [key, value] of edge.pickedValuesByKey) {
-      if (collectedKeys.has(key)) continue;
-      collectedKeys.add(key);
-      pickedValuesByKey.set(key, value);
-      pickedValue += value;
-    }
-
-    const n = Math.max(parent.minDistSq.length, edge.minDistSq.length);
-    const minDistSq = new Float64Array(n);
-    for (let i = 0; i < n; i += 1) {
-      const parentDist = i < parent.minDistSq.length ? parent.minDistSq[i] : Infinity;
-      const edgeDist = i < edge.minDistSq.length ? edge.minDistSq[i] : Infinity;
-      minDistSq[i] = Math.min(parentDist, edgeDist);
-    }
-
+    for (const key of edge.collectedKeys) collectedKeys.add(key);
     return {
-      pickedValue,
-      sparkScore: parent.sparkScore + edge.sparkScore,
       collectedKeys,
-      pickedValuesByKey,
-      minDistSq,
+      sparkCount: parent.sparkCount + edge.sparkCount,
     };
   }
 
   private collectStepReward(sim: ScratchInterwheelSim, reward: CollectReward): void {
     for (const pastille of sim.events.collectedPastilles) {
-      this.creditPastilleReward(pastille, reward, true);
+      this.creditPastilleReward(pastille, reward);
     }
-    for (const spark of sim.events.collectedSparks) {
-      reward.sparkScore += spark.score;
-    }
+    reward.sparkCount += sim.events.collectedSparks.length;
   }
 
   // Orthogonal score formulation: each user-facing knob scales exactly one
-  // path-cumulative signal, and planner physics (state bonus, water urgency,
-  // backtrack/loop/safety) live as named constants distinct from policy.
+  // (normalized) path-cumulative signal, and planner physics (state bonus,
+  // water urgency, backtrack/loop/safety) live as named constants distinct
+  // from policy.
   //
   //   total =
-  //     + climb    × pathHeight     × waterClimbBoost
-  //     + collect  × (pathClaim×PASTILLE_VALUE_WEIGHT + pathSpark×SPARK_VALUE_WEIGHT)
-  //                                  × waterCollectDamp
-  //     + wall     × pathWallTicks
-  //     − pace     × pathTime
-  //     − detour   × pathOffAxis
-  //     − miss     × missProximity   × waterCollectDamp     (miss = collect × FIXED_MISS_RATIO)
+  //     + climb        × pathHeight   × CLIMB_NORMALIZE × waterClimbBoost
+  //     + thoroughness × thoroughnessSignal × THOROUGHNESS_PER_PASTILLE × waterCollectDamp
+  //     + wall         × (pathWallLandings × WALL_LANDING_BONUS + pathWallTicks × WALL_NORMALIZE)
+  //     − pace         × pathTime     × PACE_NORMALIZE
+  //     − detour       × pathOffAxis  × DETOUR_NORMALIZE
   //     + endStableBonus
   //     − endSafetyCost − endBacktrackCost − endLoopCost
   //
+  // *_NORMALIZE constants make coefficient=1 produce comparable per-knob
+  // leaf-steering ranges (~500), so user-facing sliders behave as a true
+  // weighted average for the continuous-integral signals (climb, pace,
+  // detour). Thoroughness is intentionally on a different scale
+  // (per-grab count, not continuous integral) — see THOROUGHNESS_PER_PASTILLE.
+  //
   // pathHeight = max(0, root.y - pathApexY) is the single height signal.
-  // No more 3-way mix of (maxHeight + heightGain×9 + yGain×4).
-  // pathWallTicks is continuous (per-step accumulator); no tier function.
+  // Wall is a hybrid event+continuous signal: pathWallLandings counts the
+  // canonical "started off the wall, touched it, ended on it" event per
+  // edge along the path; pathWallTicks is the continuous wall-time
+  // accumulator. The event term restores the discrete-tier preference of
+  // the pre-orthogonalization wallRouteValue (commit 8b65c5b) for actual
+  // wall-jumps over passive wall-clinging.
+  // thoroughnessSignal is `pathReward.collectedKeys.size` — count of
+  // pastilles physically grabbed during simulation (sim's 70px blob-distance
+  // pickup geometry). Patience discounts grabs of pastilles also reachable
+  // from a higher wheel.
   // pace is linear (no ×4 magic, no nonlinear wait penalty).
   private scoreCandidate(
     root: SimSnapshot,
@@ -885,6 +977,7 @@ export class InterwheelPlanner {
     pathApexY: number,
     pathOffAxis: number,
     pathWallTicks: number,
+    pathWallLandings: number,
     sameStableTarget: boolean,
   ): CandidateScoreBreakdown {
     const policy = this.cfg.policy;
@@ -893,22 +986,22 @@ export class InterwheelPlanner {
     const waterClimbBoost = 1 + waterUrgency * WATER_CLIMB_BOOST;
     const waterCollectDamp = 1 - waterUrgency * WATER_COLLECT_DAMP;
 
-    // Knob terms — one signal each.
+    // Knob terms — one signal each. Continuous-integral signals (climb,
+    // pace, detour) are normalized so coefficient=1 produces comparable
+    // leaf-steering ranges; thoroughness is count-based; wall is hybrid.
     const pathHeight = Math.max(0, root.blob.y - pathApexY);
-    const pathClaim = pathReward.pickedValue * PASTILLE_VALUE_WEIGHT
-                    + pathReward.sparkScore  * SPARK_VALUE_WEIGHT;
-    const climb   = policy.climb   * pathHeight * waterClimbBoost;
-    const collect = policy.collect * pathClaim  * waterCollectDamp;
-    const wall    = policy.wall    * pathWallTicks;
-    const pace    = policy.pace    * totalTicks;
-    const detour  = policy.detour  * pathOffAxis;
+    // Wall: per-edge wall-jump-and-land event bonus + continuous wall-time
+    // weight. The event term anchors "this is a wall-jump-class route";
+    // the tick term provides a soft gradient on wall contact duration.
+    const wallSignal = pathWallLandings * WALL_LANDING_BONUS
+                     + pathWallTicks * WALL_NORMALIZE;
 
-    // Miss penalty: same proximity-bounded mechanism as before, but with its
-    // own coefficient. Default-coupled to collect via FIXED_MISS_RATIO so
-    // existing behavior is preserved when only `collect` is dialed; future
-    // work could expose a separate `miss` knob.
-    const missCoeff = policy.collect * FIXED_MISS_RATIO;
-    const miss = missCoeff * this.missedCollectibleValue(pathReward) * waterCollectDamp;
+    const climb        = policy.climb        * pathHeight  * CLIMB_NORMALIZE * waterClimbBoost;
+    const thoroughness = policy.thoroughness * this.thoroughnessSignal(pathReward)
+                                             * THOROUGHNESS_PER_PASTILLE * waterCollectDamp;
+    const wall         = policy.wall         * wallSignal;
+    const pace         = policy.pace         * totalTicks  * PACE_NORMALIZE;
+    const detour       = policy.detour       * pathOffAxis * DETOUR_NORMALIZE;
 
     // Frontier physics — leaf state shapes the score independent of policy.
     const stability = STATE_BONUS[end.blob.state] ?? STATE_BONUS_FALLBACK;
@@ -924,65 +1017,32 @@ export class InterwheelPlanner {
       ? (end.blob.y - start.blob.y) * BACKTRACK_GRADIENT
       : 0;
     const loop = sameStableTarget
-        && edgeReward.pickedValue + edgeReward.sparkScore <= 0
+        && edgeReward.collectedKeys.size === 0
+        && edgeReward.sparkCount === 0
         && yGain < LOOP_GAIN_THRESH_PX
       ? LOOP_PENALTY
       : 0;
 
     if (this.isTerminal(end)) {
-      const total = climb + collect + wall - pace - detour - miss
-                  - TERMINAL_DEATH_COST;
+      const total = climb + thoroughness + wall - pace - detour - TERMINAL_DEATH_COST;
       return {
         ...emptyScoreBreakdown(),
-        climb, collect, wall, pace, detour, miss,
+        climb, thoroughness, wall, pace, detour,
         safety: TERMINAL_DEATH_COST,
         total,
       };
     }
 
-    const total = climb + collect + wall + stability
-                - pace - detour - miss - safety - backtrack - loop;
-    return { climb, collect, wall, pace, detour, miss, stability, safety, backtrack, loop, total };
-  }
-
-  // Reaching a wheel claims pastilles on its orbit. The live agent replans
-  // every tick, so the important path fact is access to the natural pickup
-  // route, not whether this rollout already waited long enough to bank it.
-  // Path-cumulative: claims merge into pathReward so descendants inherit them.
-  private stableSurfaceCollectReward(state: SimSnapshot, prior: CollectReward): CollectReward {
-    const reward = this.emptyCollectReward(this.currentPerceivedKeys.length);
-    if (state.blob.state !== BLOB_STATE_GRAB || state.blob.cwIdx < 0) return reward;
-
-    const wheel = state.wheels[state.blob.cwIdx];
-    if (!wheel || wheel.destroyed) return reward;
-    for (const pastille of state.pastilles) {
-      if (prior.collectedKeys.has(this.pastilleKey(pastille))) continue;
-      const dx = pastille.x - wheel.x;
-      const dy = pastille.y - wheel.y;
-      const orbitDistance = Math.abs(Math.sqrt(dx * dx + dy * dy) - wheel.ray);
-      if (orbitDistance < COLLECT_PICKUP_RADIUS) this.creditPastilleReward(pastille, reward);
-    }
-    return reward;
+    const total = climb + thoroughness + wall + stability
+                - pace - detour - safety - backtrack - loop;
+    return { climb, thoroughness, wall, pace, detour, stability, safety, backtrack, loop, total };
   }
 
   private creditPastilleReward(
     pastille: { x: number; y: number; type: number },
     reward: CollectReward,
-    isRealPickup = false,
   ): void {
-    const key = this.pastilleKey(pastille);
-    if (reward.collectedKeys.has(key)) return;
-    let value = SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
-    if (
-      isRealPickup
-      && this.cfg.policy.patience > 0
-      && this.currentStableClaimable.has(key)
-    ) {
-      value *= clamp(1 - this.cfg.policy.patience, 0, 1);
-    }
-    reward.pickedValue += value;
-    reward.collectedKeys.add(key);
-    reward.pickedValuesByKey.set(key, value);
+    reward.collectedKeys.add(this.pastilleKey(pastille));
   }
 
   private computeStableClaimableSet(rootState: SimSnapshot): Set<string> {
@@ -1007,34 +1067,32 @@ export class InterwheelPlanner {
     return set;
   }
 
-  // Sum perceived pastille values that the route passed within
-  // MISS_PROXIMITY_PX of but did not collect. Cubic proximity weight: only
-  // path samples that came close enough to plausibly collect pay a meaningful
-  // penalty. The prior linear weight made almost every
-  // flight that came within 300px of any pastille pay something, which
-  // distributed the cost broadly and flattened the collect signal.
-  private missedCollectibleValue(reward: CollectReward): number {
-    const perceived = this.currentPerceived?.snap.pastilles;
-    if (!perceived || perceived.length === 0) return 0;
-    const keys = this.currentPerceivedKeys;
-    let missed = 0;
-    for (let i = 0; i < perceived.length; i += 1) {
-      if (reward.collectedKeys.has(keys[i])) continue;
-      const d2 = reward.minDistSq[i];
-      if (!Number.isFinite(d2) || d2 >= MISS_PROXIMITY_PX_SQ) continue;
-      const p = perceived[i];
-      const linear = 1 - Math.sqrt(d2) / MISS_PROXIMITY_PX;
-      const proximity = Math.pow(linear, MISS_PROXIMITY_EXP);
-      missed += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * proximity;
+  // Thoroughness signal: count of pastilles the path collected. Pure
+  // positive reward — each pastille on the path adds 1. Patience discounts
+  // pastilles also reachable from a higher wheel ("don't credit grabbing
+  // this one if I could get it next plan from above either way").
+  private thoroughnessSignal(reward: CollectReward): number {
+    const patience = clamp(this.cfg.policy.patience, 0, 1);
+    if (patience <= 0 || this.currentStableClaimable.size === 0) {
+      return reward.collectedKeys.size;
     }
-    return missed;
+    let count = 0;
+    for (const key of reward.collectedKeys) {
+      const discount = this.currentStableClaimable.has(key) ? 1 - patience : 1;
+      count += discount;
+    }
+    return count;
   }
 
   // Bias for how attractive a node is for further search expansion when the
   // policy weights collect. Decays exponentially with blob-to-pastille
   // distance, summed over still-uncollected perceived pastilles.
+  // Search-expansion bias toward states near uncollected pastilles. Driven
+  // by `policy.thoroughness` rather than a separate knob: when the user
+  // values thoroughness, the search should also spend its budget exploring
+  // pastille-rich regions.
   private collectibleBias(state: SimSnapshot): number {
-    if (this.cfg.policy.collect <= 0) return 0;
+    if (this.cfg.policy.thoroughness <= 0) return 0;
     const pastilles = state.pastilles;
     if (pastilles.length === 0) return 0;
     let bias = 0;
@@ -1045,7 +1103,7 @@ export class InterwheelPlanner {
       const decay = Math.exp(-d / NODE_BIAS_DECAY_PX);
       bias += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * decay;
     }
-    return bias * this.cfg.policy.collect * NODE_BIAS_FACTOR;
+    return bias * this.cfg.policy.thoroughness * NODE_BIAS_FACTOR;
   }
 
   private waitSamples(snap: SimSnapshot, depth: number): number[] {
@@ -1214,13 +1272,102 @@ export class InterwheelPlanner {
       supportTop3Share: top3 / totalSafe,
       supportChosenShare: chosenSum / totalSafe,
       supportTotal,
+      leafScoreSpreads: this.computeLeafScoreSpreads(leafEdges),
     };
+  }
+
+  // Per-knob distributional stats across the leaf-edge candidates the planner
+  // actually picked between this step. Steering diagnostic — see LeafSpread.
+  private computeLeafScoreSpreads(leafEdges: SearchEdge[]): LeafScoreSpreads {
+    const out = emptyLeafScoreSpreads();
+    if (leafEdges.length === 0) return out;
+    for (const key of SPREAD_KEYS) {
+      let min = Infinity;
+      let max = -Infinity;
+      let sum = 0;
+      for (const edge of leafEdges) {
+        const v = edge.scoreBreakdown[key];
+        if (v < min) min = v;
+        if (v > max) max = v;
+        sum += v;
+      }
+      const mean = sum / leafEdges.length;
+      let sqSum = 0;
+      for (const edge of leafEdges) {
+        const d = edge.scoreBreakdown[key] - mean;
+        sqSum += d * d;
+      }
+      const std = Math.sqrt(sqSum / leafEdges.length);
+      out[key] = { min, max, mean, std };
+    }
+    return out;
   }
 
   private leafEdgeIds(edges: SearchEdge[]): SearchEdge[] {
     const expandedNodeIds = new Set<number>();
     for (const edge of edges) expandedNodeIds.add(edge.parentId);
     return edges.filter((edge) => !expandedNodeIds.has(edge.childId));
+  }
+
+  private buildInspectionRecord(
+    rootState: SimSnapshot,
+    nodes: SearchNode[],
+    edges: SearchEdge[],
+    targetNode: SearchNode,
+    stableNodesExpanded: number,
+    planMs: number,
+    perceived: PerceivedSnapshot,
+  ): InspectionRecord {
+    const leafSet = new Set(this.leafEdgeIds(edges).map((e) => e.id));
+    const candidates: InspectionCandidate[] = edges.map((edge) => {
+      const childNode = edge.childId >= 0 ? nodes[edge.childId] : null;
+      const depth = childNode?.depth ?? 0;
+      const parentNode = nodes[edge.parentId];
+      const parentEdgeId = parentNode?.edgeId ?? -1;
+      const actionChain = childNode ? this.planForNode(nodes, edges, childNode) : edge.plan.slice();
+      const pathHeight = childNode ? Math.max(0, rootState.blob.y - childNode.pathApexY) : 0;
+      return {
+        edgeId: edge.id,
+        parentEdgeId,
+        childNodeId: edge.childId,
+        depth,
+        isLeaf: leafSet.has(edge.id),
+        isStable: edge.isStable,
+        isDead: edge.isDead,
+        pathHeight,
+        pathWallTicks: edge.pathWallTicks,
+        pathWallLandings: edge.pathWallLandings,
+        pathOffAxis: edge.pathOffAxis,
+        totalTicks: childNode?.totalTicks ?? edge.plan.length,
+        collectedKeys: Array.from(edge.pathReward.collectedKeys),
+        score: { ...edge.scoreBreakdown },
+        actionChain,
+        endStateBlobX: edge.endState.blob.x,
+        endStateBlobY: edge.endState.blob.y,
+        endStateBlobState: edge.endState.blob.state,
+      };
+    });
+    return {
+      tick: rootState.tick,
+      seed: null,
+      policy: { ...this.cfg.policy },
+      searchLimits: {
+        maxStableDepth: this.cfg.maxStableDepth,
+        maxEdgeRollouts: this.cfg.maxEdgeRollouts,
+        budgetMs: this.cfg.budgetMs,
+      },
+      rootStateBlobX: rootState.blob.x,
+      rootStateBlobY: rootState.blob.y,
+      rootStateBlobState: rootState.blob.state,
+      perceivedWheels: perceived.perceivedWheels,
+      perceivedPastilles: perceived.perceivedPastilles,
+      candidates,
+      chosenEdgeId: targetNode.edgeId,
+      chosenLeafNodeId: targetNode.id,
+      edgesEvaluated: edges.length,
+      stableNodesExpanded,
+      planMs,
+    };
   }
 
   private segmentsForEdges(
@@ -1329,9 +1476,9 @@ export class InterwheelPlanner {
   }
 
   private waterUrgency(waterMargin: number): number {
-    if (waterMargin >= 320) return 0;
+    if (waterMargin >= WATER_URGENCY_FAR) return 0;
     if (waterMargin <= WATER_SAFETY_MARGIN) return 1;
-    return (320 - waterMargin) / (320 - WATER_SAFETY_MARGIN);
+    return (WATER_URGENCY_FAR - waterMargin) / (WATER_URGENCY_FAR - WATER_SAFETY_MARGIN);
   }
 
   private emptyResult(startBlobY: number, perceived: PerceivedSnapshot, mode: PlannerStats['mode']): PlanResult {

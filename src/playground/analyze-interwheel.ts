@@ -19,6 +19,7 @@ import {
   type PlannerPolicy,
   type PlannerStats,
 } from './interwheel-planner';
+import { formatInspectionMarkdown, type InspectionRecord } from './plan-inspector';
 
 // Faithful headless analytics harness.
 //
@@ -198,6 +199,11 @@ type PlannerAnalyticsSummary = {
   segments: Stats;
   bestScore: Stats;
   bestScoreBreakdown: ScoreBreakdownStats;
+  // Per-knob steering diagnostic: per plan step, contribution range (max-min)
+  // across leaf candidates is "how much this knob differentiates routes."
+  // Aggregated across all plan steps in the trial.
+  leafScoreSpreadRange: ScoreBreakdownStats;
+  leafScoreSpreadStd: ScoreBreakdownStats;
 };
 
 type ActionRateSummary = {
@@ -343,8 +349,8 @@ function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
 
 function scoreBreakdownKeys(): Array<keyof CandidateScoreBreakdown> {
   return [
-    'climb', 'collect', 'wall', 'pace', 'detour',
-    'miss', 'stability', 'safety', 'backtrack', 'loop',
+    'climb', 'thoroughness', 'wall', 'pace', 'detour',
+    'stability', 'safety', 'backtrack', 'loop',
     'total',
   ];
 }
@@ -809,6 +815,24 @@ class InterwheelRunAnalytics {
   private summarizePlanner(): PlannerAnalyticsSummary {
     const modes: Record<PlannerStats['mode'], number> = { dead: 0, flight: 0, idle: 0, stable: 0 };
     for (const stat of this.plannerStats) modes[stat.mode] += 1;
+    // Only consider plans where the planner had >1 leaf to choose between —
+    // single-leaf plans have zero spread by construction and would dilute the
+    // mean. We want "when the planner faced a real choice, how much did each
+    // knob steer it?"
+    const stepsWithChoice = this.plannerStats.filter((s) => s.diagnostics.leafCount > 1);
+    const rangeBreakdowns: CandidateScoreBreakdown[] = stepsWithChoice.map((s) => {
+      const out = emptyScoreBreakdown();
+      for (const key of scoreBreakdownKeys()) {
+        const sp = s.diagnostics.leafScoreSpreads[key];
+        out[key] = sp.max - sp.min;
+      }
+      return out;
+    });
+    const stdBreakdowns: CandidateScoreBreakdown[] = stepsWithChoice.map((s) => {
+      const out = emptyScoreBreakdown();
+      for (const key of scoreBreakdownKeys()) out[key] = s.diagnostics.leafScoreSpreads[key].std;
+      return out;
+    });
     return {
       plans: this.plannerStats.length,
       modes,
@@ -820,6 +844,8 @@ class InterwheelRunAnalytics {
       segments: statsOf(this.plannerStats.map((stat) => stat.segments)),
       bestScore: statsOf(this.plannerStats.map((stat) => stat.bestScore)),
       bestScoreBreakdown: summarizeScoreBreakdown(this.plannerStats.map((stat) => stat.bestScoreBreakdown)),
+      leafScoreSpreadRange: summarizeScoreBreakdown(rangeBreakdowns),
+      leafScoreSpreadStd: summarizeScoreBreakdown(stdBreakdowns),
     };
   }
 }
@@ -1587,6 +1613,63 @@ async function parityCheck(maxTicks = 24_000): Promise<{
   return { headless, full, equal, firstDivergence };
 }
 
+type InspectPlanOpts = {
+  seed?: number | null;
+  targetTick: number;
+  policy?: Partial<PlannerPolicy>;
+  searchLimits?: { maxStableDepth?: number; maxEdgeRollouts?: number; budgetMs?: number };
+  maxExtraTicks?: number;
+};
+
+type InspectPlanResult = {
+  record: InspectionRecord | null;
+  markdown: string;
+  ticksWaited: number;
+  capturedAtTick: number;
+};
+
+async function inspectPlan(opts: InspectPlanOpts): Promise<InspectPlanResult> {
+  const seed = opts.seed ?? null;
+  const sim = new PureInterwheelSim();
+  sim.reset(seed !== null ? makeSeededRng(seed) : Math.random);
+  const plannerCfg: PlannerConfig = {
+    ...ANALYTICS_PLANNER_CONFIG,
+    ...opts.searchLimits,
+    policy: resolvePlannerPolicy(opts.policy ?? {}),
+  };
+  const inspectorPlanner = new InterwheelPlanner(sim, plannerCfg);
+
+  let ticks = 0;
+  while (!sim.ended && !sim.ending && ticks < opts.targetTick) {
+    const r = inspectorPlanner.step();
+    sim.step(r.press, () => 0.5);
+    ticks += 1;
+  }
+
+  inspectorPlanner.armInspection();
+  const maxExtra = opts.maxExtraTicks ?? 120;
+  let extras = 0;
+  while (
+    !sim.ended &&
+    !sim.ending &&
+    extras < maxExtra &&
+    inspectorPlanner.lastInspection() === null
+  ) {
+    const r = inspectorPlanner.step();
+    sim.step(r.press, () => 0.5);
+    extras += 1;
+    ticks += 1;
+  }
+
+  const record = inspectorPlanner.lastInspection();
+  if (record) record.seed = seed;
+  const markdown = record
+    ? formatInspectionMarkdown(record)
+    : `# Plan inspection — no capture\n\nReached tick ${ticks} (target ${opts.targetTick}, waited ${extras} extras). ` +
+      `Sim ${sim.ended ? 'ended' : sim.ending ? 'ending' : 'still running but no stable plan tick'}.`;
+  return { record, markdown, ticksWaited: extras, capturedAtTick: ticks };
+}
+
 (async () => {
   log('Booting Interwheel…');
   await setup();
@@ -1607,6 +1690,7 @@ async function parityCheck(maxTicks = 24_000): Promise<{
       comparePurePlanner: typeof comparePurePlanner;
       comparePurePlannerCorpus: typeof comparePurePlannerCorpus;
       parityCheck: typeof parityCheck;
+      inspectPlan: typeof inspectPlan;
       setPastilleSpawnChanceOverride: typeof setPastilleSpawnChanceOverride;
       setGenerationDifficultyOverride: typeof setGenerationDifficultyOverride;
     };
@@ -1621,6 +1705,7 @@ async function parityCheck(maxTicks = 24_000): Promise<{
     comparePurePlanner,
     comparePurePlannerCorpus,
     parityCheck,
+    inspectPlan,
     setPastilleSpawnChanceOverride,
     setGenerationDifficultyOverride,
   };
