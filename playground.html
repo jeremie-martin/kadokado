@@ -60,13 +60,13 @@
         <div class="controls" id="policy-controls">
           <div class="control">
             <label for="policy-focus">Focus (climb ↔ collect)</label>
-            <output id="policy-focus-value">0.33</output>
-            <input id="policy-focus" type="range" min="0" max="1" step="0.01" value="0.33">
+            <output id="policy-focus-value">0.40</output>
+            <input id="policy-focus" type="range" min="0" max="1" step="0.01" value="0.4">
           </div>
           <div class="control">
             <label for="policy-wallRoutes">Wall routes</label>
-            <output id="policy-wallRoutes-value">0.00</output>
-            <input id="policy-wallRoutes" type="range" min="0" max="2" step="0.05" value="0" data-policy-key="wallRoutes">
+            <output id="policy-wallRoutes-value">0.65</output>
+            <input id="policy-wallRoutes" type="range" min="0" max="2" step="0.05" value="0.65" data-policy-key="wallRoutes">
           </div>
           <div class="control">
             <label for="policy-pace">Pace</label>
@@ -83,18 +83,18 @@
         <div class="controls" id="objective-controls">
           <div class="control">
             <label for="planner-lookahead">Lookahead screens</label>
-            <output id="planner-lookahead-value">1.00</output>
-            <input id="planner-lookahead" type="range" min="0" max="4" step="0.1" value="1">
+            <output id="planner-lookahead-value">0.50</output>
+            <input id="planner-lookahead" type="range" min="0" max="4" step="0.1" value="0.5">
           </div>
           <div class="control">
             <label for="planner-searchDepth">Search jumps</label>
-            <output id="planner-searchDepth-value">3</output>
-            <input id="planner-searchDepth" type="range" min="1" max="6" step="1" value="3">
+            <output id="planner-searchDepth-value">4</output>
+            <input id="planner-searchDepth" type="range" min="1" max="6" step="1" value="4">
           </div>
           <div class="control">
             <label for="planner-edgeBudget">Edge budget</label>
-            <output id="planner-edgeBudget-value">240</output>
-            <input id="planner-edgeBudget" type="range" min="60" max="1200" step="60" value="240">
+            <output id="planner-edgeBudget-value">360</output>
+            <input id="planner-edgeBudget" type="range" min="60" max="1200" step="60" value="360">
           </div>
           <div class="control">
             <label for="planner-planBudgetMs">CPU budget</label>
@@ -115,33 +115,48 @@
           </div>
           <div class="control">
             <label for="overlay-lineageGamma">Lineage γ (descendant filter)</label>
-            <output id="overlay-lineageGamma-value">3.0</output>
-            <input id="overlay-lineageGamma" type="range" min="1" max="5" step="0.5" value="3" data-overlay-key="lineageGamma">
+            <output id="overlay-lineageGamma-value">4.0</output>
+            <input id="overlay-lineageGamma" type="range" min="1" max="5" step="0.5" value="4" data-overlay-key="lineageGamma">
           </div>
           <div class="control">
             <label for="overlay-minSupportRank">Low-support cull</label>
-            <output id="overlay-minSupportRank-value">0.05</output>
-            <input id="overlay-minSupportRank" type="range" min="0" max="0.8" step="0.01" value="0.05" data-overlay-key="minSupportRank">
+            <output id="overlay-minSupportRank-value">0.70</output>
+            <input id="overlay-minSupportRank" type="range" min="0" max="0.8" step="0.01" value="0.7" data-overlay-key="minSupportRank">
           </div>
           <div class="control">
             <label for="overlay-widthMin">Width base / min</label>
-            <output id="overlay-widthMin-value">0.50</output>
-            <input id="overlay-widthMin" type="range" min="0.25" max="10" step="0.05" value="0.5" data-overlay-key="widthMin">
+            <output id="overlay-widthMin-value">0.30</output>
+            <input id="overlay-widthMin" type="range" min="0.25" max="10" step="0.05" value="0.3" data-overlay-key="widthMin">
           </div>
           <div class="control">
             <label for="overlay-widthMax">Width cap / max</label>
-            <output id="overlay-widthMax-value">4.0</output>
-            <input id="overlay-widthMax" type="range" min="0.5" max="24" step="0.5" value="4" data-overlay-key="widthMax">
+            <output id="overlay-widthMax-value">7.0</output>
+            <input id="overlay-widthMax" type="range" min="0.5" max="24" step="0.5" value="7" data-overlay-key="widthMax">
           </div>
           <div class="control">
             <label for="overlay-shareWidthScale">Width share scale</label>
-            <output id="overlay-shareWidthScale-value">12.0</output>
-            <input id="overlay-shareWidthScale" type="range" min="0" max="30" step="0.5" value="12" data-overlay-key="shareWidthScale">
+            <output id="overlay-shareWidthScale-value">18.0</output>
+            <input id="overlay-shareWidthScale" type="range" min="0" max="30" step="0.5" value="18" data-overlay-key="shareWidthScale">
+          </div>
+          <div class="control">
+            <label for="overlay-generationWeight1">Gen 1 width weight</label>
+            <output id="overlay-generationWeight1-value">1.00</output>
+            <input id="overlay-generationWeight1" type="range" min="0" max="1" step="0.05" value="1" data-overlay-key="generationWeight1">
+          </div>
+          <div class="control">
+            <label for="overlay-generationWeight2">Gen 2 width weight</label>
+            <output id="overlay-generationWeight2-value">0.90</output>
+            <input id="overlay-generationWeight2" type="range" min="0" max="1" step="0.05" value="0.9" data-overlay-key="generationWeight2">
+          </div>
+          <div class="control">
+            <label for="overlay-generationWeight3">Gen 3 width weight</label>
+            <output id="overlay-generationWeight3-value">0.50</output>
+            <input id="overlay-generationWeight3" type="range" min="0" max="1" step="0.05" value="0.5" data-overlay-key="generationWeight3">
           </div>
           <div class="control">
             <label for="overlay-alphaMin">Alpha min</label>
-            <output id="overlay-alphaMin-value">0.12</output>
-            <input id="overlay-alphaMin" type="range" min="0" max="1" step="0.01" value="0.12" data-overlay-key="alphaMin">
+            <output id="overlay-alphaMin-value">0.07</output>
+            <input id="overlay-alphaMin" type="range" min="0" max="1" step="0.01" value="0.07" data-overlay-key="alphaMin">
           </div>
           <div class="control">
             <label for="overlay-alphaMax">Alpha max</label>
@@ -150,12 +165,12 @@
           </div>
           <div class="control">
             <label for="overlay-alphaGamma">Alpha γ</label>
-            <output id="overlay-alphaGamma-value">2.0</output>
-            <input id="overlay-alphaGamma" type="range" min="0.5" max="6" step="0.5" value="2" data-overlay-key="alphaGamma">
+            <output id="overlay-alphaGamma-value">4.0</output>
+            <input id="overlay-alphaGamma" type="range" min="0.5" max="6" step="0.5" value="4" data-overlay-key="alphaGamma">
           </div>
           <div class="control">
             <label for="overlay-color">Line color</label>
-            <input id="overlay-color" type="color" value="#9be8ff" style="grid-column: auto; width: 60px; height: 24px; padding: 0; border: 1px solid #365866; background: transparent;">
+            <input id="overlay-color" type="color" value="#ff3333" style="grid-column: auto; width: 60px; height: 24px; padding: 0; border: 1px solid #365866; background: transparent;">
           </div>
           <div class="control" style="grid-template-columns: 1fr auto;">
             <label for="overlay-colorByGeneration">Color by generation (debug)</label>

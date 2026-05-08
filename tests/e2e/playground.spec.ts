@@ -70,7 +70,36 @@ test.describe('AI playground', () => {
       timeout: 15000,
     });
 
-    await expect(page.locator('#planner-lookahead-value')).toHaveText('1.00');
+    await expect(page.locator('#policy-focus-value')).toHaveText('0.40');
+    await expect(page.locator('#policy-wallRoutes-value')).toHaveText('0.65');
+    await expect(page.locator('#planner-lookahead-value')).toHaveText('0.50');
+    await expect(page.locator('#planner-searchDepth-value')).toHaveText('4');
+    await expect(page.locator('#planner-edgeBudget-value')).toHaveText('360');
+    await expect(page.locator('#planner-planBudgetMs-value')).toHaveText('5ms');
+    await expect(page.locator('#overlay-lineageDecay-value')).toHaveText('0.65');
+    await expect(page.locator('#overlay-lineageGamma-value')).toHaveText('4.0');
+    await expect(page.locator('#overlay-minSupportRank-value')).toHaveText('0.70');
+    await expect(page.locator('#overlay-widthMin-value')).toHaveText('0.30');
+    await expect(page.locator('#overlay-widthMax-value')).toHaveText('7.0');
+    await expect(page.locator('#overlay-shareWidthScale-value')).toHaveText('18.0');
+    await expect(page.locator('#overlay-generationWeight1-value')).toHaveText('1.00');
+    await expect(page.locator('#overlay-generationWeight2-value')).toHaveText('0.90');
+    await expect(page.locator('#overlay-generationWeight3-value')).toHaveText('0.50');
+    await expect(page.locator('#overlay-generationWeight4')).toHaveCount(0);
+    await expect(page.locator('#overlay-alphaMin-value')).toHaveText('0.07');
+    await expect(page.locator('#overlay-alphaMax-value')).toHaveText('0.90');
+    await expect(page.locator('#overlay-alphaGamma-value')).toHaveText('4.0');
+    await expect(page.locator('#overlay-color')).toHaveValue('#ff3333');
+    await page.waitForFunction(() => {
+      const planner = (window as { __planner__?: { lastSegments: () => Array<{ generation: number }> } }).__planner__;
+      return (planner?.lastSegments() ?? []).length > 0;
+    });
+    const defaultMaxGeneration = await page.evaluate(() => {
+      const overlay = (window as { __overlay__: { lastDrawnStats: () => { maxGeneration: number } } }).__overlay__;
+      return overlay.lastDrawnStats().maxGeneration;
+    });
+    expect(defaultMaxGeneration).toBeLessThanOrEqual(3);
+
     await page.locator('#planner-lookahead').evaluate((el) => {
       const input = el as HTMLInputElement;
       input.value = '1.5';
@@ -89,10 +118,10 @@ test.describe('AI playground', () => {
 
     await page.locator('#planner-searchDepth').evaluate((el) => {
       const input = el as HTMLInputElement;
-      input.value = '4';
+      input.value = '5';
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    await expect(page.locator('#planner-searchDepth-value')).toHaveText('4');
+    await expect(page.locator('#planner-searchDepth-value')).toHaveText('5');
 
     await page.locator('#planner-edgeBudget').evaluate((el) => {
       const input = el as HTMLInputElement;
@@ -107,7 +136,7 @@ test.describe('AI playground', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await expect(page.locator('#planner-planBudgetMs-value')).toHaveText('10ms');
-    await expect(page.locator('#stats')).toContainText('4 jumps');
+    await expect(page.locator('#stats')).toContainText('5 jumps');
 
     const searchLimits = await page.evaluate(() => {
       const w = window as unknown as {
@@ -115,7 +144,16 @@ test.describe('AI playground', () => {
       };
       return w.__planner__.getSearchLimits();
     });
-    expect(searchLimits).toMatchObject({ maxStableDepth: 4, maxEdgeRollouts: 480, budgetMs: 10 });
+    expect(searchLimits).toMatchObject({ maxStableDepth: 5, maxEdgeRollouts: 480, budgetMs: 10 });
+    await page.waitForFunction(() => {
+      const planner = (window as { __planner__?: { lastSegments: () => Array<{ generation: number }> } }).__planner__;
+      return (planner?.lastSegments() ?? []).length > 0;
+    });
+    const updatedMaxGeneration = await page.evaluate(() => {
+      const overlay = (window as { __overlay__: { lastDrawnStats: () => { maxGeneration: number } } }).__overlay__;
+      return overlay.lastDrawnStats().maxGeneration;
+    });
+    expect(updatedMaxGeneration).toBeLessThanOrEqual(3);
 
     await page.locator('#policy-wallRoutes').evaluate((el) => {
       const input = el as HTMLInputElement;
@@ -131,11 +169,14 @@ test.describe('AI playground', () => {
       return w.__planner__.policy();
     });
 
-    expect(policy).toMatchObject({ climb: 1, collectibles: 1, wallRoutes: 0.5, pace: 1 });
+    expect(policy.climb).toBeCloseTo(1.08);
+    expect(policy.collectibles).toBeCloseTo(1.2);
+    expect(policy).toMatchObject({ wallRoutes: 0.5, pace: 1 });
     await expect(page.locator('#stats')).not.toContainText('wall 0.50');
 
     await page.locator('#policy-reset').click();
-    await expect(page.locator('#policy-wallRoutes-value')).toHaveText('0.00');
+    await expect(page.locator('#policy-focus-value')).toHaveText('0.40');
+    await expect(page.locator('#policy-wallRoutes-value')).toHaveText('0.65');
 
     const resetPolicy = await page.evaluate(() => {
       const w = window as unknown as {
@@ -143,7 +184,9 @@ test.describe('AI playground', () => {
       };
       return w.__planner__.policy();
     });
-    expect(resetPolicy).toMatchObject({ climb: 1, collectibles: 1, wallRoutes: 0, pace: 1 });
+    expect(resetPolicy.climb).toBeCloseTo(1.08);
+    expect(resetPolicy.collectibles).toBeCloseTo(1.2);
+    expect(resetPolicy).toMatchObject({ wallRoutes: 0.65, pace: 1 });
 
     await page.locator('#overlay-shareWidthScale').evaluate((el) => {
       const input = el as HTMLInputElement;
@@ -151,6 +194,19 @@ test.describe('AI playground', () => {
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await expect(page.locator('#overlay-shareWidthScale-value')).toHaveText('14.0');
+
+    await page.locator('#overlay-generationWeight3').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      input.value = '0.25';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#overlay-generationWeight3-value')).toHaveText('0.25');
+
+    const generationWeights = await page.evaluate(() => {
+      const overlay = (window as { __overlay__: { getGenerationWidthWeights: () => number[] } }).__overlay__;
+      return overlay.getGenerationWidthWeights();
+    });
+    expect(generationWeights).toEqual([1, 0.9, 0.25, 0]);
 
     await page.locator('#overlay-alphaMin').evaluate((el) => {
       const input = el as HTMLInputElement;

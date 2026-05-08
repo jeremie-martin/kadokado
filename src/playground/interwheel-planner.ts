@@ -10,6 +10,7 @@ import {
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/sim';
+import { renderedGenerationLimitForSearchDepth } from './trajectory-rendering';
 
 // Constant RNG used during search. The simulator may consume an RNG draw for
 // cosmetic-but-stateful parity cases, but search outcomes do not depend on the
@@ -37,13 +38,13 @@ const DEFAULT_LONG_WAIT_PENALTY = 0.08;
 // so the playground can override them at runtime via setLineage().
 //
 // gamma: leaf seed curve. Only leaf/frontier edges seed visual support, using
-//   rank-of-value^gamma. γ=3 means only top reachable futures pull their
+//   rank-of-value^gamma. Higher values mean only top reachable futures pull their
 //   ancestors up; γ=1 makes mediocre futures contribute proportionally too.
 // decay: fraction of a child's support a parent inherits in the bottom-up
 //   pass. decay=0 makes only leaves visible as important; decay near 1
 //   amplifies common prefixes that lead to many strong futures.
 export const LINEAGE_DEFAULTS: { gamma: number; decay: number } = {
-  gamma: 3,
+  gamma: 4,
   decay: 0.65,
 };
 
@@ -139,8 +140,8 @@ export type Segment = {
   onChosenChain: boolean;
   isLeaf: boolean;
   // Search-tree depth of this edge's child node. 1 = first jump from root,
-  // 2 = second jump, etc. Used by the playground's "color by generation"
-  // overlay mode for debugging.
+  // 2 = second jump, etc. Used by generation color, render capping, and
+  // generation width weights.
   generation: number;
 };
 
@@ -183,13 +184,13 @@ export type PlannerConfig = {
 };
 
 export type PlannerPolicy = {
-  /** Prefer raw upward progress and max-height gain. Default preserves legacy scoring. */
+  /** Prefer raw upward progress and max-height gain. */
   climb: number;
-  /** Prefer pastilles/sparks. Default preserves legacy scoring. */
+  /** Prefer pastilles/sparks. */
   collectibles: number;
   /** Add preference for routes that intentionally touch a wall from a wheel. */
   wallRoutes: number;
-  /** Penalize long plans/waits. Default preserves legacy scoring. */
+  /** Penalize long plans/waits. */
   pace: number;
 };
 
@@ -207,21 +208,21 @@ export type CandidateScoreBreakdown = {
 };
 
 export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
-  climb: 1,
-  collectibles: 1,
-  wallRoutes: 0,
+  climb: 1.08,
+  collectibles: 1.2,
+  wallRoutes: 0.65,
   pace: 1,
 };
 
 export const PLANNER_PERCEPTION_DEFAULTS = {
-  revealScreensAbove: 1,
+  revealScreensAbove: 0.5,
   memoryScreensBelow: 2,
 };
 
 export const PLANNER_SEARCH_DEFAULTS = {
   budgetMs: 5,
-  maxEdgeRollouts: 240,
-  maxStableDepth: 3,
+  maxEdgeRollouts: 360,
+  maxStableDepth: 4,
 };
 
 export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): PlannerPolicy {
@@ -913,10 +914,15 @@ export class InterwheelPlanner {
   ): Segment[] {
     const out: Segment[] = [];
     const leafIds = new Set(this.leafEdgeIds(edges).map((edge) => edge.id));
+    const renderGenerationLimit = renderedGenerationLimitForSearchDepth(this.cfg.maxStableDepth);
     for (const edge of edges) {
       const onChosenChain = bestEdgeIds.has(edge.id);
-      const isLeaf = leafIds.has(edge.id);
       const generation = edge.childId >= 0 ? nodes[edge.childId].depth : 1;
+      if (generation > renderGenerationLimit) continue;
+      // The search intentionally runs one generation past the overlay. Treat
+      // the visible depth cap as a render frontier so inherited descendant
+      // support still normalizes against the last shown branches.
+      const isLeaf = leafIds.has(edge.id) || generation >= renderGenerationLimit;
       for (const segment of edge.segments) {
         const s = segment as Segment;
         s.edgeId = edge.id;

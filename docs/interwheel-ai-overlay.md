@@ -41,15 +41,20 @@ edgeId, x0/y0/x1/y1, depth, localTick, support, onChosenChain, isLeaf, generatio
 ```
 
 `TRAJECTORY_SAMPLE_TICKS = 1` so displayed polylines are stable frame-to-frame.
-`generation` is the search-tree depth of the edge child node and is used only
-by the "Color by generation" debug mode.
+`generation` is the search-tree depth of the edge child node and is used by the
+"Color by generation" debug mode and planner-side render capping.
 
 The playground exposes `revealScreensAbove` as *Lookahead screens*. The current
-default is `1.0`, meaning the planner sees one viewport above the live view;
+default is `0.5`, meaning the planner sees half a viewport above the live view;
 setting it to `0` restricts lookahead to the current viewport top. Search depth
 and rollout controls are also exposed because lookahead can be invisible if the
-planner still stops after the default `3` stable jumps or `240` evaluated
+planner still stops after the default `4` stable jumps or `360` evaluated
 edges.
+
+The overlay intentionally emits one fewer generation than the search depth and
+never emits fourth-or-deeper generations. At the default `4` search jumps, the
+planner evaluates fourth-generation futures and propagates their lineage support
+backward, but the displayed decision space stops at the third jump.
 
 ### Edge Scoring
 
@@ -101,7 +106,7 @@ support[parent] += support[child] * lineageDecay
 
 Defaults:
 
-- `lineageGamma = 3`
+- `lineageGamma = 4`
 - `lineageDecay = 0.65`
 
 This gives a first jump visual credit for the competitive continuations it
@@ -140,19 +145,25 @@ alpha = lerp(alphaMin, alphaMax, rank(support)^alphaGamma)
 
 ```text
 width = clamp(widthMin + (support / leafSupportTotal) * shareWidthScale, widthMin, widthMax)
+  * generationWidthWeight(generation)
 ```
 
 Defaults:
 
-- `minSupportRank = 0.05`
-- `widthMin = 0.5`
-- `widthMax = 4`
-- `shareWidthScale = 12`
-- `alphaMin = 0.12`
+- `minSupportRank = 0.7`
+- `widthMin = 0.3`
+- `widthMax = 7`
+- `shareWidthScale = 18`
+- `generationWidthWeights = [1.0, 0.9, 0.5, 0.0]`
+- `alphaMin = 0.07`
 - `alphaMax = 0.9`
-- `alphaGamma = 2`
+- `alphaGamma = 4`
 
-Width is the edge's share of all leaf/frontier support, capped by `widthMax`.
+Width is the edge's share of all rendered leaf/frontier support, capped by
+`widthMax`, then multiplied by the edge generation's width weight. When the
+render cap or a zero generation weight hides the deepest searched generation,
+the last visible generation is treated as the renderer frontier for width
+normalization; support itself is still computed from the full searched tree.
 This keeps the main trunk visually dominant only when it actually carries a
 large fraction of explored successful futures.
 
@@ -179,6 +190,7 @@ Overlay controls affect rendering or support recomputation:
 - Width base / min
 - Width cap / max
 - Width share scale
+- Generation width weights (Gen 1-3; Gen 4+ is fixed hidden)
 - Alpha min/max/gamma
 - Line color
 - Color by generation

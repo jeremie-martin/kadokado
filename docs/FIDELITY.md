@@ -217,7 +217,7 @@ planner branches rather than a separate visual-only search.
 
 The planner predicts with a filtered scratch `InterwheelSim` built from a
 perceived world: currently visible objects, a playground-tunable lookahead
-above the viewport that defaults to one screen, and two screens of remembered
+above the viewport that defaults to half a screen, and two screens of remembered
 known objects below for recovery. Score-seeking remains intentional, but bonus
 valuation is derived from local simulated pickup/spark events instead of
 scanning the full generated level.
@@ -230,8 +230,12 @@ outcomes contribute visual credit back through their ancestors, so shared
 prefixes thicken when they enable many strong continuations. Width is based on
 the branch's share of leaf/frontier support, alpha fades by support rank, weak
 support is culled by rank, and an optional generation-color mode helps identify
-whether noise comes from first jumps or deeper continuations. Current details
-live in `docs/interwheel-ai-overlay.md`.
+whether noise comes from first jumps or deeper continuations. The search runs
+one jump deeper than the rendered overlay by default: `4` searched jumps provide
+lineage support, while only the first `3` jump generations are drawn. Manual
+generation width weights `[1.0, 0.9, 0.5, 0.0]` make deeper visible branches
+progressively thinner and suppress the fourth rendered generation. Current
+details live in `docs/interwheel-ai-overlay.md`.
 
 ### Pioupiou
 

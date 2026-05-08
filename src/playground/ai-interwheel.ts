@@ -50,6 +50,9 @@ const OVERLAY_PARAM_DEFAULTS = {
   widthMin: OVERLAY_DEFAULTS.widthMin,
   widthMax: OVERLAY_DEFAULTS.widthMax,
   shareWidthScale: OVERLAY_DEFAULTS.shareWidthScale,
+  generationWeight1: OVERLAY_DEFAULTS.generationWidthWeights[0],
+  generationWeight2: OVERLAY_DEFAULTS.generationWidthWeights[1],
+  generationWeight3: OVERLAY_DEFAULTS.generationWidthWeights[2],
   alphaMin: OVERLAY_DEFAULTS.alphaMin,
   alphaMax: OVERLAY_DEFAULTS.alphaMax,
   alphaGamma: OVERLAY_DEFAULTS.alphaGamma,
@@ -63,6 +66,9 @@ const OVERLAY_PARAM_PRECISION: Record<OverlayParamKey, number> = {
   widthMin: 2,
   widthMax: 1,
   shareWidthScale: 1,
+  generationWeight1: 2,
+  generationWeight2: 2,
+  generationWeight3: 2,
   alphaMin: 2,
   alphaMax: 2,
   alphaGamma: 1,
@@ -227,6 +233,20 @@ function redrawOverlayFromCache(): void {
   refreshOverlayStats();
 }
 
+function generationWidthWeightsFromParams(): number[] {
+  return [
+    overlayParams.generationWeight1,
+    overlayParams.generationWeight2,
+    overlayParams.generationWeight3,
+    0,
+  ];
+}
+
+function applyGenerationWidthWeights(): void {
+  overlay?.setGenerationWidthWeights(generationWidthWeightsFromParams());
+  redrawOverlayFromCache();
+}
+
 function applyOverlayParam(key: OverlayParamKey, value: number): void {
   if (overlayParams[key] === value) return;
   overlayParams[key] = value;
@@ -254,6 +274,11 @@ function applyOverlayParam(key: OverlayParamKey, value: number): void {
     case 'shareWidthScale':
       overlay?.setShareWidthScale(value);
       redrawOverlayFromCache();
+      break;
+    case 'generationWeight1':
+    case 'generationWeight2':
+    case 'generationWeight3':
+      applyGenerationWidthWeights();
       break;
     case 'alphaMin':
       overlay?.setAlphaMin(value);

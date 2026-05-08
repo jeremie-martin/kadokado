@@ -45,8 +45,8 @@ const detBtn = document.getElementById('determinism') as HTMLButtonElement;
 const stage = document.getElementById('hidden-stage') as HTMLDivElement;
 const ANALYTICS_PLANNER_CONFIG = {
   budgetMs: 5,
-  maxEdgeRollouts: 240,
-  maxStableDepth: 3,
+  maxEdgeRollouts: 360,
+  maxStableDepth: 4,
   targetClimb: 400,
   collectSegments: false,
 } satisfies PlannerConfig;
@@ -1036,7 +1036,7 @@ export type AnalyzeInterwheelOpts = {
   seedBase?: number;
   /** Hard cap on ticks per trial. Default 24000 (= 10 in-game minutes at 40 Hz). */
   maxTicks?: number;
-  /** Numeric planner policy knobs. Omitted fields use the default value 1, except wallRoutes=0. */
+  /** Numeric planner policy knobs. Omitted fields use DEFAULT_PLANNER_POLICY. */
   policy?: Partial<PlannerPolicy>;
 };
 

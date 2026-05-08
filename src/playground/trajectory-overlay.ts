@@ -1,5 +1,11 @@
 import { Container, Graphics } from 'pixi.js';
 import type { Segment } from './interwheel-planner';
+import {
+  DEFAULT_TRAJECTORY_GENERATION_WIDTH_WEIGHTS,
+  normalizeTrajectoryGenerationWidthWeights,
+  trajectoryGenerationWidthWeight,
+  type TrajectoryGenerationWidthWeights,
+} from './trajectory-rendering';
 
 export type OverlayMode = 'on' | 'off';
 
@@ -11,16 +17,18 @@ export const OVERLAY_DEFAULTS: {
   alphaMin: number;
   alphaMax: number;
   alphaGamma: number;
+  generationWidthWeights: TrajectoryGenerationWidthWeights;
   color: number;
 } = {
-  minSupportRank: 0.05,
-  widthMin: 0.5,
-  widthMax: 4,
-  shareWidthScale: 12,
-  alphaMin: 0.12,
+  minSupportRank: 0.7,
+  widthMin: 0.3,
+  widthMax: 7,
+  shareWidthScale: 18,
+  alphaMin: 0.07,
   alphaMax: 0.9,
-  alphaGamma: 2,
-  color: 0x9be8ff,
+  alphaGamma: 4,
+  generationWidthWeights: DEFAULT_TRAJECTORY_GENERATION_WIDTH_WEIGHTS,
+  color: 0xff3333,
 };
 
 // Debug palette for "color by generation" mode. Each search-tree depth gets
@@ -43,6 +51,7 @@ export type OverlayStats = {
   bestSupport: number;
   medianSupport: number;
   worstSupport: number;
+  maxGeneration: number;
 };
 
 const EMPTY_STATS: OverlayStats = {
@@ -52,6 +61,7 @@ const EMPTY_STATS: OverlayStats = {
   bestSupport: 0,
   medianSupport: 0,
   worstSupport: 0,
+  maxGeneration: 0,
 };
 
 type DrawRun = {
@@ -73,6 +83,7 @@ export class TrajectoryOverlay {
   private alphaMin = OVERLAY_DEFAULTS.alphaMin;
   private alphaMax = OVERLAY_DEFAULTS.alphaMax;
   private alphaGamma = OVERLAY_DEFAULTS.alphaGamma;
+  private generationWidthWeights = normalizeTrajectoryGenerationWidthWeights(OVERLAY_DEFAULTS.generationWidthWeights);
   private color = OVERLAY_DEFAULTS.color;
   private colorByGeneration = false;
 
@@ -127,6 +138,14 @@ export class TrajectoryOverlay {
     this.alphaGamma = Math.max(0.1, gamma);
   }
 
+  setGenerationWidthWeights(weights: TrajectoryGenerationWidthWeights): void {
+    this.generationWidthWeights = normalizeTrajectoryGenerationWidthWeights(weights);
+  }
+
+  getGenerationWidthWeights(): number[] {
+    return [...this.generationWidthWeights];
+  }
+
   setColor(c: number): void {
     this.color = c & 0xffffff;
   }
@@ -149,11 +168,19 @@ export class TrajectoryOverlay {
 
     // One observation per edge regardless of segment count — long flights
     // shouldn't bias the support distribution.
+    const maxVisibleGeneration = segments.reduce((max, s) => {
+      return this.generationWidthWeight(s.generation) > 0 ? Math.max(max, s.generation) : max;
+    }, 0);
     const edgeSupport = new Map<number, number>();
     const leafEdges = new Set<number>();
     for (const s of segments) {
+      if (this.generationWidthWeight(s.generation) <= 0) continue;
       if (!edgeSupport.has(s.edgeId)) edgeSupport.set(s.edgeId, s.support);
-      if (s.isLeaf) leafEdges.add(s.edgeId);
+      if (s.isLeaf || s.generation >= maxVisibleGeneration) leafEdges.add(s.edgeId);
+    }
+    if (edgeSupport.size === 0) {
+      this.stats = { ...EMPTY_STATS };
+      return;
     }
     const sorted = [...edgeSupport.entries()].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
     const supportMax = Math.max(sorted[sorted.length - 1][1], Number.EPSILON);
@@ -175,12 +202,15 @@ export class TrajectoryOverlay {
     }
     const drawnEdges = new Set<number>();
     let drawnSegments = 0;
+    let maxGeneration = 0;
     const runs: DrawRun[] = [];
 
     for (const s of segments) {
+      const generationWidthWeight = this.generationWidthWeight(s.generation);
+      if (generationWidthWeight <= 0) continue;
       const supportRank = rankByEdge.get(s.edgeId) ?? 0;
       if (supportRank < this.minSupportRank) continue;
-      const width = this.widthForSupport(s.support, widthLow, widthHigh, leafSupportTotal);
+      const width = this.widthForSupport(s.support, widthLow, widthHigh, leafSupportTotal) * generationWidthWeight;
       const alpha = this.alphaForRank(supportRank);
       const color = this.colorByGeneration
         ? GENERATION_COLORS[(Math.max(1, s.generation) - 1) % GENERATION_COLORS.length]
@@ -193,6 +223,7 @@ export class TrajectoryOverlay {
       }
       drawnEdges.add(s.edgeId);
       drawnSegments++;
+      maxGeneration = Math.max(maxGeneration, s.generation);
     }
 
     for (const run of runs) {
@@ -214,7 +245,12 @@ export class TrajectoryOverlay {
       bestSupport: supportMax,
       medianSupport: sorted[sorted.length >> 1][1],
       worstSupport: sorted[0][1],
+      maxGeneration,
     };
+  }
+
+  private generationWidthWeight(generation: number): number {
+    return trajectoryGenerationWidthWeight(generation, this.generationWidthWeights);
   }
 
   private widthForSupport(
