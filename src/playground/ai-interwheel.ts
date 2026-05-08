@@ -1,4 +1,5 @@
 import { mount, type InterwheelGame } from '../games/interwheel/index';
+import { clamp } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
 import {
   DEFAULT_PLANNER_POLICY,
@@ -94,14 +95,14 @@ function syncPolicyControls(): void {
   // Focus reflects collectibles position on the lerp; climb may drift off the
   // line if user adjusts it directly, that's OK — focus is a fast-path preset.
   if (focusInput || focusOutput) {
-    const focus = Math.max(0, Math.min(1, policy.collectibles / FOCUS_COLLECT_MAX));
+    const focus = clamp(policy.collectibles / FOCUS_COLLECT_MAX, 0, 1);
     if (focusInput) focusInput.value = String(focus);
     if (focusOutput) focusOutput.value = focus.toFixed(2);
   }
 }
 
 function policyFromFocus(focus: number, base: PlannerPolicy): PlannerPolicy {
-  const f = Math.max(0, Math.min(1, focus));
+  const f = clamp(focus, 0, 1);
   return {
     ...base,
     climb: FOCUS_CLIMB_MAX - (FOCUS_CLIMB_MAX - FOCUS_CLIMB_MIN) * f,
@@ -164,6 +165,7 @@ function syncOverlayParamControls(): void {
 }
 
 function applyOverlayParam(key: OverlayParamKey, value: number): void {
+  if (overlayParams[key] === value) return;
   overlayParams[key] = value;
   switch (key) {
     case 'lineageDecay':
@@ -247,12 +249,6 @@ function setupOverlayParamControls(): void {
     applyOverlayColor(OVERLAY_DEFAULTS.color);
   });
 
-  // Push current values into the planner/overlay so HTML defaults that
-  // diverge from code defaults take effect immediately.
-  for (const key of OVERLAY_PARAM_KEYS) {
-    applyOverlayParam(key, overlayParams[key]);
-  }
-  applyOverlayColor(overlayColor);
   syncOverlayParamControls();
 }
 

@@ -1,28 +1,14 @@
 import { Container, Graphics } from 'pixi.js';
+import { clamp } from '../games/interwheel/sim';
 import type { Segment } from './interwheel-planner';
 
 export type OverlayMode = 'on' | 'off';
 
-
-// Visual defaults. The instance fields below mirror these and can be
-// overridden at runtime via the playground sliders.
-//
-// alphaGamma: curve applied to each edge's rank-of-support. The planner's
-//   lineage pass produces support that grows roughly exponentially with depth
-//   on the principal prefix (recurrence factor branching × decay > 1), so
-//   support magnitude is dominated by a single outlier and not useful for
-//   direct normalization. Rank-mapping discards magnitude but preserves the
-//   ordering lineage support imposed: a good prefix earns top rank because
-//   of its descendants. γ=4 is the current default after playtesting.
-//
-// minDrawAlpha: below this alpha, skip drawing entirely. Avoids a "carpet"
-//   of near-invisible lines accumulating into visible noise.
-//
-// widthMin / widthMax: stroke width is interpolated by *support magnitude*
-//   (not alpha) — width = lerp(min, max, clamp(support / p95Support, 0, 1)).
-//   Alpha answers "is this edge competitive enough to show?"; width answers
-//   "how much search mass flowed through this edge?" Equal min/max gives
-//   uniform width.
+// alphaGamma is rank-of-support, not normalize-of-support: lineage support
+// grows roughly exponentially with depth on the principal prefix (recurrence
+// factor branching × decay > 1), so a single outlier dominates the magnitude.
+// Rank-mapping discards magnitude but preserves the ordering lineage support
+// imposed.
 export const OVERLAY_DEFAULTS: {
   alphaGamma: number;
   minDrawAlpha: number;
@@ -37,11 +23,8 @@ export const OVERLAY_DEFAULTS: {
   color: 0x9be8ff,
 };
 
-// Saturation percentile for the support → width mapping. p95 makes the top
-// 5% of edges (= chosen-prefix root and a handful of near-top expanded
-// prefixes) saturate at widthMax, while the rest scale linearly. p100 (max)
-// would let the chosen-prefix outlier dominate and crush everything else
-// to widthMin.
+// p95 (vs p100) prevents the chosen-prefix support outlier from crushing every
+// other width to widthMin.
 const WIDTH_NORM_PERCENTILE = 0.95;
 
 // Debug palette for "color by generation" mode. Each search-tree depth gets
@@ -122,7 +105,7 @@ export class TrajectoryOverlay {
   }
 
   setMinDrawAlpha(a: number): void {
-    this.minDrawAlpha = Math.max(0, Math.min(1, a));
+    this.minDrawAlpha = clamp(a, 0, 1);
   }
 
   setWidthMin(w: number): void {

@@ -57,6 +57,17 @@ The main scoring fix is that directional terms are local to the edge:
   `UNRESOLVED_FLIGHT_PENALTY`; it should not rank as a good candidate just
   because it flew upward into unknown space.
 
+Collectibles influence both edge score and node priority:
+
+- Each edge incurs a `missedCollect` cost proportional to
+  `policy.collectibles` for any perceived pastille passed within
+  `MISS_PROXIMITY_PX = 300` but not picked up (`MISS_PENALTY_FACTOR = 1.0`,
+  linear proximity weight).
+- `nodePriority` adds a `collectibleBias` term: `exp(-d / NODE_BIAS_DECAY_PX)`
+  summed over uncollected pastilles, scaled by `policy.collectibles *
+  NODE_BIAS_FACTOR` (`NODE_BIAS_DECAY_PX = 400`, `NODE_BIAS_FACTOR = 1.5`).
+  This pulls best-first expansion toward branches that approach pickups.
+
 There is one temporary A/B knob in the playground:
 
 - `asymmetricYGain`: if enabled, local downward `yGain` is weighted 3x harder.
@@ -97,6 +108,7 @@ The overlay has two modes:
 - `off`
 
 `D` toggles the mode. `A` toggles the AI. `P` pauses/resumes the playground.
+`R` reloads the page.
 
 ### Alpha
 

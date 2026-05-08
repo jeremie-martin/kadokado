@@ -44,10 +44,8 @@ USAGE:
 
 function timestamp() { return new Date().toISOString().replace(/[:.]/g, '-'); }
 
-// Aggressive sweep so we can see both saturation and over-driving behavior.
-// Also vary scoreBias, since the collectibles term gets capped by
-// `min(scorePolicy*scoreBias, max(1250, heightPolicy*0.35))` — bias may be
-// the actual lever that lets the cap rise.
+// Aggressive sweep so we can see both saturation and over-driving behavior of
+// the now-uncapped collectibles term.
 function makeConditions() {
   const conditions = [
     { group: 'baseline', name: 'default', policy: {} },
@@ -56,14 +54,13 @@ function makeConditions() {
   for (const v of [0, 0.5, 1, 2, 3, 5, 8, 12, 20]) {
     conditions.push({ group: 'sweep:collectibles', name: `collectibles=${v}`, policy: { collectibles: v }, knob: 'collectibles', value: v });
   }
-  // Pair high collectibles with lower climb/pace so the height term isn't dominating the cap arithmetic.
+  // Pair high collectibles with lower climb/pace so the height term isn't dwarfing it.
   for (const c of [3, 8, 20]) {
     conditions.push({ group: 'collect+lowClimb', name: `c=${c},climb=0.3`, policy: { collectibles: c, climb: 0.3 } });
   }
   for (const c of [3, 8, 20]) {
     conditions.push({ group: 'collect+lowPace', name: `c=${c},pace=0.3`, policy: { collectibles: c, pace: 0.3 } });
   }
-  // scoreBias raises the inner cap argument. Try increasing it alongside collectibles.
   return conditions;
 }
 

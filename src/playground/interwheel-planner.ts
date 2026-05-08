@@ -6,6 +6,7 @@ import {
   InterwheelSim as ScratchInterwheelSim,
   SCORE_PASTILLE,
   STAGE_HEIGHT,
+  clamp,
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/sim';
@@ -244,6 +245,7 @@ export class InterwheelPlanner {
   private knownPastilleKeys = new Set<string>();
   private lastSeenTick = -1;
   private currentPerceived: PerceivedSnapshot | null = null;
+  private currentPerceivedKeys: string[] = [];
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
   private objective: ObjectiveFlags = { ...OBJECTIVE_DEFAULTS };
@@ -298,7 +300,7 @@ export class InterwheelPlanner {
 
   setLineage(params: { gamma?: number; decay?: number }): void {
     if (params.gamma !== undefined) this.lineageGamma = Math.max(0.1, params.gamma);
-    if (params.decay !== undefined) this.lineageDecay = Math.max(0, Math.min(1, params.decay));
+    if (params.decay !== undefined) this.lineageDecay = clamp(params.decay, 0, 1);
     this.lastResult = null;
   }
 
@@ -334,6 +336,7 @@ export class InterwheelPlanner {
     this.updatePerception(fullSnap);
     const perceived = this.buildPerceivedSnapshot(fullSnap);
     this.currentPerceived = perceived;
+    this.currentPerceivedKeys = perceived.snap.pastilles.map((p) => this.pastilleKey(p));
 
     if (fullSnap.blob.state === BLOB_STATE_DEAD || fullSnap.ending || fullSnap.ended) {
       return this.emptyResult(fullSnap.blob.y, perceived, 'dead');
@@ -508,7 +511,6 @@ export class InterwheelPlanner {
 
     let sx = sim.blob.x;
     let sy = sim.blob.y;
-    let launched = false;
     const recordStep = (press: boolean): void => {
       sim.step(press, constantRng);
       plan.push(press);
@@ -523,10 +525,7 @@ export class InterwheelPlanner {
           if (d2 < minDistSq[i]) minDistSq[i] = d2;
         }
       }
-      if (!this.cfg.collectSegments) {
-        if (press) launched = true;
-        return;
-      }
+      if (!this.cfg.collectSegments) return;
       const terminal = sim.blob.state !== BLOB_STATE_GRAB && sim.blob.state !== BLOB_STATE_WALL && sim.blob.state !== BLOB_STATE_FLY;
       const shouldRecord =
         press ||
@@ -547,7 +546,6 @@ export class InterwheelPlanner {
         sx = sim.blob.x;
         sy = sim.blob.y;
       }
-      if (press) launched = true;
     };
 
     for (let i = 0; i < waitTicks; i += 1) {
@@ -672,8 +670,6 @@ export class InterwheelPlanner {
     const scorePolicy =
       reward.sparkScore * 3 +
       reward.pickedValue * 1.5;
-    // Uncapped: collectibles term scales linearly with pickup value, so the
-    // policy.collectibles knob has real magnitude authority vs height.
     const scoreTerm = scorePolicy * this.cfg.scoreBias * (1 - waterUrgency * 0.85);
     const loopPenalty = sameStableTarget && reward.pickedValue + reward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
     const height = this.cfg.policy.climb * heightPolicy * (1 + waterUrgency * 1.2);
@@ -709,12 +705,13 @@ export class InterwheelPlanner {
   private missedCollectibleValue(reward: EdgeReward): number {
     const perceived = this.currentPerceived?.snap.pastilles;
     if (!perceived || perceived.length === 0) return 0;
+    const keys = this.currentPerceivedKeys;
     let missed = 0;
     for (let i = 0; i < perceived.length; i += 1) {
-      const p = perceived[i];
-      if (reward.collectedKeys.has(this.pastilleKey(p))) continue;
+      if (reward.collectedKeys.has(keys[i])) continue;
       const d2 = reward.minDistSq[i];
       if (!Number.isFinite(d2) || d2 >= MISS_PROXIMITY_PX_SQ) continue;
+      const p = perceived[i];
       const proximity = 1 - Math.sqrt(d2) / MISS_PROXIMITY_PX;
       missed += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * proximity;
     }
