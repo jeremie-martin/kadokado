@@ -66,6 +66,7 @@ const MISS_PENALTY_FACTOR = 1.0;
 const MISS_PROXIMITY_EXP = 3;
 const NODE_BIAS_DECAY_PX = 400;
 const NODE_BIAS_FACTOR = 1.5;
+const COLLECT_PICKUP_RADIUS = 70;
 const STATE_BONUS: Record<number, number> = {
   [BLOB_STATE_GRAB]: 850,
   [BLOB_STATE_WALL]: 600,
@@ -434,18 +435,22 @@ export class InterwheelPlanner {
   private planStable(perceived: PerceivedSnapshot): PlanResult {
     const rootState = perceived.snap;
     const startTime = performance.now();
+    const emptyRootReward = this.emptyCollectReward(this.currentPerceivedKeys.length);
+    const rootReward = this.extendCollectReward(
+      emptyRootReward,
+      this.stableSurfaceCollectReward(rootState, emptyRootReward),
+    );
     const rootScore = this.scoreCandidate(
       rootState,
       rootState,
       rootState,
       0,
-      this.emptyCollectReward(0),
-      this.emptyCollectReward(0),
+      rootReward,
+      rootReward,
       0,
       0,
       false,
     );
-    const rootReward = this.emptyCollectReward(this.currentPerceivedKeys.length);
     const root: SearchNode = {
       id: 0,
       parentId: -1,
@@ -667,7 +672,12 @@ export class InterwheelPlanner {
     const isDead = this.isTerminal(endState);
     const isStable = endState.blob.state === BLOB_STATE_GRAB || endState.blob.state === BLOB_STATE_WALL;
     route.endedOnWall = endState.blob.state === BLOB_STATE_WALL;
-    const pathReward = this.extendCollectReward(parent.pathReward, reward);
+    const sameStableTarget = this.isSameStableTarget(parent.state, endState);
+    const effectiveReward = sameStableTarget
+      ? this.emptyCollectReward(perceivedPastilles.length)
+      : reward;
+    let pathReward = this.extendCollectReward(parent.pathReward, effectiveReward);
+    if (isStable) pathReward = this.extendCollectReward(pathReward, this.stableSurfaceCollectReward(endState, pathReward));
     const edgeWaitPenalty = this.waitPenalty(waitTicks);
     const pathWaitPenalty = parent.pathWaitPenalty + edgeWaitPenalty;
     const edgeWallRouteValue = this.wallRouteValue(route);
@@ -678,10 +688,10 @@ export class InterwheelPlanner {
       endState,
       parent.totalTicks + plan.length,
       pathReward,
-      reward,
+      effectiveReward,
       pathWaitPenalty,
       pathWallRouteValue,
-      this.isSameStableTarget(parent.state, endState),
+      sameStableTarget,
     );
     const value = scoreBreakdown.total;
     return {
@@ -748,13 +758,7 @@ export class InterwheelPlanner {
 
   private collectStepReward(sim: ScratchInterwheelSim, reward: CollectReward): void {
     for (const pastille of sim.events.collectedPastilles) {
-      const key = this.pastilleKey(pastille);
-      const value = SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
-      if (!reward.collectedKeys.has(key)) {
-        reward.pickedValue += value;
-        reward.collectedKeys.add(key);
-        reward.pickedValuesByKey.set(key, value);
-      }
+      this.creditPastilleReward(pastille, reward);
     }
     for (const spark of sim.events.collectedSparks) {
       reward.sparkScore += spark.score;
@@ -843,6 +847,34 @@ export class InterwheelPlanner {
 
   private collectibleScorePolicy(reward: CollectReward): number {
     return reward.sparkScore * 3 + reward.pickedValue * 1.5;
+  }
+
+  // Reaching a wheel claims pastilles on its orbit. The live agent replans
+  // every tick, so the important path fact is access to the natural pickup
+  // route, not whether this rollout already waited long enough to bank it.
+  private stableSurfaceCollectReward(state: SimSnapshot, prior: CollectReward): CollectReward {
+    const reward = this.emptyCollectReward(this.currentPerceivedKeys.length);
+    if (state.blob.state !== BLOB_STATE_GRAB || state.blob.cwIdx < 0) return reward;
+
+    const wheel = state.wheels[state.blob.cwIdx];
+    if (!wheel || wheel.destroyed) return reward;
+    for (const pastille of state.pastilles) {
+      if (prior.collectedKeys.has(this.pastilleKey(pastille))) continue;
+      const dx = pastille.x - wheel.x;
+      const dy = pastille.y - wheel.y;
+      const orbitDistance = Math.abs(Math.sqrt(dx * dx + dy * dy) - wheel.ray);
+      if (orbitDistance < COLLECT_PICKUP_RADIUS) this.creditPastilleReward(pastille, reward);
+    }
+    return reward;
+  }
+
+  private creditPastilleReward(pastille: { x: number; y: number; type: number }, reward: CollectReward): void {
+    const key = this.pastilleKey(pastille);
+    if (reward.collectedKeys.has(key)) return;
+    const value = SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
+    reward.pickedValue += value;
+    reward.collectedKeys.add(key);
+    reward.pickedValuesByKey.set(key, value);
   }
 
   // Sum perceived pastille values that the route passed within

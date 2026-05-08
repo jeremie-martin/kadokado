@@ -50,11 +50,30 @@ Each child node stores a cumulative `pathReward` built from its parent path plus
 the edge reward. Pastilles are unioned by key, sparks accumulate, and minimum
 distances take the best seen anywhere on the path.
 
+`pathReward` uses collectible claims, not just immediate pickup events. A
+pastille is claimed when the simulated path physically collects it, and also
+when a stable wheel reached by the path can naturally collect it by rotation.
+That stable-surface claim is added to the node accumulator, so descendants
+inherit it exactly like an actual pickup.
+
+An edge that launches away and lands back on the same stable target does not
+add its transient pickups to `pathReward`. It has not improved the stable route;
+if the collectible really belongs to that wheel, the stable-surface claim will
+cover it, and otherwise the scoop is treated as a detour rather than path
+progress.
+
 `scoreCandidate()` uses the cumulative path reward for both:
 
 - `collectibles`: collected pastille/spark value on the whole path
 - `missedCollect`: perceived pastilles passed near anywhere on the path but not
   collected
+
+This keeps the collectible knob from meaning "grab it as early as possible".
+If one route spends a jump to grab a pastille immediately, while another route
+reaches the wheel that will naturally collect that same pastille, both paths
+can carry the same collectible claim. Other objective terms can then prefer the
+route that climbs cleanly instead of the route that only banks the pickup
+earlier.
 
 This is the important invariant: a valuable collectible leaf makes the whole
 route to that leaf valuable. Do not reintroduce local-only collectible score as
