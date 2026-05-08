@@ -224,11 +224,13 @@ Execution jitter is disabled while this model is tuned. Stable-state waits carry
 a gentle explicit scoring penalty, with an accelerating non-linear overstay cost
 after a short grace window, so multi-revolution idling has to justify itself.
 
-The overlay renders the same tree with explicit lineage support: each edge gets
-visual credit for its own score and for competitive descendants it enables.
-Alpha is rank-based, width is support-magnitude based, and an optional
-generation-color mode helps identify whether noise comes from first jumps or
-deeper continuations. Current details live in `docs/interwheel-ai-overlay.md`.
+The overlay renders the same tree with explicit lineage support: leaf/frontier
+outcomes contribute visual credit back through their ancestors, so shared
+prefixes thicken when they enable many strong continuations. Width is based on
+the branch's share of leaf/frontier support, alpha fades by support rank, weak
+support is culled by rank, and an optional generation-color mode helps identify
+whether noise comes from first jumps or deeper continuations. Current details
+live in `docs/interwheel-ai-overlay.md`.
 
 ### Pioupiou
 

@@ -36,30 +36,34 @@ const FOCUS_COLLECT_MAX = 3;
 const OVERLAY_PARAM_DEFAULTS = {
   lineageDecay: LINEAGE_DEFAULTS.decay,
   lineageGamma: LINEAGE_DEFAULTS.gamma,
-  alphaGamma: OVERLAY_DEFAULTS.alphaGamma,
-  minDrawAlpha: OVERLAY_DEFAULTS.minDrawAlpha,
+  minSupportRank: OVERLAY_DEFAULTS.minSupportRank,
   widthMin: OVERLAY_DEFAULTS.widthMin,
   widthMax: OVERLAY_DEFAULTS.widthMax,
+  shareWidthScale: OVERLAY_DEFAULTS.shareWidthScale,
+  alphaMin: OVERLAY_DEFAULTS.alphaMin,
+  alphaMax: OVERLAY_DEFAULTS.alphaMax,
+  alphaGamma: OVERLAY_DEFAULTS.alphaGamma,
 };
 type OverlayParamKey = keyof typeof OVERLAY_PARAM_DEFAULTS;
 const OVERLAY_PARAM_KEYS = Object.keys(OVERLAY_PARAM_DEFAULTS) as OverlayParamKey[];
 const OVERLAY_PARAM_PRECISION: Record<OverlayParamKey, number> = {
   lineageDecay: 2,
   lineageGamma: 1,
-  alphaGamma: 1,
-  minDrawAlpha: 2,
+  minSupportRank: 2,
   widthMin: 2,
   widthMax: 1,
+  shareWidthScale: 1,
+  alphaMin: 2,
+  alphaMax: 2,
+  alphaGamma: 1,
 };
 const overlayParamInputs = new Map<OverlayParamKey, HTMLInputElement>();
 const overlayParamOutputs = new Map<OverlayParamKey, HTMLOutputElement>();
 const overlayReset = document.getElementById('overlay-reset') as HTMLButtonElement | null;
 const colorInput = document.getElementById('overlay-color') as HTMLInputElement | null;
 const colorByGenerationInput = document.getElementById('overlay-colorByGeneration') as HTMLInputElement | null;
-const rawScoreSeedInput = document.getElementById('overlay-rawScoreSeed') as HTMLInputElement | null;
 let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
 let overlayColor: number = OVERLAY_DEFAULTS.color;
-let useRawScoreSeed = false;
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -74,7 +78,7 @@ let lastNodes = 0;
 let lastPerceived = '0w/0p';
 let lastShownSegments = 0;
 let lastShownEdges = 0;
-let lastBuckets = '0/0/0';
+let lastCulledEdges = 0;
 let lastSupportRange = '—';
 let pendingPress: boolean | null = null;
 let isPaused = false;
@@ -166,6 +170,11 @@ function syncOverlayParamControls(): void {
   }
 }
 
+function redrawOverlayFromCache(): void {
+  overlay?.draw(planner?.lastSegments() ?? []);
+  refreshOverlayStats();
+}
+
 function applyOverlayParam(key: OverlayParamKey, value: number): void {
   if (overlayParams[key] === value) return;
   overlayParams[key] = value;
@@ -178,25 +187,33 @@ function applyOverlayParam(key: OverlayParamKey, value: number): void {
       planner?.setLineage({ gamma: value });
       schedulePolicyPreview();
       break;
-    case 'alphaGamma':
-      overlay?.setAlphaGamma(value);
-      overlay?.draw(planner?.lastSegments() ?? []);
-      refreshOverlayStats();
-      break;
-    case 'minDrawAlpha':
-      overlay?.setMinDrawAlpha(value);
-      overlay?.draw(planner?.lastSegments() ?? []);
-      refreshOverlayStats();
+    case 'minSupportRank':
+      overlay?.setMinSupportRank(value);
+      redrawOverlayFromCache();
       break;
     case 'widthMin':
       overlay?.setWidthMin(value);
-      overlay?.draw(planner?.lastSegments() ?? []);
-      refreshOverlayStats();
+      redrawOverlayFromCache();
       break;
     case 'widthMax':
       overlay?.setWidthMax(value);
-      overlay?.draw(planner?.lastSegments() ?? []);
-      refreshOverlayStats();
+      redrawOverlayFromCache();
+      break;
+    case 'shareWidthScale':
+      overlay?.setShareWidthScale(value);
+      redrawOverlayFromCache();
+      break;
+    case 'alphaMin':
+      overlay?.setAlphaMin(value);
+      redrawOverlayFromCache();
+      break;
+    case 'alphaMax':
+      overlay?.setAlphaMax(value);
+      redrawOverlayFromCache();
+      break;
+    case 'alphaGamma':
+      overlay?.setAlphaGamma(value);
+      redrawOverlayFromCache();
       break;
   }
   syncOverlayParamControls();
@@ -210,8 +227,7 @@ function colorToHex(color: number): string {
 function applyOverlayColor(color: number): void {
   overlayColor = color;
   overlay?.setColor(color);
-  overlay?.draw(planner?.lastSegments() ?? []);
-  refreshOverlayStats();
+  redrawOverlayFromCache();
   if (colorInput) colorInput.value = colorToHex(color);
   refreshStats();
 }
@@ -239,15 +255,8 @@ function setupOverlayParamControls(): void {
 
   colorByGenerationInput?.addEventListener('change', () => {
     overlay?.setColorByGeneration(colorByGenerationInput.checked);
-    overlay?.draw(planner?.lastSegments() ?? []);
-    refreshOverlayStats();
+    redrawOverlayFromCache();
     refreshStats();
-  });
-
-  rawScoreSeedInput?.addEventListener('change', () => {
-    useRawScoreSeed = rawScoreSeedInput.checked;
-    planner?.setLineage({ seed: useRawScoreSeed ? 'value' : 'rank' });
-    schedulePolicyPreview();
   });
 
   overlayReset?.addEventListener('click', () => {
@@ -255,9 +264,6 @@ function setupOverlayParamControls(): void {
       applyOverlayParam(key, OVERLAY_PARAM_DEFAULTS[key]);
     }
     applyOverlayColor(OVERLAY_DEFAULTS.color);
-    if (rawScoreSeedInput) rawScoreSeedInput.checked = false;
-    useRawScoreSeed = false;
-    planner?.setLineage({ seed: 'rank' });
     schedulePolicyPreview();
   });
 
@@ -320,13 +326,11 @@ function refreshOverlayStats(): void {
   const drawn = overlay?.lastDrawnStats();
   lastShownSegments = drawn?.segments ?? 0;
   lastShownEdges = drawn?.edges ?? 0;
-  if (drawn && drawn.edges > 0) {
-    const { hi, mid, lo } = drawn.alphaBuckets;
-    lastBuckets = `${hi}/${mid}/${lo}`;
+  lastCulledEdges = drawn?.culledEdges ?? 0;
+  if (drawn && (drawn.edges > 0 || drawn.culledEdges > 0)) {
     const span = drawn.bestSupport - drawn.worstSupport;
     lastSupportRange = `${drawn.bestSupport.toFixed(2)} (med ${drawn.medianSupport.toFixed(2)}, Δ ${span.toFixed(2)})`;
   } else {
-    lastBuckets = '0/0/0';
     lastSupportRange = '—';
   }
 }
@@ -362,7 +366,7 @@ function refreshStats(): void {
     statItem('Tree', `${lastNodes} nodes`),
     statItem('Visible', lastPerceived),
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
-    statItem('α buckets', lastBuckets),
+    statItem('Culled', `${lastCulledEdges} edges`),
     statItem('Support', lastSupportRange),
   );
 }

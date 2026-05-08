@@ -98,6 +98,20 @@ test.describe('AI playground', () => {
     });
     expect(resetPolicy).toMatchObject({ climb: 1, collectibles: 1, wallRoutes: 0, pace: 1 });
 
+    await page.locator('#overlay-shareWidthScale').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      input.value = '14';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#overlay-shareWidthScale-value')).toHaveText('14.0');
+
+    await page.locator('#overlay-alphaMin').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      input.value = '0.2';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#overlay-alphaMin-value')).toHaveText('0.20');
+
     expect(pageErrors, `pageerror events: ${pageErrors.join('\n')}`).toEqual([]);
     expect(consoleErrors, `console.error events: ${consoleErrors.join('\n')}`).toEqual([]);
   });

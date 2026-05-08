@@ -80,10 +80,15 @@ Raw edge score alone is not enough for rendering: a mediocre first jump may
 open many strong follow-ups. The planner therefore computes `support` after the
 tree is built.
 
+Only leaf/frontier edges seed support. A leaf/frontier edge is an edge whose
+child node was not expanded into any children, including dead ends, unresolved
+flights, depth-limit leaves, and budget frontier leaves. Internal edges start
+with zero support and become important only through descendants.
+
 For each edge:
 
 ```text
-support = seed(edge.value)^lineageGamma
+support = isLeaf ? rank(edge.value among leaves)^lineageGamma : 0
 support[parent] += support[child] * lineageDecay
 ```
 
@@ -91,21 +96,6 @@ Defaults:
 
 - `lineageGamma = 3`
 - `lineageDecay = 0.65`
-- `seed = 'rank'`
-
-The leaf seed has two modes:
-
-- `rank` (default): `seed = i / (n - 1)` after sorting edges by `edge.value`.
-  Discards magnitude, preserves ordering. Robust when one prefix accumulates
-  exponentially more credit than the rest of the tree.
-- `value`: `seed = (edge.value - vMin) / (vMax - vMin)` across the edge set
-  (clamped via min-max). Preserves magnitude differences between scores, so
-  edges with much higher raw fitness pull more credit through to their parents
-  than near-tied edges do.
-
-Toggle the seed mode at runtime with the *Use raw score (instead of rank)*
-checkbox in the Overlay panel. The bottom-up decay pass is identical in both
-modes; only the seed transform changes.
 
 This gives a first jump visual credit for the competitive continuations it
 enables. It is the Interwheel equivalent of Mario's additive overdraw, but
@@ -125,44 +115,39 @@ The overlay has two modes:
 `D` toggles the mode. `A` toggles the AI. `P` pauses/resumes the playground.
 `R` reloads the page.
 
-### Alpha
+### Alpha and Width
 
-Edges are sorted by support. Non-chosen edges draw with:
+Edges are sorted by support. Low-support edges are culled by rank to avoid a
+carpet of weak alternatives, but this is only a cleanup threshold:
 
 ```text
-alpha = rank(support)^alphaGamma
+draw = rank(support) >= minSupportRank
 ```
 
-The chosen chain is forced to `alpha = 1`.
+Drawn lines use support rank for alpha, so weak alternatives can recede without
+being fully removed. The chosen chain is not highlighted by the renderer.
+
+```text
+alpha = lerp(alphaMin, alphaMax, rank(support)^alphaGamma)
+```
+
+```text
+width = clamp(widthMin + (support / leafSupportTotal) * shareWidthScale, widthMin, widthMax)
+```
 
 Defaults:
 
-- `alphaGamma = 4`
-- `minDrawAlpha = 0.05`
+- `minSupportRank = 0.05`
+- `widthMin = 0.5`
+- `widthMax = 4`
+- `shareWidthScale = 12`
+- `alphaMin = 0.12`
+- `alphaMax = 0.9`
+- `alphaGamma = 2`
 
-Low-alpha segments are culled to avoid a carpet of barely visible lines.
-
-### Width
-
-Width uses support magnitude, not alpha:
-
-```text
-width = lerp(widthMin, widthMax, clamp(support / p95Support, 0, 1))
-```
-
-This keeps alpha and width meaningful:
-
-- alpha: "is this path competitive enough to show?"
-- width: "how much search mass flowed through this edge?"
-
-Defaults:
-
-- `widthMin = 1`
-- `widthMax = 3`
-- `WIDTH_NORM_PERCENTILE = 0.95`
-
-The p95 pivot prevents a single root-prefix support outlier from crushing every
-other width to the minimum.
+Width is the edge's share of all leaf/frontier support, capped by `widthMax`.
+This keeps the main trunk visually dominant only when it actually carries a
+large fraction of explored successful futures.
 
 ### Color
 
@@ -183,11 +168,11 @@ Overlay controls affect rendering or support recomputation:
 
 - Lineage decay
 - Lineage gamma
-- Use raw score (instead of rank)
-- Alpha gamma
-- Min alpha
-- Width min
-- Width max
+- Low-support cull
+- Width base / min
+- Width cap / max
+- Width share scale
+- Alpha min/max/gamma
 - Line color
 - Color by generation
 
@@ -203,6 +188,6 @@ Planner experiment:
 | Edge granularity | one/few ticks | wait -> launch -> full flight |
 | Storage | global 1000-point ring | per-edge segments |
 | Visual budget | implicit ring-buffer competition | explicit lineage support |
-| Main visibility signal | overplot volume | rank-of-support alpha |
-| Width signal | overplot density | support magnitude |
+| Main visibility signal | overplot volume | support-weighted width + support-rank alpha |
+| Width signal | overplot density | descendant leaf support |
 | Debug coloring | none | optional generation palette |

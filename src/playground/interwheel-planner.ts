@@ -36,25 +36,15 @@ const DEFAULT_LONG_WAIT_PENALTY = 0.08;
 // Defaults for the lineage-support pass; mirrored on the planner instance
 // so the playground can override them at runtime via setLineage().
 //
-// gamma: leaf seed curve. Each edge seeds support at seed^gamma where seed
-//   is either rank-of-value or normalized raw value (see `seed` below).
-//   γ=3 means only top descendants pull a parent up; γ=1 makes mediocre
-//   descendants contribute proportionally too.
+// gamma: leaf seed curve. Only leaf/frontier edges seed visual support, using
+//   rank-of-value^gamma. γ=3 means only top reachable futures pull their
+//   ancestors up; γ=1 makes mediocre futures contribute proportionally too.
 // decay: fraction of a child's support a parent inherits in the bottom-up
-//   pass. decay=0 disables descendant accumulation entirely (the renderer
-//   then ranks edges by their own raw score, equivalent to the previous
-//   rank-of-value behavior); decay near 1 amplifies prefix accumulation.
-// seed: which per-edge quantity is fed into the gamma curve before the
-//   bottom-up decay pass.
-//     'rank'  — position in the value-sorted edge list, mapped to [0, 1].
-//               Default; discards magnitude, preserves ordering.
-//     'value' — min-max normalized raw `edge.value` across the edge set.
-//               Preserves magnitude differences between scores.
-export type LineageSeed = 'rank' | 'value';
-export const LINEAGE_DEFAULTS: { gamma: number; decay: number; seed: LineageSeed } = {
+//   pass. decay=0 makes only leaves visible as important; decay near 1
+//   amplifies common prefixes that lead to many strong futures.
+export const LINEAGE_DEFAULTS: { gamma: number; decay: number } = {
   gamma: 3,
   decay: 0.65,
-  seed: 'rank',
 };
 
 // Temporary objective tweak kept as an A/B knob while tuning follow-up jumps.
@@ -147,13 +137,14 @@ export type Segment = {
   localTick: number;
   support: number;
   onChosenChain: boolean;
+  isLeaf: boolean;
   // Search-tree depth of this edge's child node. 1 = first jump from root,
   // 2 = second jump, etc. Used by the playground's "color by generation"
   // overlay mode for debugging.
   generation: number;
 };
 
-type SegmentBody = Omit<Segment, 'edgeId' | 'support' | 'onChosenChain' | 'generation'>;
+type SegmentBody = Omit<Segment, 'edgeId' | 'support' | 'onChosenChain' | 'isLeaf' | 'generation'>;
 
 export type PlannerStats = {
   mode: 'dead' | 'flight' | 'idle' | 'stable';
@@ -257,7 +248,6 @@ export class InterwheelPlanner {
   private currentPerceivedKeys: string[] = [];
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
-  private lineageSeed: LineageSeed = LINEAGE_DEFAULTS.seed;
   private objective: ObjectiveFlags = { ...OBJECTIVE_DEFAULTS };
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
@@ -308,15 +298,14 @@ export class InterwheelPlanner {
     this.lastResult = null;
   }
 
-  setLineage(params: { gamma?: number; decay?: number; seed?: LineageSeed }): void {
+  setLineage(params: { gamma?: number; decay?: number }): void {
     if (params.gamma !== undefined) this.lineageGamma = Math.max(0.1, params.gamma);
     if (params.decay !== undefined) this.lineageDecay = clamp(params.decay, 0, 1);
-    if (params.seed !== undefined) this.lineageSeed = params.seed;
     this.lastResult = null;
   }
 
-  getLineage(): { gamma: number; decay: number; seed: LineageSeed } {
-    return { gamma: this.lineageGamma, decay: this.lineageDecay, seed: this.lineageSeed };
+  getLineage(): { gamma: number; decay: number } {
+    return { gamma: this.lineageGamma, decay: this.lineageDecay };
   }
 
   setObjectiveFlags(flags: Partial<ObjectiveFlags>): void {
@@ -480,6 +469,7 @@ export class InterwheelPlanner {
           localTick: ticks,
           support: 0,
           onChosenChain: true,
+          isLeaf: true,
           generation: 1,
         });
         sx = sim.blob.x;
@@ -839,47 +829,35 @@ export class InterwheelPlanner {
   private lineageSupportForEdges(nodes: SearchNode[], edges: SearchEdge[]): number[] {
     if (edges.length === 0) return [];
 
-    // Visual overdraw budget per edge, separate from planner score. Each edge
-    // seeds with seed^γ where the seed is either rank-of-value (default) or
-    // min-max normalized raw `edge.value` (when lineageSeed === 'value').
-    // Then a single bottom-up pass adds a decayed share of each child edge's
-    // support to its parent. Net effect: a first jump that opens up many
-    // strong follow-ups accumulates support from each of them, even when its
-    // own landing scores middling.
+    // Visual decision-space support, separate from planner score. Only
+    // leaf/frontier edges seed support from their outcome value; internal edges
+    // become important only when good descendant futures flow through them.
     //
     // Bottom-up by reverse insertion order is sound: A* expands best-first,
     // and a child edge can only be created after its parent node has been
     // popped, so a parent edge always precedes any child edge in `edges`.
     const support = new Array<number>(edges.length).fill(0);
-    if (this.lineageSeed === 'value') {
-      // Min-max normalize raw scores to [0, 1]. `edge.value` can be negative
-      // (penalties exceed bonuses) so we shift by vMin instead of taking
-      // ratios. When all values are equal, every edge gets the max seed.
-      let vMin = edges[0].value;
-      let vMax = edges[0].value;
-      for (let i = 1; i < edges.length; i += 1) {
-        const v = edges[i].value;
-        if (v < vMin) vMin = v;
-        if (v > vMax) vMax = v;
-      }
-      const span = vMax - vMin;
-      for (let i = 0; i < edges.length; i += 1) {
-        const n = span > 0 ? (edges[i].value - vMin) / span : 1;
-        support[edges[i].id] = Math.pow(n, this.lineageGamma);
-      }
-    } else {
-      const sortedIds = edges.map((e) => e.id).sort((a, b) => edges[a].value - edges[b].value || a - b);
-      const denom = Math.max(1, sortedIds.length - 1);
-      for (let i = 0; i < sortedIds.length; i += 1) {
-        const rank = sortedIds.length <= 1 ? 1 : i / denom;
-        support[sortedIds[i]] = Math.pow(rank, this.lineageGamma);
-      }
+    const leafIds = this.leafEdgeIds(edges)
+      .map((edge) => edge.id)
+      .sort((a, b) => edges[a].value - edges[b].value || a - b);
+
+    const denom = Math.max(1, leafIds.length - 1);
+    for (let i = 0; i < leafIds.length; i += 1) {
+      const rank = leafIds.length <= 1 ? 1 : i / denom;
+      support[leafIds[i]] = Math.pow(rank, this.lineageGamma);
     }
+
     for (let i = edges.length - 1; i >= 0; i -= 1) {
       const parentEdgeId = nodes[edges[i].parentId]?.edgeId ?? -1;
-      if (parentEdgeId >= 0) support[parentEdgeId] += support[i] * this.lineageDecay;
+      if (parentEdgeId >= 0) support[parentEdgeId] += support[edges[i].id] * this.lineageDecay;
     }
     return support;
+  }
+
+  private leafEdgeIds(edges: SearchEdge[]): SearchEdge[] {
+    const expandedNodeIds = new Set<number>();
+    for (const edge of edges) expandedNodeIds.add(edge.parentId);
+    return edges.filter((edge) => !expandedNodeIds.has(edge.childId));
   }
 
   private segmentsForEdges(
@@ -889,14 +867,17 @@ export class InterwheelPlanner {
     nodes: SearchNode[],
   ): Segment[] {
     const out: Segment[] = [];
+    const leafIds = new Set(this.leafEdgeIds(edges).map((edge) => edge.id));
     for (const edge of edges) {
       const onChosenChain = bestEdgeIds.has(edge.id);
+      const isLeaf = leafIds.has(edge.id);
       const generation = edge.childId >= 0 ? nodes[edge.childId].depth : 1;
       for (const segment of edge.segments) {
         const s = segment as Segment;
         s.edgeId = edge.id;
         s.support = support[edge.id] ?? 0;
         s.onChosenChain = onChosenChain;
+        s.isLeaf = isLeaf;
         s.generation = generation;
         out.push(s);
       }

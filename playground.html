@@ -98,29 +98,40 @@
             <output id="overlay-lineageGamma-value">3.0</output>
             <input id="overlay-lineageGamma" type="range" min="1" max="5" step="0.5" value="3" data-overlay-key="lineageGamma">
           </div>
-          <div class="control" style="grid-template-columns: 1fr auto;">
-            <label for="overlay-rawScoreSeed">Use raw score (instead of rank)</label>
-            <input id="overlay-rawScoreSeed" type="checkbox" style="grid-column: auto; width: auto;">
+          <div class="control">
+            <label for="overlay-minSupportRank">Low-support cull</label>
+            <output id="overlay-minSupportRank-value">0.05</output>
+            <input id="overlay-minSupportRank" type="range" min="0" max="0.8" step="0.01" value="0.05" data-overlay-key="minSupportRank">
           </div>
           <div class="control">
-            <label for="overlay-alphaGamma">Alpha γ (rank curve)</label>
-            <output id="overlay-alphaGamma-value">4.0</output>
-            <input id="overlay-alphaGamma" type="range" min="0.5" max="6" step="0.5" value="4" data-overlay-key="alphaGamma">
+            <label for="overlay-widthMin">Width base / min</label>
+            <output id="overlay-widthMin-value">0.50</output>
+            <input id="overlay-widthMin" type="range" min="0.25" max="10" step="0.05" value="0.5" data-overlay-key="widthMin">
           </div>
           <div class="control">
-            <label for="overlay-minDrawAlpha">Min α (cull threshold)</label>
-            <output id="overlay-minDrawAlpha-value">0.05</output>
-            <input id="overlay-minDrawAlpha" type="range" min="0" max="0.3" step="0.01" value="0.05" data-overlay-key="minDrawAlpha">
+            <label for="overlay-widthMax">Width cap / max</label>
+            <output id="overlay-widthMax-value">4.0</output>
+            <input id="overlay-widthMax" type="range" min="0.5" max="24" step="0.5" value="4" data-overlay-key="widthMax">
           </div>
           <div class="control">
-            <label for="overlay-widthMin">Width min (low support)</label>
-            <output id="overlay-widthMin-value">1.00</output>
-            <input id="overlay-widthMin" type="range" min="0.25" max="5" step="0.05" value="1" data-overlay-key="widthMin">
+            <label for="overlay-shareWidthScale">Width share scale</label>
+            <output id="overlay-shareWidthScale-value">12.0</output>
+            <input id="overlay-shareWidthScale" type="range" min="0" max="30" step="0.5" value="12" data-overlay-key="shareWidthScale">
           </div>
           <div class="control">
-            <label for="overlay-widthMax">Width max (high support)</label>
-            <output id="overlay-widthMax-value">3.0</output>
-            <input id="overlay-widthMax" type="range" min="0.5" max="5" step="0.5" value="3" data-overlay-key="widthMax">
+            <label for="overlay-alphaMin">Alpha min</label>
+            <output id="overlay-alphaMin-value">0.12</output>
+            <input id="overlay-alphaMin" type="range" min="0" max="1" step="0.01" value="0.12" data-overlay-key="alphaMin">
+          </div>
+          <div class="control">
+            <label for="overlay-alphaMax">Alpha max</label>
+            <output id="overlay-alphaMax-value">0.90</output>
+            <input id="overlay-alphaMax" type="range" min="0" max="1" step="0.01" value="0.9" data-overlay-key="alphaMax">
+          </div>
+          <div class="control">
+            <label for="overlay-alphaGamma">Alpha γ</label>
+            <output id="overlay-alphaGamma-value">2.0</output>
+            <input id="overlay-alphaGamma" type="range" min="0.5" max="6" step="0.5" value="2" data-overlay-key="alphaGamma">
           </div>
           <div class="control">
             <label for="overlay-color">Line color</label>

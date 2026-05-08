@@ -1,31 +1,27 @@
 import { Container, Graphics } from 'pixi.js';
-import { clamp } from '../games/interwheel/sim';
 import type { Segment } from './interwheel-planner';
 
 export type OverlayMode = 'on' | 'off';
 
-// alphaGamma is rank-of-support, not normalize-of-support: lineage support
-// grows roughly exponentially with depth on the principal prefix (recurrence
-// factor branching × decay > 1), so a single outlier dominates the magnitude.
-// Rank-mapping discards magnitude but preserves the ordering lineage support
-// imposed.
 export const OVERLAY_DEFAULTS: {
-  alphaGamma: number;
-  minDrawAlpha: number;
+  minSupportRank: number;
   widthMin: number;
   widthMax: number;
+  shareWidthScale: number;
+  alphaMin: number;
+  alphaMax: number;
+  alphaGamma: number;
   color: number;
 } = {
-  alphaGamma: 4,
-  minDrawAlpha: 0.05,
-  widthMin: 1,
-  widthMax: 3,
+  minSupportRank: 0.05,
+  widthMin: 0.5,
+  widthMax: 4,
+  shareWidthScale: 12,
+  alphaMin: 0.12,
+  alphaMax: 0.9,
+  alphaGamma: 2,
   color: 0x9be8ff,
 };
-
-// p95 (vs p100) prevents the chosen-prefix support outlier from crushing every
-// other width to widthMin.
-const WIDTH_NORM_PERCENTILE = 0.95;
 
 // Debug palette for "color by generation" mode. Each search-tree depth gets
 // a distinct rainbow color so the user can see which generations contribute
@@ -43,19 +39,19 @@ const GENERATION_COLORS: number[] = [
 export type OverlayStats = {
   segments: number;
   edges: number;
+  culledEdges: number;
   bestSupport: number;
   medianSupport: number;
   worstSupport: number;
-  alphaBuckets: { hi: number; mid: number; lo: number };
 };
 
 const EMPTY_STATS: OverlayStats = {
   segments: 0,
   edges: 0,
+  culledEdges: 0,
   bestSupport: 0,
   medianSupport: 0,
   worstSupport: 0,
-  alphaBuckets: { hi: 0, mid: 0, lo: 0 },
 };
 
 type DrawRun = {
@@ -70,10 +66,13 @@ export class TrajectoryOverlay {
   private readonly graphics = new Graphics();
   private mode: OverlayMode = 'on';
   private stats: OverlayStats = { ...EMPTY_STATS };
-  private alphaGamma = OVERLAY_DEFAULTS.alphaGamma;
-  private minDrawAlpha = OVERLAY_DEFAULTS.minDrawAlpha;
+  private minSupportRank = OVERLAY_DEFAULTS.minSupportRank;
   private widthMin = OVERLAY_DEFAULTS.widthMin;
   private widthMax = OVERLAY_DEFAULTS.widthMax;
+  private shareWidthScale = OVERLAY_DEFAULTS.shareWidthScale;
+  private alphaMin = OVERLAY_DEFAULTS.alphaMin;
+  private alphaMax = OVERLAY_DEFAULTS.alphaMax;
+  private alphaGamma = OVERLAY_DEFAULTS.alphaGamma;
   private color = OVERLAY_DEFAULTS.color;
   private colorByGeneration = false;
 
@@ -100,12 +99,8 @@ export class TrajectoryOverlay {
     return this.mode;
   }
 
-  setAlphaGamma(g: number): void {
-    this.alphaGamma = Math.max(0.1, g);
-  }
-
-  setMinDrawAlpha(a: number): void {
-    this.minDrawAlpha = clamp(a, 0, 1);
+  setMinSupportRank(rank: number): void {
+    this.minSupportRank = Math.min(1, Math.max(0, rank));
   }
 
   setWidthMin(w: number): void {
@@ -114,6 +109,22 @@ export class TrajectoryOverlay {
 
   setWidthMax(w: number): void {
     this.widthMax = Math.max(0.1, w);
+  }
+
+  setShareWidthScale(scale: number): void {
+    this.shareWidthScale = Math.max(0, scale);
+  }
+
+  setAlphaMin(alpha: number): void {
+    this.alphaMin = Math.min(1, Math.max(0, alpha));
+  }
+
+  setAlphaMax(alpha: number): void {
+    this.alphaMax = Math.min(1, Math.max(0, alpha));
+  }
+
+  setAlphaGamma(gamma: number): void {
+    this.alphaGamma = Math.max(0.1, gamma);
   }
 
   setColor(c: number): void {
@@ -139,8 +150,10 @@ export class TrajectoryOverlay {
     // One observation per edge regardless of segment count — long flights
     // shouldn't bias the support distribution.
     const edgeSupport = new Map<number, number>();
+    const leafEdges = new Set<number>();
     for (const s of segments) {
       if (!edgeSupport.has(s.edgeId)) edgeSupport.set(s.edgeId, s.support);
+      if (s.isLeaf) leafEdges.add(s.edgeId);
     }
     const sorted = [...edgeSupport.entries()].sort((a, b) => a[1] - b[1] || a[0] - b[0]);
     const supportMax = Math.max(sorted[sorted.length - 1][1], Number.EPSILON);
@@ -149,27 +162,26 @@ export class TrajectoryOverlay {
     for (let i = 0; i < sorted.length; i += 1) {
       rankByEdge.set(sorted[i][0], sorted.length <= 1 ? 1 : i / denom);
     }
-    const pivotIdx = Math.min(sorted.length - 1, Math.floor(sorted.length * WIDTH_NORM_PERCENTILE));
-    const widthPivot = Math.max(sorted[pivotIdx][1], Number.EPSILON);
     const widthLow = Math.min(this.widthMin, this.widthMax);
     const widthHigh = Math.max(this.widthMin, this.widthMax);
-    const widthSpan = widthHigh - widthLow;
+    const leafSupportTotal = Math.max(
+      [...edgeSupport.entries()].reduce((sum, [edgeId, support]) => leafEdges.has(edgeId) ? sum + support : sum, 0),
+      Number.EPSILON,
+    );
 
-    let hi = 0;
-    let mid = 0;
-    let lo = 0;
+    let culledEdges = 0;
+    for (const [edgeId] of sorted) {
+      if ((rankByEdge.get(edgeId) ?? 0) < this.minSupportRank) culledEdges++;
+    }
     const drawnEdges = new Set<number>();
     let drawnSegments = 0;
     const runs: DrawRun[] = [];
 
     for (const s of segments) {
-      const alpha = s.onChosenChain ? 1 : Math.pow(rankByEdge.get(s.edgeId) ?? 0, this.alphaGamma);
-      if (alpha >= 0.5) hi++;
-      else if (alpha >= 0.15) mid++;
-      else lo++;
-      if (alpha < this.minDrawAlpha) continue;
-      const widthFactor = Math.min(1, s.support / widthPivot);
-      const width = widthLow + widthSpan * widthFactor;
+      const supportRank = rankByEdge.get(s.edgeId) ?? 0;
+      if (supportRank < this.minSupportRank) continue;
+      const width = this.widthForSupport(s.support, widthLow, widthHigh, leafSupportTotal);
+      const alpha = this.alphaForRank(supportRank);
       const color = this.colorByGeneration
         ? GENERATION_COLORS[(Math.max(1, s.generation) - 1) % GENERATION_COLORS.length]
         : this.color;
@@ -198,10 +210,27 @@ export class TrajectoryOverlay {
     this.stats = {
       segments: drawnSegments,
       edges: drawnEdges.size,
+      culledEdges,
       bestSupport: supportMax,
       medianSupport: sorted[sorted.length >> 1][1],
       worstSupport: sorted[0][1],
-      alphaBuckets: { hi, mid, lo },
     };
+  }
+
+  private widthForSupport(
+    support: number,
+    widthLow: number,
+    widthHigh: number,
+    leafSupportTotal: number,
+  ): number {
+    const capped = (w: number) => Math.min(widthHigh, Math.max(widthLow, w));
+    const share = Math.max(0, support / leafSupportTotal);
+    return capped(widthLow + share * this.shareWidthScale);
+  }
+
+  private alphaForRank(rank: number): number {
+    const low = Math.min(this.alphaMin, this.alphaMax);
+    const high = Math.max(this.alphaMin, this.alphaMax);
+    return low + (high - low) * Math.pow(Math.min(1, Math.max(0, rank)), this.alphaGamma);
   }
 }
