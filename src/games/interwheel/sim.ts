@@ -100,12 +100,42 @@ export function heightMetersFromY(y: number): number {
   return Math.max(0, Math.floor(-y * 0.2));
 }
 
+// Optional override for benchmark/sweep comparisons: when set to a number,
+// `generationDifficultyAtHeight` returns that constant value instead of the
+// height-ramp curve. Drives wheel size, wheel speed, inter-wheel spacing,
+// and mine density. Production gameplay uses null (the curve). Set to a
+// fixed value (e.g., 0.3) for "uniform difficulty" sweeps so policies
+// aren't confounded by reaching harder terrain at different rates.
+let generationDifficultyOverride: number | null = null;
+export function setGenerationDifficultyOverride(value: number | null): void {
+  generationDifficultyOverride = value === null ? null : clamp(value, 0, 1);
+}
+export function getGenerationDifficultyOverride(): number | null {
+  return generationDifficultyOverride;
+}
+
 export function generationDifficultyAtHeight(heightMeters: number): number {
+  if (generationDifficultyOverride !== null) return generationDifficultyOverride;
   const t = clamp(heightMeters / DIFFICULTY_FULL_HEIGHT_METERS, 0, 1);
   return t * t * (3 - 2 * t);
 }
 
+// Optional override for benchmark/sweep comparisons: when set to a number,
+// `pastilleSpawnChanceAtY` returns that constant value instead of the
+// height-ramp curve. Production gameplay uses null (the curve). Set to 1.0
+// for "uniform max density" sweeps so policies aren't confounded by
+// height-correlated pastille density. Reset to null to restore production
+// behavior.
+let pastilleSpawnChanceOverride: number | null = null;
+export function setPastilleSpawnChanceOverride(value: number | null): void {
+  pastilleSpawnChanceOverride = value === null ? null : clamp(value, 0, 1);
+}
+export function getPastilleSpawnChanceOverride(): number | null {
+  return pastilleSpawnChanceOverride;
+}
+
 export function pastilleSpawnChanceAtY(y: number): number {
+  if (pastilleSpawnChanceOverride !== null) return pastilleSpawnChanceOverride;
   return clamp(heightMetersFromY(y) / PASTILLE_RATE_FULL_HEIGHT_METERS, 0, 1);
 }
 

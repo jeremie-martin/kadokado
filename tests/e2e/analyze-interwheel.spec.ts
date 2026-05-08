@@ -136,8 +136,8 @@ test('analytics harness is faithful to live game and records movement stats', as
   expect(results[0].analytics.summary.planner.plans).toBeGreaterThan(0);
   expect(results[0].analytics.summary.planner.planMs.p95).toBeGreaterThanOrEqual(0);
   expect(results[0].analytics.summary.planner.bestScoreBreakdown.total.count).toBe(results[0].analytics.summary.planner.plans);
-  expect(results[0].analytics.summary.planner.bestScoreBreakdown.height.mean).toBeGreaterThan(0);
-  expect(results[0].analytics.summary.planner.bestScoreBreakdown.paceCost.mean).toBeGreaterThanOrEqual(0);
+  expect(results[0].analytics.summary.planner.bestScoreBreakdown.climb.mean).toBeGreaterThan(0);
+  expect(results[0].analytics.summary.planner.bestScoreBreakdown.pace.mean).toBeGreaterThanOrEqual(0);
 
   const replayEquivalence = await page.evaluate(async () => {
     const w = window as unknown as {

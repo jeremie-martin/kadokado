@@ -20,7 +20,6 @@ const constantRng = () => 0.5;
 const MAX_GRAB_WAIT = 100;
 const MAX_WALL_WAIT = 24;
 const MAX_FLIGHT_TICKS = 260;
-const WATER_SAFETY_MARGIN = 160;
 // The overlay is redrawn from a fresh plan every live tick. If trajectory
 // samples are sparse, the final chord into a stable launch/landing endpoint
 // changes phase each frame (`remainingTicks % samplePeriod`), which looks like
@@ -31,9 +30,6 @@ const ROOT_GRAB_WAIT_STEP = 1;
 const ROOT_WALL_WAIT_STEP = 1;
 const DEEP_GRAB_WAIT_STEP = 4;
 const DEEP_WALL_WAIT_STEP = 2;
-const DEFAULT_WAIT_PENALTY = 0.75;
-const DEFAULT_WAIT_GRACE_TICKS = 24;
-const DEFAULT_LONG_WAIT_PENALTY = 0.08;
 // Defaults for the lineage-support pass; mirrored on the planner instance
 // so the playground can override them at runtime via setLineage().
 //
@@ -48,30 +44,75 @@ export const LINEAGE_DEFAULTS: { gamma: number; decay: number } = {
   decay: 0.65,
 };
 
-// If a launch is still flying after MAX_FLIGHT_TICKS, the planner has no
-// stable surface or terminal outcome to reason about. Treat it as an unresolved
-// frontier, not as a high-value "went upward" candidate.
+// === Planner physics constants (named, not user-tunable) ===
+// These shape "what the planner believes about the world" — distinct from
+// user policy weights. They appear in `scoreCandidate()` as named constants
+// rather than inline magic numbers.
+
+// --- Frontier / safety ---
+// Death (terminal blob state) score cost. So large it always dominates.
+const TERMINAL_DEATH_COST = 1_000_000;
+// Score cost when the blob is still in flight at the search horizon: the
+// planner can't reason about an unresolved trajectory, so treat it as worse
+// than any stable landing.
 const UNRESOLVED_FLIGHT_PENALTY = 50_000;
-// "Miss" detection: how close does the trajectory get to an uncollected
-// pastille before we count it as a foregone opportunity? Pickup radius is
-// 70px, so anything <70 was either grabbed or barely missed; out to ~300
-// covers what a different wait-tick choice could plausibly have reached.
-const MISS_PROXIMITY_PX = 300;
-const MISS_PROXIMITY_PX_SQ = MISS_PROXIMITY_PX * MISS_PROXIMITY_PX;
-const MISS_PENALTY_FACTOR = 1.0;
-// Cubic falloff on missed-pastille proximity weight: only paths that should
-// plausibly have collected pay a meaningful penalty, instead of the prior
-// linear weight which taxed almost every flight that came within 300px of
-// any pastille and flattened the differentiating signal.
-const MISS_PROXIMITY_EXP = 3;
-const NODE_BIAS_DECAY_PX = 400;
-const NODE_BIAS_FACTOR = 1.5;
-const COLLECT_PICKUP_RADIUS = 70;
+// Per-pixel score cost when the blob is below the water-safety margin.
+const WATER_DEFICIT_GRADIENT = 30;
+// Minimum px above water before water-safety penalty kicks in.
+const WATER_SAFETY_MARGIN = 160;
+// Px above water at which water urgency drops to zero (no influence on
+// climb/collect modulation). Between SAFETY and FAR, urgency lerps 1 → 0.
+const WATER_URGENCY_FAR = 320;
+// Multiplier coupling water urgency to climb (boost) and collect/miss
+// (damp). Hidden contextual modulator: as water rises, urgency → 1, climb
+// scales by (1 + 1.2), collect scales by (1 - 0.85). Documented physics.
+const WATER_CLIMB_BOOST = 1.2;
+const WATER_COLLECT_DAMP = 0.85;
+// Per-state stability bonus added to the leaf score. GRAB > WALL > FALLBACK.
+// Independent of policy: encourages the planner to land on stable surfaces.
 const STATE_BONUS: Record<number, number> = {
   [BLOB_STATE_GRAB]: 850,
   [BLOB_STATE_WALL]: 600,
 };
 const STATE_BONUS_FALLBACK = -1_000;
+
+// --- Edge-local quality penalties ---
+// Backtrack: edges that end significantly below their start are penalized
+// per-pixel of lost height (scaled by GRADIENT). Uses a small grace zone so
+// minor pendulum-down arcs don't get charged.
+const BACKTRACK_GRACE_PX = 20;
+const BACKTRACK_GRADIENT = 25;
+// Loop: same-stable-target edge with no pickup and minimal y-gain is a wasted
+// scoop. Flat penalty.
+const LOOP_PENALTY = 650;
+const LOOP_GAIN_THRESH_PX = 20;
+
+// --- Game scoring rules (inherent to pastille/spark values) ---
+// Per-pastille and per-spark internal weighting in the collect signal.
+// Pastille values are 250 / 1000 / 5000 (green/blue/gold); sparks have
+// per-event scores. These weights ensure spark-density routes and pastille-
+// density routes are valued comparably.
+const PASTILLE_VALUE_WEIGHT = 1.5;
+const SPARK_VALUE_WEIGHT = 3;
+// Proximity-bounded miss penalty: only count uncollected pastilles the path
+// passed within MISS_PROXIMITY_PX of, with cubic falloff. Anything farther
+// is unreachable from the chosen route; charging it would over-broaden the
+// signal. Cubic exponent peaks the penalty for "barely missed" cases.
+const MISS_PROXIMITY_PX = 300;
+const MISS_PROXIMITY_PX_SQ = MISS_PROXIMITY_PX * MISS_PROXIMITY_PX;
+const MISS_PROXIMITY_EXP = 3;
+// Internal default: missWeight = collect × FIXED_MISS_RATIO. Couples the
+// existing "miss penalty proportional to collect reward" semantics from the
+// old `policy.collectibles` arm. Power users could decouple by exposing a
+// separate `miss` weight; not exposed today.
+const FIXED_MISS_RATIO = 1.0;
+
+// --- Search-bias decay (not in scoreCandidate, but related) ---
+const NODE_BIAS_DECAY_PX = 400;
+const NODE_BIAS_FACTOR = 1.5;
+// Tube-claim mechanism (currently dormant: claimRadius defaulted to 0 and
+// dropped from UI per the audit; mechanism kept in code for future use).
+const COLLECT_PICKUP_RADIUS = 70;
 
 type CollectReward = {
   pickedValue: number;
@@ -82,12 +123,6 @@ type CollectReward = {
   // sampled blob positions to that pastille. Edge rewards track one edge;
   // node path rewards track the whole root-to-node path.
   minDistSq: Float64Array;
-};
-
-type EdgeRoute = {
-  startsOnWall: boolean;
-  touchedWall: boolean;
-  endedOnWall: boolean;
 };
 
 type PerceivedSnapshot = {
@@ -103,11 +138,15 @@ type SearchNode = {
   state: SimSnapshot;
   depth: number;
   totalTicks: number;
-  pathWaitPenalty: number;
-  pathWallRouteValue: number;
   value: number;
   collectibleBias: number;
   pathReward: CollectReward;
+  /** Highest y reached anywhere on this root-to-node path (min in screen coords). */
+  pathApexY: number;
+  /** Sum-of-edge-integrals of perpendicular distance from each path sample to its edge's start→end chord. */
+  pathOffAxis: number;
+  /** Cumulative tick count where blob.state was BLOB_STATE_WALL across path edges. */
+  pathWallTicks: number;
 };
 
 type SearchEdge = {
@@ -120,14 +159,13 @@ type SearchEdge = {
   isDead: boolean;
   isStable: boolean;
   value: number;
-  edgeWaitPenalty: number;
-  pathWaitPenalty: number;
-  edgeWallRouteValue: number;
-  pathWallRouteValue: number;
   reward: CollectReward;
   pathReward: CollectReward;
   scoreBreakdown: CandidateScoreBreakdown;
   segments: SegmentBody[];
+  pathApexY: number;
+  pathOffAxis: number;
+  pathWallTicks: number;
 };
 
 export type Segment = {
@@ -215,11 +253,6 @@ export type PlannerConfig = {
   maxDepth?: number;
   maxEdgeRollouts?: number;
   maxStableDepth?: number;
-  targetClimb?: number;
-  scoreBias?: number;
-  waitPenalty?: number;
-  waitGraceTicks?: number;
-  longWaitPenalty?: number;
   revealScreensAbove?: number;
   memoryScreensBelow?: number;
   collectSegments?: boolean;
@@ -227,34 +260,52 @@ export type PlannerConfig = {
 };
 
 export type PlannerPolicy = {
-  /** Prefer raw upward progress and max-height gain. */
+  /** How much to value path height (px climbed from root to leaf apex). */
   climb: number;
-  /** Prefer pastilles/sparks. */
-  collectibles: number;
-  /** Add preference for routes that intentionally touch a wall from a wheel. */
-  wallRoutes: number;
-  /** Penalize long plans/waits. */
+  /** How much to value claimed collectibles (pastilles + sparks, path-cumulative). */
+  collect: number;
+  /** How much to value time spent on a wall (path-cumulative tick count). */
+  wall: number;
+  /** Per-tick time cost on the path. */
   pace: number;
+  /** Per-pixel-tick cost of off-axis path travel (lateral wandering). */
+  detour: number;
+  /**
+   * Defer-grab discount in [0, 1]. When an edge realizes a pickup whose
+   * pastille is also reachable via any other perceived wheel's orbit above
+   * the agent, discount the realized contribution by this fraction. 0 = off.
+   */
+  patience: number;
 };
 
 export type CandidateScoreBreakdown = {
-  height: number;
-  collectibles: number;
-  missedCollect: number;
-  wallRoute: number;
+  // Knob-driven terms (one line per user knob, scaling one signal each).
+  climb: number;
+  collect: number;
+  wall: number;
+  pace: number;
+  detour: number;
+  // Internal mechanisms (planner physics, not user-tunable).
+  miss: number;
   stability: number;
-  paceCost: number;
-  safetyCost: number;
-  backtrackCost: number;
-  loopCost: number;
+  safety: number;
+  backtrack: number;
+  loop: number;
   total: number;
 };
 
+// Operating point set by the Phase 2 confirmation sweep
+// (docs/interwheel-policy-audit.md, .tmp/interwheel-knobs/2026-05-08T14-23-02-163Z).
+// climb=1.0, collect=1.0, detour=0.5, patience=0.65 beats the prior default
+// (climb=1.08, collect=1.2, detour=0, patience=0) by +231m / +27% score
+// at default planner config.
 export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
-  climb: 1.08,
-  collectibles: 1.2,
-  wallRoutes: 0.65,
-  pace: 1,
+  climb: 1.0,
+  collect: 1.0,
+  wall: 0.65,
+  pace: 1.0,
+  detour: 0.5,
+  patience: 0.65,
 };
 
 export const PLANNER_PERCEPTION_DEFAULTS = {
@@ -277,15 +328,16 @@ export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): Plann
 
 export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
   return {
-    height: 0,
-    collectibles: 0,
-    missedCollect: 0,
-    wallRoute: 0,
+    climb: 0,
+    collect: 0,
+    wall: 0,
+    pace: 0,
+    detour: 0,
+    miss: 0,
     stability: 0,
-    paceCost: 0,
-    safetyCost: 0,
-    backtrackCost: 0,
-    loopCost: 0,
+    safety: 0,
+    backtrack: 0,
+    loop: 0,
     total,
   };
 }
@@ -301,6 +353,10 @@ export class InterwheelPlanner {
   private lastSeenTick = -1;
   private currentPerceived: PerceivedSnapshot | null = null;
   private currentPerceivedKeys: string[] = [];
+  // Set once per plan in planStable() so the patienceDiscount path can look up
+  // "is this pastille reachable from a higher wheel" without re-scanning every
+  // pickup credit.
+  private currentStableClaimable = new Set<string>();
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
 
@@ -314,11 +370,6 @@ export class InterwheelPlanner {
       maxDepth: cfg.maxDepth ?? maxStableDepth,
       maxEdgeRollouts,
       maxStableDepth,
-      targetClimb: cfg.targetClimb ?? 400,
-      scoreBias: cfg.scoreBias ?? 1,
-      waitPenalty: cfg.waitPenalty ?? DEFAULT_WAIT_PENALTY,
-      waitGraceTicks: cfg.waitGraceTicks ?? DEFAULT_WAIT_GRACE_TICKS,
-      longWaitPenalty: cfg.longWaitPenalty ?? DEFAULT_LONG_WAIT_PENALTY,
       revealScreensAbove: cfg.revealScreensAbove ?? PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove,
       memoryScreensBelow: cfg.memoryScreensBelow ?? PLANNER_PERCEPTION_DEFAULTS.memoryScreensBelow,
       collectSegments: cfg.collectSegments ?? true,
@@ -435,6 +486,7 @@ export class InterwheelPlanner {
   private planStable(perceived: PerceivedSnapshot): PlanResult {
     const rootState = perceived.snap;
     const startTime = performance.now();
+    this.currentStableClaimable = this.computeStableClaimableSet(rootState);
     const emptyRootReward = this.emptyCollectReward(this.currentPerceivedKeys.length);
     const rootReward = this.extendCollectReward(
       emptyRootReward,
@@ -447,6 +499,7 @@ export class InterwheelPlanner {
       0,
       rootReward,
       rootReward,
+      rootState.blob.y,
       0,
       0,
       false,
@@ -458,11 +511,12 @@ export class InterwheelPlanner {
       state: rootState,
       depth: 0,
       totalTicks: 0,
-      pathWaitPenalty: 0,
-      pathWallRouteValue: 0,
       value: rootScore.total,
       collectibleBias: this.collectibleBias(rootState),
       pathReward: rootReward,
+      pathApexY: rootState.blob.y,
+      pathOffAxis: 0,
+      pathWallTicks: 0,
     };
 
     const nodes: SearchNode[] = [root];
@@ -490,11 +544,12 @@ export class InterwheelPlanner {
           state: edge.endState,
           depth: node.depth + 1,
           totalTicks: node.totalTicks + edge.plan.length,
-          pathWaitPenalty: edge.pathWaitPenalty,
-          pathWallRouteValue: edge.pathWallRouteValue,
           value: edge.value,
           collectibleBias: this.collectibleBias(edge.endState),
           pathReward: edge.pathReward,
+          pathApexY: edge.pathApexY,
+          pathOffAxis: edge.pathOffAxis,
+          pathWallTicks: edge.pathWallTicks,
         };
         edge.childId = child.id;
         nodes.push(child);
@@ -595,16 +650,26 @@ export class InterwheelPlanner {
     const segments: SegmentBody[] = [];
     const perceivedPastilles = this.currentPerceived?.snap.pastilles ?? [];
     const reward = this.emptyCollectReward(perceivedPastilles.length);
-    const route = this.emptyRoute(parent.state);
     sim.restore(parent.state);
 
     let sx = sim.blob.x;
     let sy = sim.blob.y;
+    const edgeStartX = sim.blob.x;
+    const edgeStartY = sim.blob.y;
+    // Edge-local accumulators. Tracking start position too gives the off-axis
+    // integral and apex-min full path coverage including the resting state.
+    let edgeApexY = sim.blob.y;
+    let edgeWallTicks = sim.blob.state === BLOB_STATE_WALL ? 1 : 0;
+    const samplesX: number[] = [edgeStartX];
+    const samplesY: number[] = [edgeStartY];
     const recordStep = (press: boolean): void => {
       sim.step(press, constantRng);
       plan.push(press);
       this.collectStepReward(sim, reward);
-      this.updateRoute(route, sim);
+      samplesX.push(sim.blob.x);
+      samplesY.push(sim.blob.y);
+      if (sim.blob.y < edgeApexY) edgeApexY = sim.blob.y;
+      if (sim.blob.state === BLOB_STATE_WALL) edgeWallTicks += 1;
       if (perceivedPastilles.length > 0) {
         const bx = sim.blob.x, by = sim.blob.y;
         for (let i = 0; i < perceivedPastilles.length; i += 1) {
@@ -671,17 +736,22 @@ export class InterwheelPlanner {
 
     const isDead = this.isTerminal(endState);
     const isStable = endState.blob.state === BLOB_STATE_GRAB || endState.blob.state === BLOB_STATE_WALL;
-    route.endedOnWall = endState.blob.state === BLOB_STATE_WALL;
     const sameStableTarget = this.isSameStableTarget(parent.state, endState);
     const effectiveReward = sameStableTarget
       ? this.emptyCollectReward(perceivedPastilles.length)
       : reward;
     let pathReward = this.extendCollectReward(parent.pathReward, effectiveReward);
     if (isStable) pathReward = this.extendCollectReward(pathReward, this.stableSurfaceCollectReward(endState, pathReward));
-    const edgeWaitPenalty = this.waitPenalty(waitTicks);
-    const pathWaitPenalty = parent.pathWaitPenalty + edgeWaitPenalty;
-    const edgeWallRouteValue = this.wallRouteValue(route);
-    const pathWallRouteValue = parent.pathWallRouteValue + edgeWallRouteValue;
+    // sameStableTarget edges are scoops that landed back where they started;
+    // their off-axis integral would dominate detour penalties without
+    // representing real path progress. Skip the integral but keep the apex
+    // because reaching a high arc on the way still happened.
+    const edgeOffAxis = sameStableTarget
+      ? 0
+      : this.edgeOffAxisIntegral(samplesX, samplesY, edgeStartX, edgeStartY, endState.blob.x, endState.blob.y);
+    const pathApexY = Math.min(parent.pathApexY, edgeApexY);
+    const pathOffAxis = parent.pathOffAxis + edgeOffAxis;
+    const pathWallTicks = parent.pathWallTicks + edgeWallTicks;
     const scoreBreakdown = this.scoreCandidate(
       rootState,
       parent.state,
@@ -689,8 +759,9 @@ export class InterwheelPlanner {
       parent.totalTicks + plan.length,
       pathReward,
       effectiveReward,
-      pathWaitPenalty,
-      pathWallRouteValue,
+      pathApexY,
+      pathOffAxis,
+      pathWallTicks,
       sameStableTarget,
     );
     const value = scoreBreakdown.total;
@@ -704,15 +775,35 @@ export class InterwheelPlanner {
       isDead,
       isStable,
       value,
-      edgeWaitPenalty,
-      pathWaitPenalty,
-      edgeWallRouteValue,
-      pathWallRouteValue,
       reward,
       pathReward,
       scoreBreakdown,
       segments,
+      pathApexY,
+      pathOffAxis,
+      pathWallTicks,
     };
+  }
+
+  private edgeOffAxisIntegral(
+    samplesX: number[],
+    samplesY: number[],
+    sxEdge: number,
+    syEdge: number,
+    exEdge: number,
+    eyEdge: number,
+  ): number {
+    const dx = exEdge - sxEdge;
+    const dy = eyEdge - syEdge;
+    const chordLen = Math.sqrt(dx * dx + dy * dy);
+    if (chordLen < 1e-6 || samplesX.length < 2) return 0;
+    let sum = 0;
+    for (let i = 0; i < samplesX.length; i += 1) {
+      const px = samplesX[i] - sxEdge;
+      const py = samplesY[i] - syEdge;
+      sum += Math.abs(dx * py - dy * px) / chordLen;
+    }
+    return sum;
   }
 
   private emptyCollectReward(pastilleCount: number): CollectReward {
@@ -758,13 +849,32 @@ export class InterwheelPlanner {
 
   private collectStepReward(sim: ScratchInterwheelSim, reward: CollectReward): void {
     for (const pastille of sim.events.collectedPastilles) {
-      this.creditPastilleReward(pastille, reward);
+      this.creditPastilleReward(pastille, reward, true);
     }
     for (const spark of sim.events.collectedSparks) {
       reward.sparkScore += spark.score;
     }
   }
 
+  // Orthogonal score formulation: each user-facing knob scales exactly one
+  // path-cumulative signal, and planner physics (state bonus, water urgency,
+  // backtrack/loop/safety) live as named constants distinct from policy.
+  //
+  //   total =
+  //     + climb    × pathHeight     × waterClimbBoost
+  //     + collect  × (pathClaim×PASTILLE_VALUE_WEIGHT + pathSpark×SPARK_VALUE_WEIGHT)
+  //                                  × waterCollectDamp
+  //     + wall     × pathWallTicks
+  //     − pace     × pathTime
+  //     − detour   × pathOffAxis
+  //     − miss     × missProximity   × waterCollectDamp     (miss = collect × FIXED_MISS_RATIO)
+  //     + endStableBonus
+  //     − endSafetyCost − endBacktrackCost − endLoopCost
+  //
+  // pathHeight = max(0, root.y - pathApexY) is the single height signal.
+  // No more 3-way mix of (maxHeight + heightGain×9 + yGain×4).
+  // pathWallTicks is continuous (per-step accumulator); no tier function.
+  // pace is linear (no ×4 magic, no nonlinear wait penalty).
   private scoreCandidate(
     root: SimSnapshot,
     start: SimSnapshot,
@@ -772,86 +882,73 @@ export class InterwheelPlanner {
     totalTicks: number,
     pathReward: CollectReward,
     edgeReward: CollectReward,
-    pathWaitPenalty: number,
-    pathWallRouteValue: number,
+    pathApexY: number,
+    pathOffAxis: number,
+    pathWallTicks: number,
     sameStableTarget: boolean,
   ): CandidateScoreBreakdown {
+    const policy = this.cfg.policy;
+    const waterMargin = end.waterY - end.blob.y;
+    const waterUrgency = this.waterUrgency(waterMargin);
+    const waterClimbBoost = 1 + waterUrgency * WATER_CLIMB_BOOST;
+    const waterCollectDamp = 1 - waterUrgency * WATER_COLLECT_DAMP;
+
+    // Knob terms — one signal each.
+    const pathHeight = Math.max(0, root.blob.y - pathApexY);
+    const pathClaim = pathReward.pickedValue * PASTILLE_VALUE_WEIGHT
+                    + pathReward.sparkScore  * SPARK_VALUE_WEIGHT;
+    const climb   = policy.climb   * pathHeight * waterClimbBoost;
+    const collect = policy.collect * pathClaim  * waterCollectDamp;
+    const wall    = policy.wall    * pathWallTicks;
+    const pace    = policy.pace    * totalTicks;
+    const detour  = policy.detour  * pathOffAxis;
+
+    // Miss penalty: same proximity-bounded mechanism as before, but with its
+    // own coefficient. Default-coupled to collect via FIXED_MISS_RATIO so
+    // existing behavior is preserved when only `collect` is dialed; future
+    // work could expose a separate `miss` knob.
+    const missCoeff = policy.collect * FIXED_MISS_RATIO;
+    const miss = missCoeff * this.missedCollectibleValue(pathReward) * waterCollectDamp;
+
+    // Frontier physics — leaf state shapes the score independent of policy.
+    const stability = STATE_BONUS[end.blob.state] ?? STATE_BONUS_FALLBACK;
+    const waterPenalty = waterMargin < WATER_SAFETY_MARGIN
+      ? (WATER_SAFETY_MARGIN - waterMargin) * WATER_DEFICIT_GRADIENT
+      : 0;
+    const flightPenalty = end.blob.state === BLOB_STATE_FLY ? UNRESOLVED_FLIGHT_PENALTY : 0;
+    const safety = waterPenalty + flightPenalty;
+
+    // Edge-local penalties (planner physics).
+    const yGain = start.blob.y - end.blob.y;
+    const backtrack = end.blob.y > start.blob.y + BACKTRACK_GRACE_PX
+      ? (end.blob.y - start.blob.y) * BACKTRACK_GRADIENT
+      : 0;
+    const loop = sameStableTarget
+        && edgeReward.pickedValue + edgeReward.sparkScore <= 0
+        && yGain < LOOP_GAIN_THRESH_PX
+      ? LOOP_PENALTY
+      : 0;
+
     if (this.isTerminal(end)) {
-      const collectibles = this.cfg.policy.collectibles * this.collectibleScorePolicy(pathReward);
-      const paceCost = this.cfg.policy.pace * (totalTicks * 4 + pathWaitPenalty);
-      const safetyCost = 1_000_000;
+      const total = climb + collect + wall - pace - detour - miss
+                  - TERMINAL_DEATH_COST;
       return {
         ...emptyScoreBreakdown(),
-        collectibles,
-        paceCost,
-        safetyCost,
-        total: collectibles - paceCost - safetyCost,
+        climb, collect, wall, pace, detour, miss,
+        safety: TERMINAL_DEATH_COST,
+        total,
       };
     }
 
-    const heightGain = end.maxHeight - root.maxHeight;
-    // `heightGain` remains global: it rewards discovering a new run max from
-    // the live root. Directional terms are local to this edge, so a third-gen
-    // candidate that jumps down from a future upper wheel is scored as a local
-    // backtrack instead of being rewarded just because it still ends above the
-    // original live wheel.
-    const yGain = start.blob.y - end.blob.y;
-    const waterMargin = end.waterY - end.blob.y;
-    const waterUrgency = this.waterUrgency(waterMargin);
-    const waterPenalty = waterMargin < WATER_SAFETY_MARGIN
-      ? (WATER_SAFETY_MARGIN - waterMargin) * 30
-      : 0;
-    const stateBonus = STATE_BONUS[end.blob.state] ?? STATE_BONUS_FALLBACK;
-    const backtrackPenalty = end.blob.y > start.blob.y + 20
-      ? (end.blob.y - start.blob.y) * 25
-      : 0;
-    const heightPolicy =
-      end.maxHeight +
-      heightGain * 9 +
-      yGain * 4;
-    const scorePolicy = this.collectibleScorePolicy(pathReward);
-    const scoreTerm = scorePolicy * this.cfg.scoreBias * (1 - waterUrgency * 0.85);
-    const loopPenalty = sameStableTarget && edgeReward.pickedValue + edgeReward.sparkScore <= 0 && yGain < 20 ? 650 : 0;
-    const height = this.cfg.policy.climb * heightPolicy * (1 + waterUrgency * 1.2);
-    const collectibles = this.cfg.policy.collectibles * scoreTerm;
-    // Same waterUrgency dampening as `collectibles` reward above so the miss
-    // penalty doesn't keep full strength while the corresponding pickup
-    // reward is being quenched near the water.
-    const missedCollect = this.cfg.policy.collectibles
-      * this.missedCollectibleValue(pathReward)
-      * MISS_PENALTY_FACTOR
-      * (1 - waterUrgency * 0.85);
-    const wallRoute = this.cfg.policy.wallRoutes * pathWallRouteValue;
-    const stability = stateBonus;
-    const paceCost = this.cfg.policy.pace * (totalTicks * 4 + pathWaitPenalty);
-    const unresolvedFlightPenalty = end.blob.state === BLOB_STATE_FLY
-      ? UNRESOLVED_FLIGHT_PENALTY
-      : 0;
-    const safetyCost = waterPenalty + unresolvedFlightPenalty;
-    const backtrackCost = backtrackPenalty;
-    const loopCost = loopPenalty;
-    return {
-      height,
-      collectibles,
-      missedCollect,
-      wallRoute,
-      stability,
-      paceCost,
-      safetyCost,
-      backtrackCost,
-      loopCost,
-      total: height + collectibles + wallRoute + stability
-        - missedCollect - paceCost - safetyCost - backtrackCost - loopCost,
-    };
-  }
-
-  private collectibleScorePolicy(reward: CollectReward): number {
-    return reward.sparkScore * 3 + reward.pickedValue * 1.5;
+    const total = climb + collect + wall + stability
+                - pace - detour - miss - safety - backtrack - loop;
+    return { climb, collect, wall, pace, detour, miss, stability, safety, backtrack, loop, total };
   }
 
   // Reaching a wheel claims pastilles on its orbit. The live agent replans
   // every tick, so the important path fact is access to the natural pickup
   // route, not whether this rollout already waited long enough to bank it.
+  // Path-cumulative: claims merge into pathReward so descendants inherit them.
   private stableSurfaceCollectReward(state: SimSnapshot, prior: CollectReward): CollectReward {
     const reward = this.emptyCollectReward(this.currentPerceivedKeys.length);
     if (state.blob.state !== BLOB_STATE_GRAB || state.blob.cwIdx < 0) return reward;
@@ -868,13 +965,46 @@ export class InterwheelPlanner {
     return reward;
   }
 
-  private creditPastilleReward(pastille: { x: number; y: number; type: number }, reward: CollectReward): void {
+  private creditPastilleReward(
+    pastille: { x: number; y: number; type: number },
+    reward: CollectReward,
+    isRealPickup = false,
+  ): void {
     const key = this.pastilleKey(pastille);
     if (reward.collectedKeys.has(key)) return;
-    const value = SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
+    let value = SCORE_PASTILLE[pastille.type] ?? SCORE_PASTILLE[0];
+    if (
+      isRealPickup
+      && this.cfg.policy.patience > 0
+      && this.currentStableClaimable.has(key)
+    ) {
+      value *= clamp(1 - this.cfg.policy.patience, 0, 1);
+    }
     reward.pickedValue += value;
     reward.collectedKeys.add(key);
     reward.pickedValuesByKey.set(key, value);
+  }
+
+  private computeStableClaimableSet(rootState: SimSnapshot): Set<string> {
+    const set = new Set<string>();
+    if (this.cfg.policy.patience <= 0) return set;
+    const wheels = rootState.wheels;
+    for (const pastille of rootState.pastilles) {
+      for (const wheel of wheels) {
+        if (wheel.destroyed) continue;
+        // Only wheels strictly above the agent count — a "later, easier"
+        // claim is one the route would normally reach by climbing.
+        if (wheel.y >= rootState.blob.y) continue;
+        const dx = pastille.x - wheel.x;
+        const dy = pastille.y - wheel.y;
+        const orbitDistance = Math.abs(Math.sqrt(dx * dx + dy * dy) - wheel.ray);
+        if (orbitDistance < COLLECT_PICKUP_RADIUS) {
+          set.add(this.pastilleKey(pastille));
+          break;
+        }
+      }
+    }
+    return set;
   }
 
   // Sum perceived pastille values that the route passed within
@@ -901,10 +1031,10 @@ export class InterwheelPlanner {
   }
 
   // Bias for how attractive a node is for further search expansion when the
-  // policy weights collectibles. Decays exponentially with blob-to-pastille
+  // policy weights collect. Decays exponentially with blob-to-pastille
   // distance, summed over still-uncollected perceived pastilles.
   private collectibleBias(state: SimSnapshot): number {
-    if (this.cfg.policy.collectibles <= 0) return 0;
+    if (this.cfg.policy.collect <= 0) return 0;
     const pastilles = state.pastilles;
     if (pastilles.length === 0) return 0;
     let bias = 0;
@@ -915,33 +1045,7 @@ export class InterwheelPlanner {
       const decay = Math.exp(-d / NODE_BIAS_DECAY_PX);
       bias += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * decay;
     }
-    return bias * this.cfg.policy.collectibles * NODE_BIAS_FACTOR;
-  }
-
-  private emptyRoute(start: SimSnapshot): EdgeRoute {
-    const startsOnWall = start.blob.state === BLOB_STATE_WALL;
-    return {
-      startsOnWall,
-      touchedWall: startsOnWall,
-      endedOnWall: startsOnWall,
-    };
-  }
-
-  private updateRoute(route: EdgeRoute, sim: ScratchInterwheelSim): void {
-    if (sim.blob.state === BLOB_STATE_WALL) route.touchedWall = true;
-  }
-
-  private wallRouteValue(route: EdgeRoute): number {
-    if (route.startsOnWall) return 0;
-    if (route.touchedWall && route.endedOnWall) return 450;
-    if (route.touchedWall) return 300;
-    return 0;
-  }
-
-  private waitPenalty(waitTicks: number): number {
-    const overstay = Math.max(0, waitTicks - this.cfg.waitGraceTicks);
-    const acceleration = 1 + overstay / Math.max(1, this.cfg.waitGraceTicks);
-    return waitTicks * this.cfg.waitPenalty + overstay * overstay * acceleration * this.cfg.longWaitPenalty;
+    return bias * this.cfg.policy.collect * NODE_BIAS_FACTOR;
   }
 
   private waitSamples(snap: SimSnapshot, depth: number): number[] {

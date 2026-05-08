@@ -19,7 +19,14 @@ if (!stage) throw new Error('missing #stage');
 
 type PolicyKey = keyof PlannerPolicy;
 
-const POLICY_KEYS: PolicyKey[] = ['climb', 'collectibles', 'wallRoutes', 'pace'];
+const POLICY_KEYS: PolicyKey[] = [
+  'climb',
+  'collect',
+  'wall',
+  'pace',
+  'detour',
+  'patience',
+];
 const policyInputs = new Map<PolicyKey, HTMLInputElement>();
 const policyOutputs = new Map<PolicyKey, HTMLOutputElement>();
 const policyReset = document.getElementById('policy-reset') as HTMLButtonElement | null;
@@ -33,9 +40,10 @@ const edgeBudgetInput = document.getElementById('planner-edgeBudget') as HTMLInp
 const edgeBudgetOutput = document.getElementById('planner-edgeBudget-value') as HTMLOutputElement | null;
 const planBudgetInput = document.getElementById('planner-planBudgetMs') as HTMLInputElement | null;
 const planBudgetOutput = document.getElementById('planner-planBudgetMs-value') as HTMLOutputElement | null;
-// Focus lerps climb and collectibles in opposite directions: focus=0 is pure
-// climber (max climb, no collect), focus=1 is pure collector (min climb, max
-// collect). Endpoints align with the existing slider ranges in playground.html.
+// Focus lerps climb and collect in opposite directions: focus=0 is pure
+// climber (max climb, no collect), focus=1 is balanced collector (lower climb,
+// max collect). Endpoints align with the existing slider ranges in
+// playground.html.
 const FOCUS_CLIMB_MAX = 1.6;
 const FOCUS_CLIMB_MIN = 0.3;
 const FOCUS_COLLECT_MAX = 3;
@@ -116,10 +124,10 @@ function syncPolicyControls(): void {
     if (input) input.value = String(policy[key]);
     if (output) output.value = formatPolicyValue(policy[key]);
   }
-  // Focus reflects collectibles position on the lerp; climb may drift off the
+  // Focus reflects collect position on the lerp; climb may drift off the
   // line if user adjusts it directly, that's OK — focus is a fast-path preset.
   if (focusInput || focusOutput) {
-    const focus = clamp(policy.collectibles / FOCUS_COLLECT_MAX, 0, 1);
+    const focus = clamp(policy.collect / FOCUS_COLLECT_MAX, 0, 1);
     if (focusInput) focusInput.value = String(focus);
     if (focusOutput) focusOutput.value = focus.toFixed(2);
   }
@@ -130,13 +138,13 @@ function policyFromFocus(focus: number, base: PlannerPolicy): PlannerPolicy {
   return {
     ...base,
     climb: FOCUS_CLIMB_MAX - (FOCUS_CLIMB_MAX - FOCUS_CLIMB_MIN) * f,
-    collectibles: FOCUS_COLLECT_MAX * f,
+    collect: FOCUS_COLLECT_MAX * f,
   };
 }
 
 function readPolicyControls(): PlannerPolicy {
   // Start from current policy so keys without a UI input (e.g. climb,
-  // collectibles when only the Focus slider is shown) retain their values.
+  // collect when only the Focus slider is shown) retain their values.
   const next: PlannerPolicy = { ...policy };
   for (const key of POLICY_KEYS) {
     const input = policyInputs.get(key);

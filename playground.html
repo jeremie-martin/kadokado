@@ -62,23 +62,33 @@
         <div class="controls" id="policy-controls">
           <div class="control">
             <label for="policy-focus">Focus (climb ↔ collect)</label>
-            <output id="policy-focus-value">0.40</output>
-            <input id="policy-focus" type="range" min="0" max="1" step="0.01" value="0.4">
+            <output id="policy-focus-value">0.33</output>
+            <input id="policy-focus" type="range" min="0" max="1" step="0.01" value="0.33">
           </div>
           <div class="control">
             <label for="policy-climb">Climb</label>
-            <output id="policy-climb-value">1.08</output>
-            <input id="policy-climb" type="range" min="0" max="3" step="0.01" value="1.08" data-policy-key="climb">
+            <output id="policy-climb-value">1.00</output>
+            <input id="policy-climb" type="range" min="0" max="3" step="0.01" value="1.0" data-policy-key="climb">
           </div>
           <div class="control">
-            <label for="policy-collectibles">Collectibles</label>
-            <output id="policy-collectibles-value">1.20</output>
-            <input id="policy-collectibles" type="range" min="0" max="20" step="0.1" value="1.2" data-policy-key="collectibles">
+            <label for="policy-collect">Collect</label>
+            <output id="policy-collect-value">1.00</output>
+            <input id="policy-collect" type="range" min="0" max="3" step="0.05" value="1.0" data-policy-key="collect">
           </div>
           <div class="control">
-            <label for="policy-wallRoutes">Wall routes</label>
-            <output id="policy-wallRoutes-value">0.65</output>
-            <input id="policy-wallRoutes" type="range" min="0" max="2" step="0.05" value="0.65" data-policy-key="wallRoutes">
+            <label for="policy-detour">Detour</label>
+            <output id="policy-detour-value">0.50</output>
+            <input id="policy-detour" type="range" min="0" max="2" step="0.05" value="0.5" data-policy-key="detour">
+          </div>
+          <div class="control">
+            <label for="policy-patience">Patience</label>
+            <output id="policy-patience-value">0.65</output>
+            <input id="policy-patience" type="range" min="0" max="1" step="0.05" value="0.65" data-policy-key="patience">
+          </div>
+          <div class="control">
+            <label for="policy-wall">Wall</label>
+            <output id="policy-wall-value">0.65</output>
+            <input id="policy-wall" type="range" min="0" max="2" step="0.05" value="0.65" data-policy-key="wall">
           </div>
           <div class="control">
             <label for="policy-pace">Pace</label>

@@ -8,7 +8,7 @@ import {
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/index';
-import { FPS, InterwheelSim as PureInterwheelSim, SCORE_PASTILLE, type SimEvents } from '../games/interwheel/sim';
+import { FPS, InterwheelSim as PureInterwheelSim, SCORE_PASTILLE, setGenerationDifficultyOverride, setPastilleSpawnChanceOverride, type SimEvents } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
 import {
   emptyScoreBreakdown,
@@ -47,7 +47,6 @@ const ANALYTICS_PLANNER_CONFIG = {
   budgetMs: 5,
   maxEdgeRollouts: 360,
   maxStableDepth: 4,
-  targetClimb: 400,
   collectSegments: false,
 } satisfies PlannerConfig;
 
@@ -343,7 +342,11 @@ function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
 }
 
 function scoreBreakdownKeys(): Array<keyof CandidateScoreBreakdown> {
-  return ['height', 'collectibles', 'missedCollect', 'wallRoute', 'stability', 'paceCost', 'safetyCost', 'backtrackCost', 'loopCost', 'total'];
+  return [
+    'climb', 'collect', 'wall', 'pace', 'detour',
+    'miss', 'stability', 'safety', 'backtrack', 'loop',
+    'total',
+  ];
 }
 
 function addScoreBreakdown(target: CandidateScoreBreakdown, source: CandidateScoreBreakdown): void {
@@ -1604,6 +1607,8 @@ async function parityCheck(maxTicks = 24_000): Promise<{
       comparePurePlanner: typeof comparePurePlanner;
       comparePurePlannerCorpus: typeof comparePurePlannerCorpus;
       parityCheck: typeof parityCheck;
+      setPastilleSpawnChanceOverride: typeof setPastilleSpawnChanceOverride;
+      setGenerationDifficultyOverride: typeof setGenerationDifficultyOverride;
     };
   }).__interwheelAnalytics__ = {
     runBatch,
@@ -1616,6 +1621,8 @@ async function parityCheck(maxTicks = 24_000): Promise<{
     comparePurePlanner,
     comparePurePlannerCorpus,
     parityCheck,
+    setPastilleSpawnChanceOverride,
+    setGenerationDifficultyOverride,
   };
 })().catch((err) => {
   log(`Boot failed: ${err}`);
