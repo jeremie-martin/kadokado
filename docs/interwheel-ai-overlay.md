@@ -83,7 +83,7 @@ tree is built.
 For each edge:
 
 ```text
-support = rank(edge.value)^lineageGamma
+support = seed(edge.value)^lineageGamma
 support[parent] += support[child] * lineageDecay
 ```
 
@@ -91,6 +91,21 @@ Defaults:
 
 - `lineageGamma = 3`
 - `lineageDecay = 0.65`
+- `seed = 'rank'`
+
+The leaf seed has two modes:
+
+- `rank` (default): `seed = i / (n - 1)` after sorting edges by `edge.value`.
+  Discards magnitude, preserves ordering. Robust when one prefix accumulates
+  exponentially more credit than the rest of the tree.
+- `value`: `seed = (edge.value - vMin) / (vMax - vMin)` across the edge set
+  (clamped via min-max). Preserves magnitude differences between scores, so
+  edges with much higher raw fitness pull more credit through to their parents
+  than near-tied edges do.
+
+Toggle the seed mode at runtime with the *Use raw score (instead of rank)*
+checkbox in the Overlay panel. The bottom-up decay pass is identical in both
+modes; only the seed transform changes.
 
 This gives a first jump visual credit for the competitive continuations it
 enables. It is the Interwheel equivalent of Mario's additive overdraw, but
@@ -168,6 +183,7 @@ Overlay controls affect rendering or support recomputation:
 
 - Lineage decay
 - Lineage gamma
+- Use raw score (instead of rank)
 - Alpha gamma
 - Min alpha
 - Width min

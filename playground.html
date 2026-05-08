@@ -7,7 +7,7 @@
     <style>
       :root { color-scheme: dark; }
       html, body { margin: 0; padding: 0; background: #0e1418; color: #c8d6dc; font-family: 'Trebuchet MS', sans-serif; }
-      .wrap { --stage-shell-width: 324px; display: grid; grid-template-columns: var(--stage-shell-width) minmax(320px, 420px); gap: 24px; padding: 24px; align-items: start; justify-content: start; }
+      .wrap { --stage-shell-width: 324px; display: grid; grid-template-columns: var(--stage-shell-width) minmax(280px, 360px) minmax(280px, 380px); gap: 24px; padding: 24px; align-items: start; justify-content: start; }
       .wrap > * { min-width: 0; }
       .game-column { width: var(--stage-shell-width); max-width: 100%; }
       .stage { width: fit-content; max-width: 100%; overflow: auto; background: #1c2c34; padding: 12px; border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.5); }
@@ -28,6 +28,9 @@
       .actions { display: flex; gap: 8px; margin-top: 14px; }
       .actions button { border: 1px solid #365866; background: #18282f; color: #dbecef; border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
       .actions button:hover { background: #20343d; }
+      @media (max-width: 1100px) {
+        .wrap { grid-template-columns: var(--stage-shell-width) minmax(280px, 1fr); }
+      }
       @media (max-width: 760px) {
         .wrap { grid-template-columns: 1fr; padding: 12px; }
         .game-column { width: 100%; }
@@ -74,6 +77,8 @@
         <div class="actions">
           <button id="policy-reset" type="button">Reset</button>
         </div>
+      </div>
+      <div class="panel">
         <h2>Planner experiment</h2>
         <div class="controls" id="objective-controls">
           <div class="control" style="grid-template-columns: 1fr auto;">
@@ -92,6 +97,10 @@
             <label for="overlay-lineageGamma">Lineage γ (descendant filter)</label>
             <output id="overlay-lineageGamma-value">3.0</output>
             <input id="overlay-lineageGamma" type="range" min="1" max="5" step="0.5" value="3" data-overlay-key="lineageGamma">
+          </div>
+          <div class="control" style="grid-template-columns: 1fr auto;">
+            <label for="overlay-rawScoreSeed">Use raw score (instead of rank)</label>
+            <input id="overlay-rawScoreSeed" type="checkbox" style="grid-column: auto; width: auto;">
           </div>
           <div class="control">
             <label for="overlay-alphaGamma">Alpha γ (rank curve)</label>

@@ -56,8 +56,10 @@ const overlayParamOutputs = new Map<OverlayParamKey, HTMLOutputElement>();
 const overlayReset = document.getElementById('overlay-reset') as HTMLButtonElement | null;
 const colorInput = document.getElementById('overlay-color') as HTMLInputElement | null;
 const colorByGenerationInput = document.getElementById('overlay-colorByGeneration') as HTMLInputElement | null;
+const rawScoreSeedInput = document.getElementById('overlay-rawScoreSeed') as HTMLInputElement | null;
 let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
 let overlayColor: number = OVERLAY_DEFAULTS.color;
+let useRawScoreSeed = false;
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -242,11 +244,21 @@ function setupOverlayParamControls(): void {
     refreshStats();
   });
 
+  rawScoreSeedInput?.addEventListener('change', () => {
+    useRawScoreSeed = rawScoreSeedInput.checked;
+    planner?.setLineage({ seed: useRawScoreSeed ? 'value' : 'rank' });
+    schedulePolicyPreview();
+  });
+
   overlayReset?.addEventListener('click', () => {
     for (const key of OVERLAY_PARAM_KEYS) {
       applyOverlayParam(key, OVERLAY_PARAM_DEFAULTS[key]);
     }
     applyOverlayColor(OVERLAY_DEFAULTS.color);
+    if (rawScoreSeedInput) rawScoreSeedInput.checked = false;
+    useRawScoreSeed = false;
+    planner?.setLineage({ seed: 'rank' });
+    schedulePolicyPreview();
   });
 
   syncOverlayParamControls();
