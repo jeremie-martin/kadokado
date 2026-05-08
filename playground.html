@@ -61,9 +61,9 @@
         <h2>Policy</h2>
         <div class="controls" id="policy-controls">
           <div class="control">
-            <label for="policy-focus">Focus (climb ↔ collect)</label>
-            <output id="policy-focus-value">0.33</output>
-            <input id="policy-focus" type="range" min="0" max="1" step="0.01" value="0.33">
+            <label for="policy-focus">Focus (climb ↔ thoroughness)</label>
+            <output id="policy-focus-value">0.00</output>
+            <input id="policy-focus" type="range" min="0" max="1" step="0.01" value="0">
           </div>
           <div class="control">
             <label for="policy-climb">Climb</label>
@@ -71,29 +71,29 @@
             <input id="policy-climb" type="range" min="0" max="3" step="0.01" value="1.0" data-policy-key="climb">
           </div>
           <div class="control">
-            <label for="policy-collect">Collect</label>
-            <output id="policy-collect-value">1.00</output>
-            <input id="policy-collect" type="range" min="0" max="3" step="0.05" value="1.0" data-policy-key="collect">
+            <label for="policy-thoroughness">Thoroughness</label>
+            <output id="policy-thoroughness-value">0.00</output>
+            <input id="policy-thoroughness" type="range" min="0" max="4" step="0.05" value="0" data-policy-key="thoroughness">
           </div>
           <div class="control">
             <label for="policy-detour">Detour</label>
-            <output id="policy-detour-value">0.50</output>
-            <input id="policy-detour" type="range" min="0" max="2" step="0.05" value="0.5" data-policy-key="detour">
+            <output id="policy-detour-value">1.00</output>
+            <input id="policy-detour" type="range" min="0" max="2" step="0.05" value="1.0" data-policy-key="detour">
           </div>
           <div class="control">
             <label for="policy-patience">Patience</label>
-            <output id="policy-patience-value">0.65</output>
-            <input id="policy-patience" type="range" min="0" max="1" step="0.05" value="0.65" data-policy-key="patience">
+            <output id="policy-patience-value">0.00</output>
+            <input id="policy-patience" type="range" min="0" max="1" step="0.05" value="0" data-policy-key="patience">
           </div>
           <div class="control">
             <label for="policy-wall">Wall</label>
-            <output id="policy-wall-value">0.65</output>
-            <input id="policy-wall" type="range" min="0" max="2" step="0.05" value="0.65" data-policy-key="wall">
+            <output id="policy-wall-value">0.50</output>
+            <input id="policy-wall" type="range" min="0" max="2" step="0.05" value="0.5" data-policy-key="wall">
           </div>
           <div class="control">
             <label for="policy-pace">Pace</label>
-            <output id="policy-pace-value">1.00</output>
-            <input id="policy-pace" type="range" min="0.5" max="1.8" step="0.05" value="1" data-policy-key="pace">
+            <output id="policy-pace-value">1.50</output>
+            <input id="policy-pace" type="range" min="0.5" max="2.5" step="0.05" value="1.5" data-policy-key="pace">
           </div>
         </div>
         <div class="actions">

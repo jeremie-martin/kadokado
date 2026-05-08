@@ -70,8 +70,8 @@ test.describe('AI playground', () => {
       timeout: 15000,
     });
 
-    await expect(page.locator('#policy-focus-value')).toHaveText('0.33');
-    await expect(page.locator('#policy-wall-value')).toHaveText('0.65');
+    await expect(page.locator('#policy-focus-value')).toHaveText('0.00');
+    await expect(page.locator('#policy-wall-value')).toHaveText('0.50');
     await expect(page.locator('#planner-lookahead-value')).toHaveText('0.50');
     await expect(page.locator('#planner-searchDepth-value')).toHaveText('4');
     await expect(page.locator('#planner-edgeBudget-value')).toHaveText('360');
@@ -160,36 +160,36 @@ test.describe('AI playground', () => {
 
     await page.locator('#policy-wall').evaluate((el) => {
       const input = el as HTMLInputElement;
-      input.value = '0.5';
+      input.value = '0.8';
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
-    await expect(page.locator('#policy-wall-value')).toHaveText('0.50');
+    await expect(page.locator('#policy-wall-value')).toHaveText('0.80');
 
     const policy = await page.evaluate(() => {
       const w = window as unknown as {
-        __planner__: { policy: () => { climb: number; collect: number; wall: number; pace: number } };
+        __planner__: { policy: () => { climb: number; thoroughness: number; wall: number; pace: number } };
       };
       return w.__planner__.policy();
     });
 
     expect(policy.climb).toBeCloseTo(1.0);
-    expect(policy.collect).toBeCloseTo(1.0);
-    expect(policy).toMatchObject({ wall: 0.5, pace: 1 });
-    await expect(page.locator('#stats')).not.toContainText('wall 0.50');
+    expect(policy.thoroughness).toBeCloseTo(0);
+    expect(policy).toMatchObject({ wall: 0.8, pace: 1.5 });
+    await expect(page.locator('#stats')).not.toContainText('wall 0.80');
 
     await page.locator('#policy-reset').click();
-    await expect(page.locator('#policy-focus-value')).toHaveText('0.33');
-    await expect(page.locator('#policy-wall-value')).toHaveText('0.65');
+    await expect(page.locator('#policy-focus-value')).toHaveText('0.00');
+    await expect(page.locator('#policy-wall-value')).toHaveText('0.50');
 
     const resetPolicy = await page.evaluate(() => {
       const w = window as unknown as {
-        __planner__: { policy: () => { climb: number; collect: number; wall: number; pace: number } };
+        __planner__: { policy: () => { climb: number; thoroughness: number; wall: number; pace: number } };
       };
       return w.__planner__.policy();
     });
     expect(resetPolicy.climb).toBeCloseTo(1.0);
-    expect(resetPolicy.collect).toBeCloseTo(1.0);
-    expect(resetPolicy).toMatchObject({ wall: 0.65, pace: 1 });
+    expect(resetPolicy.thoroughness).toBeCloseTo(0);
+    expect(resetPolicy).toMatchObject({ wall: 0.5, pace: 1.5 });
 
     await page.locator('#overlay-shareWidthScale').evaluate((el) => {
       const input = el as HTMLInputElement;

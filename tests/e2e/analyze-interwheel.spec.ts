@@ -69,9 +69,9 @@ test('analytics harness is faithful to live game and records movement stats', as
           planMs: { count: number; p95: number; max: number };
           bestScoreBreakdown: {
             total: { count: number; mean: number };
-            height: { count: number; mean: number };
-            collectibles: { count: number; mean: number };
-            paceCost: { count: number; mean: number };
+            climb: { count: number; mean: number };
+            thoroughness: { count: number; mean: number };
+            pace: { count: number; mean: number };
           };
         };
       };
