@@ -216,10 +216,11 @@ and drives the trajectory overlay, so alternative paths are actual explored
 planner branches rather than a separate visual-only search.
 
 The planner predicts with a filtered scratch `InterwheelSim` built from a
-perceived world: currently visible objects, one screen of revealed lookahead
-above the viewport, and two screens of remembered known objects below for
-recovery. Score-seeking remains intentional, but bonus valuation is derived from
-local simulated pickup/spark events instead of scanning the full generated level.
+perceived world: currently visible objects, a playground-tunable lookahead
+above the viewport that defaults to one screen, and two screens of remembered
+known objects below for recovery. Score-seeking remains intentional, but bonus
+valuation is derived from local simulated pickup/spark events instead of
+scanning the full generated level.
 Execution jitter is disabled while this model is tuned. Stable-state waits carry
 a gentle explicit scoring penalty, with an accelerating non-linear overstay cost
 after a short grace window, so multi-revolution idling has to justify itself.

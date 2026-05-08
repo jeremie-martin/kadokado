@@ -70,6 +70,53 @@ test.describe('AI playground', () => {
       timeout: 15000,
     });
 
+    await expect(page.locator('#planner-lookahead-value')).toHaveText('1.00');
+    await page.locator('#planner-lookahead').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      input.value = '1.5';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#planner-lookahead-value')).toHaveText('1.50');
+    await expect(page.locator('#stats')).toContainText('1.50x');
+
+    const lookahead = await page.evaluate(() => {
+      const w = window as unknown as {
+        __planner__: { getRevealScreensAbove: () => number };
+      };
+      return w.__planner__.getRevealScreensAbove();
+    });
+    expect(lookahead).toBe(1.5);
+
+    await page.locator('#planner-searchDepth').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      input.value = '4';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#planner-searchDepth-value')).toHaveText('4');
+
+    await page.locator('#planner-edgeBudget').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      input.value = '480';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#planner-edgeBudget-value')).toHaveText('480');
+
+    await page.locator('#planner-planBudgetMs').evaluate((el) => {
+      const input = el as HTMLInputElement;
+      input.value = '10';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await expect(page.locator('#planner-planBudgetMs-value')).toHaveText('10ms');
+    await expect(page.locator('#stats')).toContainText('4 jumps');
+
+    const searchLimits = await page.evaluate(() => {
+      const w = window as unknown as {
+        __planner__: { getSearchLimits: () => { maxStableDepth: number; maxEdgeRollouts: number; budgetMs: number } };
+      };
+      return w.__planner__.getSearchLimits();
+    });
+    expect(searchLimits).toMatchObject({ maxStableDepth: 4, maxEdgeRollouts: 480, budgetMs: 10 });
+
     await page.locator('#policy-wallRoutes').evaluate((el) => {
       const input = el as HTMLInputElement;
       input.value = '0.5';

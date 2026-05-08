@@ -37,12 +37,19 @@ wait N ticks -> press -> fly until grab / wall / death / flight horizon
 Segments are playground-only debug data:
 
 ```text
-edgeId, x0/y0/x1/y1, depth, localTick, support, onChosenChain, generation
+edgeId, x0/y0/x1/y1, depth, localTick, support, onChosenChain, isLeaf, generation
 ```
 
 `TRAJECTORY_SAMPLE_TICKS = 1` so displayed polylines are stable frame-to-frame.
 `generation` is the search-tree depth of the edge child node and is used only
 by the "Color by generation" debug mode.
+
+The playground exposes `revealScreensAbove` as *Lookahead screens*. The current
+default is `1.0`, meaning the planner sees one viewport above the live view;
+setting it to `0` restricts lookahead to the current viewport top. Search depth
+and rollout controls are also exposed because lookahead can be invisible if the
+planner still stops after the default `3` stable jumps or `240` evaluated
+edges.
 
 ### Edge Scoring
 
@@ -178,6 +185,10 @@ Overlay controls affect rendering or support recomputation:
 
 Planner experiment:
 
+- Lookahead screens
+- Search jumps
+- Edge budget
+- CPU budget
 - Asymmetric yGain (temporary)
 
 ## Quick Comparison

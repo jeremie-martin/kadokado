@@ -213,6 +213,17 @@ export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
   pace: 1,
 };
 
+export const PLANNER_PERCEPTION_DEFAULTS = {
+  revealScreensAbove: 1,
+  memoryScreensBelow: 2,
+};
+
+export const PLANNER_SEARCH_DEFAULTS = {
+  budgetMs: 5,
+  maxEdgeRollouts: 240,
+  maxStableDepth: 3,
+};
+
 export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): PlannerPolicy {
   return {
     ...DEFAULT_PLANNER_POLICY,
@@ -252,10 +263,10 @@ export class InterwheelPlanner {
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
-    const maxEdgeRollouts = cfg.maxEdgeRollouts ?? cfg.maxNodes ?? 240;
-    const maxStableDepth = cfg.maxStableDepth ?? cfg.maxDepth ?? 3;
+    const maxEdgeRollouts = cfg.maxEdgeRollouts ?? cfg.maxNodes ?? PLANNER_SEARCH_DEFAULTS.maxEdgeRollouts;
+    const maxStableDepth = cfg.maxStableDepth ?? cfg.maxDepth ?? PLANNER_SEARCH_DEFAULTS.maxStableDepth;
     this.cfg = {
-      budgetMs: cfg.budgetMs ?? 5,
+      budgetMs: cfg.budgetMs ?? PLANNER_SEARCH_DEFAULTS.budgetMs,
       maxNodes: cfg.maxNodes ?? maxEdgeRollouts,
       maxDepth: cfg.maxDepth ?? maxStableDepth,
       maxEdgeRollouts,
@@ -265,8 +276,8 @@ export class InterwheelPlanner {
       waitPenalty: cfg.waitPenalty ?? DEFAULT_WAIT_PENALTY,
       waitGraceTicks: cfg.waitGraceTicks ?? DEFAULT_WAIT_GRACE_TICKS,
       longWaitPenalty: cfg.longWaitPenalty ?? DEFAULT_LONG_WAIT_PENALTY,
-      revealScreensAbove: cfg.revealScreensAbove ?? 1,
-      memoryScreensBelow: cfg.memoryScreensBelow ?? 2,
+      revealScreensAbove: cfg.revealScreensAbove ?? PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove,
+      memoryScreensBelow: cfg.memoryScreensBelow ?? PLANNER_PERCEPTION_DEFAULTS.memoryScreensBelow,
       collectSegments: cfg.collectSegments ?? true,
       policy: resolvePlannerPolicy(cfg.policy),
     };
@@ -306,6 +317,40 @@ export class InterwheelPlanner {
 
   getLineage(): { gamma: number; decay: number } {
     return { gamma: this.lineageGamma, decay: this.lineageDecay };
+  }
+
+  setRevealScreensAbove(screens: number): void {
+    this.cfg.revealScreensAbove = clamp(screens, 0, 4);
+    this.invalidate();
+  }
+
+  getRevealScreensAbove(): number {
+    return this.cfg.revealScreensAbove;
+  }
+
+  setSearchLimits(params: { maxStableDepth?: number; maxEdgeRollouts?: number; budgetMs?: number }): void {
+    if (params.maxStableDepth !== undefined) {
+      const depth = Math.round(clamp(params.maxStableDepth, 1, 8));
+      this.cfg.maxStableDepth = depth;
+      this.cfg.maxDepth = depth;
+    }
+    if (params.maxEdgeRollouts !== undefined) {
+      const rollouts = Math.round(clamp(params.maxEdgeRollouts, 16, 2_000));
+      this.cfg.maxEdgeRollouts = rollouts;
+      this.cfg.maxNodes = rollouts;
+    }
+    if (params.budgetMs !== undefined) {
+      this.cfg.budgetMs = clamp(params.budgetMs, 1, 50);
+    }
+    this.lastResult = null;
+  }
+
+  getSearchLimits(): { maxStableDepth: number; maxEdgeRollouts: number; budgetMs: number } {
+    return {
+      maxStableDepth: this.cfg.maxStableDepth,
+      maxEdgeRollouts: this.cfg.maxEdgeRollouts,
+      budgetMs: this.cfg.budgetMs,
+    };
   }
 
   setObjectiveFlags(flags: Partial<ObjectiveFlags>): void {

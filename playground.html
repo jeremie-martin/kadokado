@@ -81,6 +81,26 @@
       <div class="panel">
         <h2>Planner experiment</h2>
         <div class="controls" id="objective-controls">
+          <div class="control">
+            <label for="planner-lookahead">Lookahead screens</label>
+            <output id="planner-lookahead-value">1.00</output>
+            <input id="planner-lookahead" type="range" min="0" max="4" step="0.1" value="1">
+          </div>
+          <div class="control">
+            <label for="planner-searchDepth">Search jumps</label>
+            <output id="planner-searchDepth-value">3</output>
+            <input id="planner-searchDepth" type="range" min="1" max="6" step="1" value="3">
+          </div>
+          <div class="control">
+            <label for="planner-edgeBudget">Edge budget</label>
+            <output id="planner-edgeBudget-value">240</output>
+            <input id="planner-edgeBudget" type="range" min="60" max="1200" step="60" value="240">
+          </div>
+          <div class="control">
+            <label for="planner-planBudgetMs">CPU budget</label>
+            <output id="planner-planBudgetMs-value">5ms</output>
+            <input id="planner-planBudgetMs" type="range" min="1" max="30" step="1" value="5">
+          </div>
           <div class="control" style="grid-template-columns: 1fr auto;">
             <label for="objective-asymmetricYGain">Asymmetric yGain (temporary)</label>
             <input id="objective-asymmetricYGain" type="checkbox" data-objective-flag="asymmetricYGain" style="grid-column: auto; width: auto;">

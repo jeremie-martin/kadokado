@@ -6,6 +6,8 @@ import {
   InterwheelPlanner,
   LINEAGE_DEFAULTS,
   OBJECTIVE_DEFAULTS,
+  PLANNER_PERCEPTION_DEFAULTS,
+  PLANNER_SEARCH_DEFAULTS,
   type ObjectiveFlags,
   type PlannerPolicy,
   type PlanResult,
@@ -24,6 +26,14 @@ const policyOutputs = new Map<PolicyKey, HTMLOutputElement>();
 const policyReset = document.getElementById('policy-reset') as HTMLButtonElement | null;
 const focusInput = document.getElementById('policy-focus') as HTMLInputElement | null;
 const focusOutput = document.getElementById('policy-focus-value') as HTMLOutputElement | null;
+const lookaheadInput = document.getElementById('planner-lookahead') as HTMLInputElement | null;
+const lookaheadOutput = document.getElementById('planner-lookahead-value') as HTMLOutputElement | null;
+const searchDepthInput = document.getElementById('planner-searchDepth') as HTMLInputElement | null;
+const searchDepthOutput = document.getElementById('planner-searchDepth-value') as HTMLOutputElement | null;
+const edgeBudgetInput = document.getElementById('planner-edgeBudget') as HTMLInputElement | null;
+const edgeBudgetOutput = document.getElementById('planner-edgeBudget-value') as HTMLOutputElement | null;
+const planBudgetInput = document.getElementById('planner-planBudgetMs') as HTMLInputElement | null;
+const planBudgetOutput = document.getElementById('planner-planBudgetMs-value') as HTMLOutputElement | null;
 // Focus lerps climb and collectibles in opposite directions: focus=0 is pure
 // climber (max climb, no collect), focus=1 is pure collector (min climb, max
 // collect). Endpoints align with the existing slider ranges in playground.html.
@@ -64,6 +74,8 @@ const colorInput = document.getElementById('overlay-color') as HTMLInputElement 
 const colorByGenerationInput = document.getElementById('overlay-colorByGeneration') as HTMLInputElement | null;
 let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
 let overlayColor: number = OVERLAY_DEFAULTS.color;
+let lookaheadScreens = PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove;
+let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -155,6 +167,46 @@ function setupPolicyControls(): void {
 
   policyReset?.addEventListener('click', () => applyPolicy({ ...DEFAULT_PLANNER_POLICY }));
   syncPolicyControls();
+}
+
+function syncPlannerExperimentControls(): void {
+  if (lookaheadInput) lookaheadInput.value = String(lookaheadScreens);
+  if (lookaheadOutput) lookaheadOutput.value = lookaheadScreens.toFixed(2);
+  if (searchDepthInput) searchDepthInput.value = String(searchLimits.maxStableDepth);
+  if (searchDepthOutput) searchDepthOutput.value = String(searchLimits.maxStableDepth);
+  if (edgeBudgetInput) edgeBudgetInput.value = String(searchLimits.maxEdgeRollouts);
+  if (edgeBudgetOutput) edgeBudgetOutput.value = String(searchLimits.maxEdgeRollouts);
+  if (planBudgetInput) planBudgetInput.value = String(searchLimits.budgetMs);
+  if (planBudgetOutput) planBudgetOutput.value = `${searchLimits.budgetMs.toFixed(0)}ms`;
+}
+
+function applyLookaheadScreens(value: number): void {
+  if (!Number.isFinite(value)) return;
+  lookaheadScreens = clamp(value, 0, 4);
+  planner?.setRevealScreensAbove(lookaheadScreens);
+  syncPlannerExperimentControls();
+  schedulePolicyPreview();
+  refreshStats();
+}
+
+function applySearchLimits(next: Partial<typeof PLANNER_SEARCH_DEFAULTS>): void {
+  searchLimits = {
+    budgetMs: next.budgetMs !== undefined ? clamp(next.budgetMs, 1, 50) : searchLimits.budgetMs,
+    maxEdgeRollouts: next.maxEdgeRollouts !== undefined ? Math.round(clamp(next.maxEdgeRollouts, 16, 2_000)) : searchLimits.maxEdgeRollouts,
+    maxStableDepth: next.maxStableDepth !== undefined ? Math.round(clamp(next.maxStableDepth, 1, 8)) : searchLimits.maxStableDepth,
+  };
+  planner?.setSearchLimits(searchLimits);
+  syncPlannerExperimentControls();
+  schedulePolicyPreview();
+  refreshStats();
+}
+
+function setupPlannerExperimentControls(): void {
+  lookaheadInput?.addEventListener('input', () => applyLookaheadScreens(Number(lookaheadInput.value)));
+  searchDepthInput?.addEventListener('input', () => applySearchLimits({ maxStableDepth: Number(searchDepthInput.value) }));
+  edgeBudgetInput?.addEventListener('input', () => applySearchLimits({ maxEdgeRollouts: Number(edgeBudgetInput.value) }));
+  planBudgetInput?.addEventListener('input', () => applySearchLimits({ budgetMs: Number(planBudgetInput.value) }));
+  syncPlannerExperimentControls();
 }
 
 function isOverlayParamKey(value: string): value is OverlayParamKey {
@@ -365,6 +417,9 @@ function refreshStats(): void {
     statItem('Search', `${lastEdges} edges`),
     statItem('Tree', `${lastNodes} nodes`),
     statItem('Visible', lastPerceived),
+    statItem('Lookahead', `${lookaheadScreens.toFixed(2)}x`),
+    statItem('Depth', `${searchLimits.maxStableDepth} jumps`),
+    statItem('Budget', `${searchLimits.maxEdgeRollouts}e/${searchLimits.budgetMs.toFixed(0)}ms`),
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
     statItem('Culled', `${lastCulledEdges} edges`),
     statItem('Support', lastSupportRange),
@@ -372,7 +427,13 @@ function refreshStats(): void {
 }
 
 function attachAI(g: InterwheelGame): void {
-  planner = new InterwheelPlanner(g.sim, { policy });
+  planner = new InterwheelPlanner(g.sim, {
+    policy,
+    revealScreensAbove: lookaheadScreens,
+    budgetMs: searchLimits.budgetMs,
+    maxEdgeRollouts: searchLimits.maxEdgeRollouts,
+    maxStableDepth: searchLimits.maxStableDepth,
+  });
   overlay = new TrajectoryOverlay(g.world);
   (window as unknown as { __planner__: InterwheelPlanner }).__planner__ = planner;
   (window as unknown as { __overlay__: TrajectoryOverlay }).__overlay__ = overlay;
@@ -443,6 +504,7 @@ mount(stage as HTMLElement, {
     (window as unknown as { __game__: InterwheelGame }).__game__ = game;
     attachAI(game);
     setupPolicyControls();
+    setupPlannerExperimentControls();
     setupObjectiveControls();
     setupOverlayParamControls();
     refreshStats();
