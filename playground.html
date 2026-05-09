@@ -166,13 +166,21 @@
             </div>
           </div>
           <div class="control">
-            <label for="scene-pastilleSpawn">
+            <label>
               Pastille spawn
               <input id="scene-pastilleSpawn-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
-            <output id="scene-pastilleSpawn-value">1.00</output>
-            <input id="scene-pastilleSpawn" type="range" min="0" max="3" step="0.05" value="1.00" disabled>
+            <span class="range-slider-output">
+              <output id="scene-pastilleSpawnMin-value">1.00</output>
+              <span class="arrow">→</span>
+              <output id="scene-pastilleSpawnMax-value">1.00</output>
+            </span>
+            <div class="range-slider" data-disabled="true">
+              <div class="range-slider-track"><div class="range-slider-fill"></div></div>
+              <input id="scene-pastilleSpawnMin" type="range" min="0" max="3" step="0.05" value="1.00" disabled aria-label="Pastille spawn min">
+              <input id="scene-pastilleSpawnMax" type="range" min="0" max="3" step="0.05" value="1.00" disabled aria-label="Pastille spawn max">
+            </div>
           </div>
           <div class="control">
             <label for="scene-rampSpeed">Ramp speed (×)</label>
@@ -181,7 +189,8 @@
           </div>
         </div>
         <div class="actions">
-          <button id="scene-reset" type="button">Reset</button>
+          <button id="scene-preset-natural" type="button">Natural</button>
+          <button id="scene-preset-video" type="button">Video</button>
           <span class="hint">Applied on reseed.</span>
         </div>
       </div>

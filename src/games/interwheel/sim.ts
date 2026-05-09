@@ -252,22 +252,25 @@ export function getMineDifficultyOverride(): DifficultyCurve | null {
   return mineDifficultyOverride;
 }
 
-// Optional override for benchmark/sweep comparisons: when set to a number,
-// `pastilleSpawnChanceAtY` returns that constant value instead of the
-// height-ramp curve. Production gameplay uses null (the curve). Set to 1.0
-// for "uniform max density" sweeps; values > 1 attempt multiple pastilles
-// per y-step so density can exceed the natural cap (useful for short
-// dramatic videos). Reset to null to restore production behavior.
-let pastilleSpawnChanceOverride: number | null = null;
-export function setPastilleSpawnChanceOverride(value: number | null): void {
-  pastilleSpawnChanceOverride = value === null ? null : Math.max(0, value);
+// Pastille spawn density override: same shape as the wheel/mine/water curves.
+// A bare number (legacy callers, study runner) is normalized to a flat
+// {min: v, max: v}. A `DifficultyCurve` lets density vary with the pastille's
+// altitude under the global ramp-speed knob. Values > 1 stack multiple
+// pastilles per y-step in `initPastilles`, so density can exceed the natural
+// cap (useful for short dramatic videos).
+const PASTILLE_SPAWN_CEILING = 3;
+let pastilleSpawnChanceOverride: DifficultyCurve | null = null;
+export function setPastilleSpawnChanceOverride(value: DifficultyCurve | number | null): void {
+  pastilleSpawnChanceOverride = normalizeCurve(value, PASTILLE_SPAWN_CEILING);
 }
-export function getPastilleSpawnChanceOverride(): number | null {
+export function getPastilleSpawnChanceOverride(): DifficultyCurve | null {
   return pastilleSpawnChanceOverride;
 }
 
 export function pastilleSpawnChanceAtY(y: number): number {
-  if (pastilleSpawnChanceOverride !== null) return pastilleSpawnChanceOverride;
+  if (pastilleSpawnChanceOverride !== null) {
+    return curveAtHeight(pastilleSpawnChanceOverride, heightMetersFromY(y), PASTILLE_SPAWN_CEILING);
+  }
   return clamp(heightMetersFromY(y) / PASTILLE_RATE_FULL_HEIGHT_METERS, 0, 1);
 }
 

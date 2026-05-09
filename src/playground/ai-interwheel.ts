@@ -117,32 +117,55 @@ let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
 // Max > Min and speed=1×, the parameter reaches Max at 1600m altitude —
 // matching the natural ramp pace. speed=2× reaches Max in 800m; speed=0
 // keeps the parameter at Min indefinitely.
-const SCENE_DEFAULTS = {
-  waterMarginMeters: 60,
-  waterSpeedMin: 1.00,
-  waterSpeedMax: 1.00,
-  difficultyMin: 0.30,
-  difficultyMax: 0.30,
-  mineDensityMin: 0.30,
-  mineDensityMax: 0.30,
-  pastilleSpawn: 1.00,
-  rampSpeed: 1.00,
+type ScenePreset = {
+  waterMargin: { meters: number; natural: boolean };
+  waterSpeed: { min: number; max: number; natural: boolean };
+  difficulty: { min: number; max: number; natural: boolean };
+  mineDensity: { min: number; max: number; natural: boolean };
+  pastilleSpawn: { min: number; max: number; natural: boolean };
+  rampSpeed: number;
+};
+
+// Preset shape recipes the user can flip between with one click. "natural"
+// puts every parameter back on its production curve (effectively a reset).
+// "video" is the short-clip starting point we converged on while playtesting
+// the Scene panel — water visible from frame 1, all three escalating curves
+// active with modest ramps that produce a real fight in 30–60 seconds
+// without crushing the AI immediately.
+const SCENE_PRESETS: Record<string, ScenePreset> = {
+  natural: {
+    waterMargin: { meters: 60, natural: true },
+    waterSpeed: { min: 1.0, max: 1.0, natural: true },
+    difficulty: { min: 0.30, max: 0.30, natural: true },
+    mineDensity: { min: 0.30, max: 0.30, natural: true },
+    pastilleSpawn: { min: 1.0, max: 1.0, natural: true },
+    rampSpeed: 1.0,
+  },
+  video: {
+    waterMargin: { meters: 0, natural: false },
+    waterSpeed: { min: 3.0, max: 4.0, natural: false },
+    difficulty: { min: 0.2, max: 0.4, natural: false },
+    mineDensity: { min: 0.3, max: 0.6, natural: false },
+    pastilleSpawn: { min: 0.5, max: 0.8, natural: false },
+    rampSpeed: 1.0,
+  },
 };
 const PX_PER_METER = 5;
-let sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
-let sceneWaterMarginNatural = true;
-let sceneWaterSpeedMin = SCENE_DEFAULTS.waterSpeedMin;
-let sceneWaterSpeedMax = SCENE_DEFAULTS.waterSpeedMax;
-let sceneWaterSpeedNatural = true;
-let sceneDifficultyMin = SCENE_DEFAULTS.difficultyMin;
-let sceneDifficultyMax = SCENE_DEFAULTS.difficultyMax;
-let sceneDifficultyNatural = true;
-let sceneMineDensityMin = SCENE_DEFAULTS.mineDensityMin;
-let sceneMineDensityMax = SCENE_DEFAULTS.mineDensityMax;
-let sceneMineDensityNatural = true;
-let scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
-let scenePastilleSpawnNatural = true;
-let sceneRampSpeed = SCENE_DEFAULTS.rampSpeed;
+let sceneWaterMarginMeters = SCENE_PRESETS.natural.waterMargin.meters;
+let sceneWaterMarginNatural = SCENE_PRESETS.natural.waterMargin.natural;
+let sceneWaterSpeedMin = SCENE_PRESETS.natural.waterSpeed.min;
+let sceneWaterSpeedMax = SCENE_PRESETS.natural.waterSpeed.max;
+let sceneWaterSpeedNatural = SCENE_PRESETS.natural.waterSpeed.natural;
+let sceneDifficultyMin = SCENE_PRESETS.natural.difficulty.min;
+let sceneDifficultyMax = SCENE_PRESETS.natural.difficulty.max;
+let sceneDifficultyNatural = SCENE_PRESETS.natural.difficulty.natural;
+let sceneMineDensityMin = SCENE_PRESETS.natural.mineDensity.min;
+let sceneMineDensityMax = SCENE_PRESETS.natural.mineDensity.max;
+let sceneMineDensityNatural = SCENE_PRESETS.natural.mineDensity.natural;
+let scenePastilleSpawnMin = SCENE_PRESETS.natural.pastilleSpawn.min;
+let scenePastilleSpawnMax = SCENE_PRESETS.natural.pastilleSpawn.max;
+let scenePastilleSpawnNatural = SCENE_PRESETS.natural.pastilleSpawn.natural;
+let sceneRampSpeed = SCENE_PRESETS.natural.rampSpeed;
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -254,10 +277,13 @@ const sceneRampSpeedInput = document.getElementById('scene-rampSpeed') as HTMLIn
 const sceneRampSpeedOutput = document.getElementById('scene-rampSpeed-value') as HTMLOutputElement | null;
 const sceneDifficultyNaturalInput = document.getElementById('scene-difficulty-natural') as HTMLInputElement | null;
 const sceneMineDensityNaturalInput = document.getElementById('scene-mineDensity-natural') as HTMLInputElement | null;
-const scenePastilleSpawnInput = document.getElementById('scene-pastilleSpawn') as HTMLInputElement | null;
-const scenePastilleSpawnOutput = document.getElementById('scene-pastilleSpawn-value') as HTMLOutputElement | null;
+const scenePastilleSpawnMinInput = document.getElementById('scene-pastilleSpawnMin') as HTMLInputElement | null;
+const scenePastilleSpawnMinOutput = document.getElementById('scene-pastilleSpawnMin-value') as HTMLOutputElement | null;
+const scenePastilleSpawnMaxInput = document.getElementById('scene-pastilleSpawnMax') as HTMLInputElement | null;
+const scenePastilleSpawnMaxOutput = document.getElementById('scene-pastilleSpawnMax-value') as HTMLOutputElement | null;
 const scenePastilleSpawnNaturalInput = document.getElementById('scene-pastilleSpawn-natural') as HTMLInputElement | null;
-const sceneReset = document.getElementById('scene-reset') as HTMLButtonElement | null;
+const scenePresetNaturalButton = document.getElementById('scene-preset-natural') as HTMLButtonElement | null;
+const scenePresetVideoButton = document.getElementById('scene-preset-video') as HTMLButtonElement | null;
 
 function syncSlider(
   input: HTMLInputElement | null,
@@ -321,13 +347,18 @@ function syncSceneControls(): void {
   );
   if (sceneMineDensityNaturalInput) sceneMineDensityNaturalInput.checked = sceneMineDensityNatural;
 
-  syncSlider(scenePastilleSpawnInput, scenePastilleSpawnOutput, scenePastilleSpawn, scenePastilleSpawnNatural);
+  syncSlider(scenePastilleSpawnMinInput, scenePastilleSpawnMinOutput, scenePastilleSpawnMin, scenePastilleSpawnNatural);
+  syncSlider(scenePastilleSpawnMaxInput, scenePastilleSpawnMaxOutput, scenePastilleSpawnMax, scenePastilleSpawnNatural);
+  syncRangeSliderFill(
+    scenePastilleSpawnMinInput?.closest<HTMLElement>('.range-slider') ?? null,
+    scenePastilleSpawnMin, scenePastilleSpawnMax, scenePastilleSpawnNatural,
+  );
   if (scenePastilleSpawnNaturalInput) scenePastilleSpawnNaturalInput.checked = scenePastilleSpawnNatural;
 
   // Global ramp speed is dimmed only when none of the curve sliders are
   // active; if at least one parameter has an override, the ramp speed
   // matters.
-  const anyCurveActive = !sceneWaterSpeedNatural || !sceneDifficultyNatural || !sceneMineDensityNatural;
+  const anyCurveActive = !sceneWaterSpeedNatural || !sceneDifficultyNatural || !sceneMineDensityNatural || !scenePastilleSpawnNatural;
   syncSlider(sceneRampSpeedInput, sceneRampSpeedOutput, sceneRampSpeed, !anyCurveActive);
 }
 
@@ -338,11 +369,11 @@ function applySceneOverridesToSim(): void {
   setWaterSpeedMultiplierOverride(sceneWaterSpeedNatural ? null : { min: sceneWaterSpeedMin, max: sceneWaterSpeedMax });
   setGenerationDifficultyOverride(sceneDifficultyNatural ? null : { min: sceneDifficultyMin, max: sceneDifficultyMax });
   setMineDifficultyOverride(sceneMineDensityNatural ? null : { min: sceneMineDensityMin, max: sceneMineDensityMax });
-  setPastilleSpawnChanceOverride(scenePastilleSpawnNatural ? null : scenePastilleSpawn);
+  setPastilleSpawnChanceOverride(scenePastilleSpawnNatural ? null : { min: scenePastilleSpawnMin, max: scenePastilleSpawnMax });
   // Ramp speed only matters when at least one curve override is active. If
   // every curve is in natural mode, the override has no effect, but we set
   // it anyway for consistency with the user's panel state.
-  const anyCurveActive = !sceneWaterSpeedNatural || !sceneDifficultyNatural || !sceneMineDensityNatural;
+  const anyCurveActive = !sceneWaterSpeedNatural || !sceneDifficultyNatural || !sceneMineDensityNatural || !scenePastilleSpawnNatural;
   setRampSpeedOverride(anyCurveActive ? sceneRampSpeed : null);
 }
 
@@ -400,28 +431,45 @@ function setupSceneControls(): void {
   }, { min: 0, max: 2 });
   bindToggle(sceneMineDensityNaturalInput, (v) => { sceneMineDensityNatural = v; });
 
-  bindSliderInput(scenePastilleSpawnInput, (v) => { scenePastilleSpawn = v; }, { min: 0, max: 3 });
+  bindSliderInput(scenePastilleSpawnMinInput, (v) => {
+    scenePastilleSpawnMin = v;
+    if (scenePastilleSpawnMin > scenePastilleSpawnMax) scenePastilleSpawnMax = scenePastilleSpawnMin;
+  }, { min: 0, max: 3 });
+  bindSliderInput(scenePastilleSpawnMaxInput, (v) => {
+    scenePastilleSpawnMax = v;
+    if (scenePastilleSpawnMax < scenePastilleSpawnMin) scenePastilleSpawnMin = scenePastilleSpawnMax;
+  }, { min: 0, max: 3 });
   bindToggle(scenePastilleSpawnNaturalInput, (v) => { scenePastilleSpawnNatural = v; });
 
   bindSliderInput(sceneRampSpeedInput, (v) => { sceneRampSpeed = v; }, { min: 0, max: 5 });
 
-  sceneReset?.addEventListener('click', () => {
-    sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
-    sceneWaterMarginNatural = true;
-    sceneWaterSpeedMin = SCENE_DEFAULTS.waterSpeedMin;
-    sceneWaterSpeedMax = SCENE_DEFAULTS.waterSpeedMax;
-    sceneWaterSpeedNatural = true;
-    sceneDifficultyMin = SCENE_DEFAULTS.difficultyMin;
-    sceneDifficultyMax = SCENE_DEFAULTS.difficultyMax;
-    sceneDifficultyNatural = true;
-    sceneMineDensityMin = SCENE_DEFAULTS.mineDensityMin;
-    sceneMineDensityMax = SCENE_DEFAULTS.mineDensityMax;
-    sceneMineDensityNatural = true;
-    scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
-    scenePastilleSpawnNatural = true;
-    sceneRampSpeed = SCENE_DEFAULTS.rampSpeed;
-    syncSceneControls();
-  });
+  scenePresetNaturalButton?.addEventListener('click', () => applyScenePreset('natural'));
+  scenePresetVideoButton?.addEventListener('click', () => applyScenePreset('video'));
+  syncSceneControls();
+}
+
+// One-click preset application. Writes every Scene panel state variable from
+// the named preset's recipe so the slider positions and natural toggles
+// reflect the preset; subsequent reseed picks them up via
+// applySceneOverridesToSim().
+function applyScenePreset(name: keyof typeof SCENE_PRESETS): void {
+  const preset = SCENE_PRESETS[name];
+  if (!preset) return;
+  sceneWaterMarginMeters = preset.waterMargin.meters;
+  sceneWaterMarginNatural = preset.waterMargin.natural;
+  sceneWaterSpeedMin = preset.waterSpeed.min;
+  sceneWaterSpeedMax = preset.waterSpeed.max;
+  sceneWaterSpeedNatural = preset.waterSpeed.natural;
+  sceneDifficultyMin = preset.difficulty.min;
+  sceneDifficultyMax = preset.difficulty.max;
+  sceneDifficultyNatural = preset.difficulty.natural;
+  sceneMineDensityMin = preset.mineDensity.min;
+  sceneMineDensityMax = preset.mineDensity.max;
+  sceneMineDensityNatural = preset.mineDensity.natural;
+  scenePastilleSpawnMin = preset.pastilleSpawn.min;
+  scenePastilleSpawnMax = preset.pastilleSpawn.max;
+  scenePastilleSpawnNatural = preset.pastilleSpawn.natural;
+  sceneRampSpeed = preset.rampSpeed;
   syncSceneControls();
 }
 
