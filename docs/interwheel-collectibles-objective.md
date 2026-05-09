@@ -92,8 +92,8 @@ Manual repro:
    Collectibles: 1.00
    Wall routes:  0.65
    Pace:         1.00
-   Lookahead:    0.50
-   Search jumps: 4
+   Lookahead:    0
+   Search jumps: 3
    Edge budget:  360
    CPU budget:   5ms
    ```

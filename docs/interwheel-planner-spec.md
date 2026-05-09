@@ -88,11 +88,31 @@ Metric parameters are not policy knobs. The current defaults are:
   climbWaitCost: 0,
   wallLandingBonus: 300,
   wallTickBonus: 5,
+  climbPhantomWheelEnabled: true,
 }
 ```
 
 The study tooling can sweep these metric parameters separately from policy
 coefficients.
+
+## Phantom Wheel
+
+A virtual mid-size wheel is injected into the perceived snapshot every plan
+tick, sitting `0.25` screens above the planner's reveal cone in the middle
+horizontally. The search's scratch sim treats it as a real landing target:
+existing `stability` and `pathApex` reward whatever plan reaches it, and
+`climbTickCost=3` still selects the fastest route there. Live game wheels
+are unchanged — the phantom is per-plan only, anchored to the root `mapY`
+so it stays stable across the whole search.
+
+The phantom encodes "go up" as a planner principle that doesn't depend on
+perceiving an actual wheel above the viewport. It eliminates the
+catastrophic wall-loop failure mode at low `revealScreensAbove`, and the
+new live defaults (`revealScreensAbove=0`, `maxStableDepth=3`,
+`climbPhantomWheelEnabled=true`) outperform the older 0.5/4 perception+
+search defaults at climb-only by mean ≈ 2620 / p10 ≈ 2540 (vs the historical
+~2430 / ~2370 in the table above) — at less perception. Disable for studies
+via `--metric-param.climbPhantomWheelEnabled=false`.
 
 ## Climb Efficiency Validation
 

@@ -33,8 +33,8 @@ below. The playground exposes lookahead, search depth, rollout budget, and CPU
 budget because these limits directly shape which leaves exist.
 
 The overlay renders at most one generation fewer than the search depth. At the
-default 4 searched jumps, fourth-generation futures can affect support, but the
-visible decision space stops at generation 3.
+default 3 searched jumps, third-generation futures can affect support, but the
+visible decision space stops at generation 2.
 
 ## Path Scoring
 

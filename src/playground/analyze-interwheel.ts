@@ -46,7 +46,7 @@ const stage = document.getElementById('hidden-stage') as HTMLDivElement;
 const ANALYTICS_PLANNER_CONFIG = {
   budgetMs: 5,
   maxEdgeRollouts: 360,
-  maxStableDepth: 4,
+  maxStableDepth: 3,
   collectSegments: false,
 } satisfies PlannerConfig;
 const DETERMINISTIC_PLANNER_CONFIG = {

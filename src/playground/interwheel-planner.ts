@@ -396,15 +396,22 @@ export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
   climbPhantomWheelEnabled: CLIMB_PHANTOM_WHEEL_ENABLED_DEFAULT,
 };
 
+// Live defaults shape the planner toward "go up" using the phantom-wheel
+// attractor + time-cost urgency only: no perception of wheels above the
+// viewport (revealScreensAbove=0) and a shallow search horizon
+// (maxStableDepth=3). Together with `climbPhantomWheelEnabled=true` and
+// `climbTickCost=3` they give h/min ≈ 2620 / p10 ≈ 2540 climb-only at the
+// default operating point — beating the older lookahead=0.5/jumps=4
+// baseline at less perception. Studies override per preset/CLI as needed.
 export const PLANNER_PERCEPTION_DEFAULTS = {
-  revealScreensAbove: 0.5,
+  revealScreensAbove: 0,
   memoryScreensBelow: 2,
 };
 
 export const PLANNER_SEARCH_DEFAULTS = {
   budgetMs: 5,
   maxEdgeRollouts: 360,
-  maxStableDepth: 4,
+  maxStableDepth: 3,
 };
 
 export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): PlannerPolicy {
