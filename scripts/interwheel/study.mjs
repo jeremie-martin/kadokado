@@ -1,10 +1,9 @@
 #!/usr/bin/env node
-// Systematic Interwheel policy study.
+// Canonical Interwheel study runner.
 //
-// This replaces ad hoc "sweep" scripts as the current entrypoint. A study can
-// include policy-mix responsiveness (how a non-climb metric combines with
-// climb) and metric-parameter responsiveness (how constants inside a metric
-// shape behavior). The report treats response curves as first-class output.
+// A study is a reproducible corpus run over the trusted pure simulator. It can
+// sweep policy weights and metric parameters, while keeping difficulty and
+// pastille spawn fixed by default for apples-to-apples comparisons.
 
 import { createServer } from 'vite';
 import { chromium } from '@playwright/test';
@@ -16,33 +15,121 @@ const DEFAULT_POLICY = { climb: 1, wall: 0.5 };
 const CLIMB_ONLY = { climb: 1, wall: 0 };
 const DEFAULT_METRIC_PARAMS = { wallLandingBonus: 300, wallTickBonus: 5 };
 
+const PRESETS = {
+  smoke: {
+    description: 'wiring check only',
+    trials: 1,
+    maxSeconds: 0.1,
+    concurrency: 1,
+    valueSet: 'smoke',
+    parityTrials: 1,
+    paritySeconds: 5,
+  },
+  quick: {
+    description: 'fast directional read',
+    trials: 4,
+    maxSeconds: 30,
+    concurrency: 4,
+    valueSet: 'quick',
+    parityTrials: 2,
+    paritySeconds: 30,
+  },
+  standard: {
+    description: 'default comparison run',
+    trials: 16,
+    maxSeconds: 120,
+    concurrency: 12,
+    valueSet: 'standard',
+    parityTrials: 3,
+    paritySeconds: 30,
+  },
+  overnight: {
+    description: 'larger corpus for final tuning',
+    trials: 40,
+    maxSeconds: 180,
+    concurrency: 12,
+    valueSet: 'standard',
+    parityTrials: 5,
+    paritySeconds: 30,
+  },
+};
+
+const METRICS = {
+  wall: {
+    label: 'Wall',
+    policyKey: 'wall',
+    defaultWeight: DEFAULT_POLICY.wall,
+    mixPolicyWeight: 1,
+    coefficientValues: {
+      smoke: [0, 0.5, 1],
+      quick: [0, 0.5, 0.9, 1.3, 2],
+      standard: [0, 0.1, 0.2, 0.35, 0.5, 0.7, 0.9, 1.1, 1.3, 1.6, 2.0],
+    },
+    params: [
+      {
+        key: 'wallLandingBonus',
+        values: {
+          smoke: [0, 300],
+          quick: [0, 150, 300, 600],
+          standard: [0, 75, 150, 225, 300, 450, 600],
+        },
+      },
+      {
+        key: 'wallTickBonus',
+        values: {
+          smoke: [0, 5],
+          quick: [0, 2, 5, 12],
+          standard: [0, 1, 2, 3.5, 5, 8, 12],
+        },
+      },
+    ],
+    responseMetrics: [
+      'wallJumpsPerMin',
+      'wallPercent',
+      'height',
+      'runClimbMetersPerSec',
+      'died',
+      'captureRate',
+    ],
+    steerField: 'spreadRangeWall',
+  },
+};
+
 function parseArgs(argv) {
   const args = {
+    preset: 'standard',
+    suite: 'all',
+    metric: 'all',
     trials: null,
     seedBase: 4200,
-    maxTicks: 4800,
-    concurrency: 12,
+    maxSeconds: null,
+    concurrency: null,
     budgetMs: 5,
     outDir: null,
-    quick: false,
-    smoke: false,
-    help: false,
-    study: 'all',
+    parity: false,
+    parityTrials: null,
+    paritySeconds: null,
     pastilleSpawnChance: 1.0,
     difficulty: 0.3,
+    help: false,
   };
+
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
-    else if (raw === '--quick') args.quick = true;
-    else if (raw === '--smoke') args.smoke = true;
-    else if (raw.startsWith('--study=')) args.study = raw.slice('--study='.length);
+    else if (raw === '--parity') args.parity = true;
+    else if (raw.startsWith('--preset=')) args.preset = raw.slice('--preset='.length);
+    else if (raw.startsWith('--suite=')) args.suite = raw.slice('--suite='.length);
+    else if (raw.startsWith('--metric=')) args.metric = raw.slice('--metric='.length);
     else if (raw.startsWith('--trials=')) args.trials = Number(raw.slice('--trials='.length));
     else if (raw.startsWith('--seed=')) args.seedBase = Number(raw.slice('--seed='.length));
-    else if (raw.startsWith('--max-ticks=')) args.maxTicks = Number(raw.slice('--max-ticks='.length));
-    else if (raw.startsWith('--max-seconds=')) args.maxTicks = Math.ceil(Number(raw.slice('--max-seconds='.length)) * GAME_FPS);
+    else if (raw.startsWith('--seconds=')) args.maxSeconds = Number(raw.slice('--seconds='.length));
+    else if (raw.startsWith('--max-seconds=')) args.maxSeconds = Number(raw.slice('--max-seconds='.length));
+    else if (raw.startsWith('--max-ticks=')) args.maxSeconds = Number(raw.slice('--max-ticks='.length)) / GAME_FPS;
     else if (raw.startsWith('--concurrency=')) args.concurrency = Number(raw.slice('--concurrency='.length));
     else if (raw.startsWith('--budget-ms=')) args.budgetMs = Number(raw.slice('--budget-ms='.length));
     else if (raw.startsWith('--out=')) args.outDir = raw.slice('--out='.length);
+    else if (raw.startsWith('--parity-trials=')) args.parityTrials = Number(raw.slice('--parity-trials='.length));
+    else if (raw.startsWith('--parity-seconds=')) args.paritySeconds = Number(raw.slice('--parity-seconds='.length));
     else if (raw === '--pastille-spawn=natural') args.pastilleSpawnChance = null;
     else if (raw.startsWith('--pastille-spawn=')) args.pastilleSpawnChance = Number(raw.slice('--pastille-spawn='.length));
     else if (raw === '--difficulty=natural') args.difficulty = null;
@@ -52,25 +139,52 @@ function parseArgs(argv) {
       args.help = true;
     }
   }
-  if (!['all', 'responsiveness', 'metric-params'].includes(args.study)) args.help = true;
-  if (args.trials === null) args.trials = args.smoke ? 2 : (args.quick ? 4 : 16);
+
+  if (!PRESETS[args.preset]) args.help = true;
+  if (!['all', 'responsiveness', 'params'].includes(args.suite)) args.help = true;
+  if (args.metric !== 'all' && !METRICS[args.metric]) args.help = true;
+
+  const preset = PRESETS[args.preset] ?? PRESETS.standard;
+  args.trials ??= preset.trials;
+  args.maxSeconds ??= preset.maxSeconds;
+  args.concurrency ??= preset.concurrency;
+  args.parityTrials ??= preset.parityTrials;
+  args.paritySeconds ??= preset.paritySeconds;
+  args.maxTicks = Math.max(1, Math.ceil(args.maxSeconds * GAME_FPS));
+  args.parityTicks = Math.max(1, Math.ceil(args.paritySeconds * GAME_FPS));
+  args.valueSet = preset.valueSet;
   return args;
 }
 
 function help() {
-  console.log(`Interwheel policy study
+  const presets = Object.entries(PRESETS)
+    .map(([name, p]) => `  ${name.padEnd(9)} ${p.trials} trials, ${p.maxSeconds}s, ${p.description}`)
+    .join('\n');
+  const metrics = Object.keys(METRICS).join(', ');
+  console.log(`Interwheel study
 
 USAGE:
-  npm run analyze:interwheel:policies -- --trials=16 --max-seconds=120
-  node scripts/interwheel/study-policy.mjs --study=responsiveness --quick
-  node scripts/interwheel/study-policy.mjs --study=metric-params --trials=8
+  npm run analyze:interwheel:study -- --preset=quick
+  npm run analyze:interwheel:study -- --suite=responsiveness --metric=wall
+  npm run analyze:interwheel:study -- --suite=params --metric=wall --preset=standard
+  npm run analyze:interwheel:study -- --preset=quick --parity
 
-Studies:
-  responsiveness  policy coefficient response, always mixed with climb
-  metric-params   constants inside a metric, with policy mix held fixed
-  all             both studies
+Presets:
+${presets}
 
-Outputs raw.json, summary.json, and report.md under .tmp/interwheel-policy-studies/<timestamp>/.
+Suites:
+  responsiveness  sweep policy weights, always mixed with climb
+  params          sweep constants inside a metric with the policy mix fixed
+  all             both suites
+
+Metrics:
+  ${metrics}
+
+Defaults fix pastille spawn to 1.0 and generation difficulty to 0.3.
+Use --pastille-spawn=natural or --difficulty=natural to disable an override.
+Parity is opt-in with --parity.
+
+Outputs raw.json, summary.json, and report.md under .tmp/interwheel-studies/<timestamp>/.
 `);
 }
 
@@ -78,18 +192,23 @@ function timestamp() {
   return new Date().toISOString().replace(/[:.]/g, '-');
 }
 
-function wallDoses(smoke) {
-  return smoke
-    ? [0, 0.5, 1]
-    : [0, 0.1, 0.2, 0.35, 0.5, 0.7, 0.9, 1.1, 1.3, 1.6, 2.0];
+function selectedMetrics(args) {
+  if (args.metric === 'all') return Object.entries(METRICS);
+  return [[args.metric, METRICS[args.metric]]];
+}
+
+function valuesFor(valueSets, args) {
+  return valueSets[args.valueSet] ?? valueSets.standard;
 }
 
 function makeConditions(args) {
-  const includeResponsiveness = args.study === 'all' || args.study === 'responsiveness';
-  const includeMetricParams = args.study === 'all' || args.study === 'metric-params';
+  const includeResponsiveness = args.suite === 'all' || args.suite === 'responsiveness';
+  const includeParams = args.suite === 'all' || args.suite === 'params';
   const conditions = [
     {
       group: 'reference',
+      suite: 'reference',
+      metric: null,
       name: 'climb-only',
       axis: 'reference',
       value: 0,
@@ -98,6 +217,8 @@ function makeConditions(args) {
     },
     {
       group: 'reference',
+      suite: 'reference',
+      metric: null,
       name: 'default-current',
       axis: 'reference',
       value: 0.5,
@@ -106,41 +227,37 @@ function makeConditions(args) {
     },
   ];
 
-  if (includeResponsiveness) {
-    for (const value of wallDoses(args.smoke)) {
-      conditions.push({
-        group: 'mix:wall',
-        name: `wall=${value}`,
-        axis: 'wall',
-        value,
-        policy: { ...CLIMB_ONLY, wall: value },
-        metricParams: { ...DEFAULT_METRIC_PARAMS },
-      });
+  for (const [metricName, metric] of selectedMetrics(args)) {
+    if (includeResponsiveness) {
+      for (const value of valuesFor(metric.coefficientValues, args)) {
+        conditions.push({
+          group: `mix:${metricName}`,
+          suite: 'responsiveness',
+          metric: metricName,
+          name: `${metric.policyKey}=${value}`,
+          axis: metric.policyKey,
+          value,
+          policy: { ...CLIMB_ONLY, [metric.policyKey]: value },
+          metricParams: { ...DEFAULT_METRIC_PARAMS },
+        });
+      }
     }
-  }
 
-  if (includeMetricParams) {
-    const landingValues = args.smoke ? [0, 300] : [0, 75, 150, 225, 300, 450, 600];
-    const tickValues = args.smoke ? [0, 5] : [0, 1, 2, 3.5, 5, 8, 12];
-    for (const value of landingValues) {
-      conditions.push({
-        group: 'param:wallLandingBonus',
-        name: `wallLandingBonus=${value}`,
-        axis: 'wallLandingBonus',
-        value,
-        policy: { ...CLIMB_ONLY, wall: 1 },
-        metricParams: { ...DEFAULT_METRIC_PARAMS, wallLandingBonus: value },
-      });
-    }
-    for (const value of tickValues) {
-      conditions.push({
-        group: 'param:wallTickBonus',
-        name: `wallTickBonus=${value}`,
-        axis: 'wallTickBonus',
-        value,
-        policy: { ...CLIMB_ONLY, wall: 1 },
-        metricParams: { ...DEFAULT_METRIC_PARAMS, wallTickBonus: value },
-      });
+    if (includeParams) {
+      for (const param of metric.params) {
+        for (const value of valuesFor(param.values, args)) {
+          conditions.push({
+            group: `param:${metricName}:${param.key}`,
+            suite: 'params',
+            metric: metricName,
+            name: `${param.key}=${value}`,
+            axis: param.key,
+            value,
+            policy: { ...CLIMB_ONLY, [metric.policyKey]: metric.mixPolicyWeight },
+            metricParams: { ...DEFAULT_METRIC_PARAMS, [param.key]: value },
+          });
+        }
+      }
     }
   }
 
@@ -169,6 +286,44 @@ async function openPage(browser, url) {
   await page.goto(url);
   await page.waitForFunction(() => Boolean(window.__interwheelAnalytics__), null, { timeout: 30_000 });
   return page;
+}
+
+async function runParity(browser, url, args) {
+  const page = await openPage(browser, url);
+  try {
+    const result = await page.evaluate(async ({ trials, seedBase, maxTicks, policy, pastilleSpawnChance, difficulty }) => {
+      if (pastilleSpawnChance !== null) {
+        window.__interwheelAnalytics__.setPastilleSpawnChanceOverride(pastilleSpawnChance);
+      }
+      if (difficulty !== null) {
+        window.__interwheelAnalytics__.setGenerationDifficultyOverride(difficulty);
+      }
+      return await window.__interwheelAnalytics__.comparePurePlannerCorpus({
+        trials,
+        seedBase,
+        maxTicks,
+        policy,
+      });
+    }, {
+      trials: args.parityTrials,
+      seedBase: args.seedBase,
+      maxTicks: args.parityTicks,
+      policy: DEFAULT_POLICY,
+      pastilleSpawnChance: args.pastilleSpawnChance,
+      difficulty: args.difficulty,
+    });
+    return {
+      enabled: true,
+      kind: 'pure-planner-corpus',
+      trials: args.parityTrials,
+      maxTicks: args.parityTicks,
+      seedBase: args.seedBase,
+      equal: Boolean(result.equal),
+      firstFailure: result.firstFailure ?? null,
+    };
+  } finally {
+    await page.close();
+  }
 }
 
 async function runCondition(browser, url, condition, args) {
@@ -282,6 +437,8 @@ function summarizeCondition(condition) {
   for (const field of fields) metrics[field] = stats(condition.trials.map((trial) => trial[field] ?? 0));
   return {
     group: condition.group,
+    suite: condition.suite,
+    metric: condition.metric,
     name: condition.name,
     axis: condition.axis,
     value: condition.value,
@@ -295,7 +452,7 @@ function summarizeCondition(condition) {
 
 function linearFit(points) {
   const clean = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
-  if (clean.length < 2) return { slope: 0, intercept: 0, r2: 0, maxStep: 0 };
+  if (clean.length < 2) return { slope: 0, intercept: 0, r2: 0, maxStep: 0, range: 0, shape: 'insufficient' };
   const xMean = clean.reduce((sum, point) => sum + point.x, 0) / clean.length;
   const yMean = clean.reduce((sum, point) => sum + point.y, 0) / clean.length;
   const denom = clean.reduce((sum, point) => sum + (point.x - xMean) ** 2, 0);
@@ -306,19 +463,44 @@ function linearFit(points) {
   const r2 = ssTot === 0 ? 1 : Math.max(0, 1 - ssErr / ssTot);
   const sorted = clean.slice().sort((a, b) => a.x - b.x);
   let maxStep = 0;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of sorted) {
+    minY = Math.min(minY, point.y);
+    maxY = Math.max(maxY, point.y);
+  }
   for (let i = 1; i < sorted.length; i += 1) {
     maxStep = Math.max(maxStep, Math.abs(sorted[i].y - sorted[i - 1].y));
   }
-  return { slope, intercept, r2, maxStep };
+  const range = maxY - minY;
+  const tolerance = Math.max(Math.abs(range) * 0.05, 1e-9);
+  let leadingFlatSteps = 0;
+  for (let i = 1; i < sorted.length; i += 1) {
+    if (Math.abs(sorted[i].y - sorted[0].y) <= tolerance) leadingFlatSteps += 1;
+    else break;
+  }
+  const maxStepRatio = range > 0 ? maxStep / range : 0;
+  let shape = 'near-linear';
+  if (range <= 1e-9) shape = 'flat';
+  else if (leadingFlatSteps >= 2) shape = 'dead-zone';
+  else if (maxStepRatio >= 0.5) shape = 'jumpy';
+  else if (r2 < 0.85) shape = 'nonlinear';
+  return { slope, intercept, r2, maxStep, range, leadingFlatSteps, shape };
 }
 
 function responsiveness(summaries) {
   const out = {};
-  for (const group of [...new Set(summaries.map((summary) => summary.group).filter((group) => group.includes(':')))]) {
+  const groups = [...new Set(summaries.map((summary) => summary.group).filter((group) => group.includes(':')))];
+  for (const group of groups) {
     const rows = summaries.filter((summary) => summary.group === group).sort((a, b) => a.value - b.value);
+    const metric = METRICS[rows[0]?.metric] ?? null;
+    const responseMetrics = metric?.responseMetrics ?? ['height', 'runClimbMetersPerSec', 'died', 'captureRate'];
     out[group] = {};
-    for (const metric of ['wallJumpsPerMin', 'wallPercent', 'height', 'runClimbMetersPerSec', 'died', 'captureRate']) {
-      out[group][metric] = linearFit(rows.map((row) => ({ x: row.value, y: row.metrics[metric].mean })));
+    for (const responseMetric of responseMetrics) {
+      out[group][responseMetric] = linearFit(rows.map((row) => ({
+        x: row.value,
+        y: row.metrics[responseMetric].mean,
+      })));
     }
   }
   return out;
@@ -335,14 +517,17 @@ function fmt(value, digits = 1) {
 
 function reportMarkdown(summary) {
   const lines = [
-    '# Interwheel Policy Study',
+    '# Interwheel Study',
     '',
+    `- preset: ${summary.meta.preset}`,
+    `- suite: ${summary.meta.suite}`,
+    `- metrics: ${summary.meta.metrics.join(', ')}`,
     `- trials per condition: ${summary.meta.trials}`,
     `- max seconds: ${fmt(summary.meta.maxTicks / GAME_FPS, 1)}`,
     `- seed base: ${summary.meta.seedBase}`,
-    `- study: ${summary.meta.study}`,
     `- pastille spawn: ${summary.meta.pastilleSpawnChance ?? 'natural'}`,
     `- difficulty: ${summary.meta.difficulty ?? 'natural'}`,
+    `- parity: ${summary.meta.parity.enabled ? (summary.meta.parity.equal ? 'passed' : 'failed') : 'not run'}`,
     `- wall seconds: ${fmt(summary.meta.wallSeconds, 1)}`,
     '',
     '## Headline',
@@ -364,14 +549,14 @@ function reportMarkdown(summary) {
   }
 
   lines.push('', '## Responsiveness', '');
-  lines.push('R2 close to 1 means the response is close to linear over the sampled range; maxStep is the largest adjacent jump in the response curve.', '');
+  lines.push('Shape is a compact warning label for the response curve: flat, dead-zone, jumpy, nonlinear, or near-linear.', '');
 
   for (const [group, metrics] of Object.entries(summary.responsiveness)) {
     lines.push(`### ${group}`, '');
-    lines.push('| response | slope | r2 | maxStep |');
-    lines.push('| --- | ---: | ---: | ---: |');
+    lines.push('| response | shape | slope | r2 | maxStep | range |');
+    lines.push('| --- | --- | ---: | ---: | ---: | ---: |');
     for (const [metric, fit] of Object.entries(metrics)) {
-      lines.push(`| ${metric} | ${fmt(fit.slope, 3)} | ${fmt(fit.r2, 3)} | ${fmt(fit.maxStep, 2)} |`);
+      lines.push(`| ${metric} | ${fit.shape} | ${fmt(fit.slope, 3)} | ${fmt(fit.r2, 3)} | ${fmt(fit.maxStep, 2)} | ${fmt(fit.range, 2)} |`);
     }
     lines.push('');
   }
@@ -387,6 +572,24 @@ function metricLabel(metricParams) {
   return Object.entries(metricParams).map(([key, value]) => `${key}=${value}`).join(',');
 }
 
+function printConditionSummary(result) {
+  const m = summarizeCondition(result).metrics;
+  console.log(
+    `  h=${m.height.mean.toFixed(1)}m run=${m.runClimbMetersPerSec.mean.toFixed(2)}m/s ` +
+    `wallJ=${m.wallJumpsPerMin.mean.toFixed(1)}/min wall=${m.wallPercent.mean.toFixed(1)}% ` +
+    `capture=${(m.captureRate.mean * 100).toFixed(1)}% died=${(m.died.mean * 100).toFixed(0)}%`,
+  );
+}
+
+function printResponsiveness(summary) {
+  for (const [group, metrics] of Object.entries(summary.responsiveness)) {
+    const compact = Object.entries(metrics)
+      .map(([metric, fit]) => `${metric}:${fit.shape},r2=${fit.r2.toFixed(2)},step=${fit.maxStep.toFixed(1)}`)
+      .join('  ');
+    console.log(`${group}  ${compact}`);
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
@@ -394,7 +597,7 @@ async function main() {
     process.exit(0);
   }
   const conditions = makeConditions(args);
-  const outDir = args.outDir ?? join('.tmp', 'interwheel-policy-studies', timestamp());
+  const outDir = args.outDir ?? join('.tmp', 'interwheel-studies', timestamp());
   await mkdir(outDir, { recursive: true });
 
   const server = await createServer({
@@ -411,21 +614,29 @@ async function main() {
   const started = performance.now();
 
   try {
+    let parity = { enabled: false };
+    if (args.parity) {
+      console.log(`parity: ${args.parityTrials} trials, ${args.paritySeconds}s`);
+      parity = await runParity(browser, url, args);
+      console.log(`  ${parity.equal ? 'passed' : 'failed'}`);
+      if (!parity.equal) {
+        throw new Error('pure planner parity failed; rerun without --parity only if you intentionally want to ignore it');
+      }
+    }
+
     const raw = [];
     for (let i = 0; i < conditions.length; i += 1) {
       const condition = conditions[i];
-      console.log(`[${i + 1}/${conditions.length}] ${condition.name}`);
+      console.log(`[${i + 1}/${conditions.length}] ${condition.group} ${condition.name}`);
       const result = await runCondition(browser, url, condition, args);
       raw.push(result);
-      const m = summarizeCondition(result).metrics;
-      console.log(
-        `  h=${m.height.mean.toFixed(1)}m run=${m.runClimbMetersPerSec.mean.toFixed(2)}m/s ` +
-        `wallJ=${m.wallJumpsPerMin.mean.toFixed(1)}/min died=${(m.died.mean * 100).toFixed(0)}%`,
-      );
+      printConditionSummary(result);
     }
 
     const meta = {
-      study: args.study,
+      preset: args.preset,
+      suite: args.suite,
+      metrics: selectedMetrics(args).map(([name]) => name),
       trials: args.trials,
       seedBase: args.seedBase,
       maxTicks: args.maxTicks,
@@ -434,12 +645,14 @@ async function main() {
       pastilleSpawnChance: args.pastilleSpawnChance,
       difficulty: args.difficulty,
       conditions: conditions.length,
+      parity,
       wallSeconds: (performance.now() - started) / 1000,
     };
     const summary = summarize(raw, meta);
     await writeFile(join(outDir, 'raw.json'), JSON.stringify(raw, null, 2));
     await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
     await writeFile(join(outDir, 'report.md'), reportMarkdown(summary));
+    printResponsiveness(summary);
     console.log(JSON.stringify({ outDir, ...meta }, null, 2));
   } finally {
     await browser.close();

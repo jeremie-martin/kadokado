@@ -19,7 +19,6 @@ import {
   type PlannerPolicy,
   type PlannerStats,
 } from './interwheel-planner';
-import { formatInspectionMarkdown, type InspectionRecord } from './plan-inspector';
 
 // Faithful headless analytics harness.
 //
@@ -1611,63 +1610,6 @@ async function parityCheck(maxTicks = 24_000): Promise<{
   return { headless, full, equal, firstDivergence };
 }
 
-type InspectPlanOpts = {
-  seed?: number | null;
-  targetTick: number;
-  policy?: Partial<PlannerPolicy>;
-  searchLimits?: { maxStableDepth?: number; maxEdgeRollouts?: number; budgetMs?: number };
-  maxExtraTicks?: number;
-};
-
-type InspectPlanResult = {
-  record: InspectionRecord | null;
-  markdown: string;
-  ticksWaited: number;
-  capturedAtTick: number;
-};
-
-async function inspectPlan(opts: InspectPlanOpts): Promise<InspectPlanResult> {
-  const seed = opts.seed ?? null;
-  const sim = new PureInterwheelSim();
-  sim.reset(seed !== null ? makeSeededRng(seed) : Math.random);
-  const plannerCfg: PlannerConfig = {
-    ...ANALYTICS_PLANNER_CONFIG,
-    ...opts.searchLimits,
-    policy: resolvePlannerPolicy(opts.policy ?? {}),
-  };
-  const inspectorPlanner = new InterwheelPlanner(sim, plannerCfg);
-
-  let ticks = 0;
-  while (!sim.ended && !sim.ending && ticks < opts.targetTick) {
-    const r = inspectorPlanner.step();
-    sim.step(r.press, () => 0.5);
-    ticks += 1;
-  }
-
-  inspectorPlanner.armInspection();
-  const maxExtra = opts.maxExtraTicks ?? 120;
-  let extras = 0;
-  while (
-    !sim.ended &&
-    !sim.ending &&
-    extras < maxExtra &&
-    inspectorPlanner.lastInspection() === null
-  ) {
-    const r = inspectorPlanner.step();
-    sim.step(r.press, () => 0.5);
-    extras += 1;
-    ticks += 1;
-  }
-
-  const record = inspectorPlanner.lastInspection();
-  if (record) record.seed = seed;
-  const markdown = record
-    ? formatInspectionMarkdown(record)
-    : `# Plan inspection — no capture\n\nReached tick ${ticks} (target ${opts.targetTick}, waited ${extras} extras). ` +
-      `Sim ${sim.ended ? 'ended' : sim.ending ? 'ending' : 'still running but no stable plan tick'}.`;
-  return { record, markdown, ticksWaited: extras, capturedAtTick: ticks };
-}
-
 (async () => {
   log('Booting Interwheel…');
   await setup();
@@ -1688,7 +1630,6 @@ async function inspectPlan(opts: InspectPlanOpts): Promise<InspectPlanResult> {
       comparePurePlanner: typeof comparePurePlanner;
       comparePurePlannerCorpus: typeof comparePurePlannerCorpus;
       parityCheck: typeof parityCheck;
-      inspectPlan: typeof inspectPlan;
       setPastilleSpawnChanceOverride: typeof setPastilleSpawnChanceOverride;
       setGenerationDifficultyOverride: typeof setGenerationDifficultyOverride;
     };
@@ -1703,7 +1644,6 @@ async function inspectPlan(opts: InspectPlanOpts): Promise<InspectPlanResult> {
     comparePurePlanner,
     comparePurePlannerCorpus,
     parityCheck,
-    inspectPlan,
     setPastilleSpawnChanceOverride,
     setGenerationDifficultyOverride,
   };

@@ -9,7 +9,6 @@ import {
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/sim';
-import type { InspectionCandidate, InspectionRecord } from './plan-inspector';
 import { renderedGenerationLimitForSearchDepth } from './trajectory-rendering';
 
 // Constant RNG used during search. The simulator may consume an RNG draw for
@@ -388,11 +387,6 @@ export class InterwheelPlanner {
   private currentPerceivedKeys: string[] = [];
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
-  // Inspector: when armed, the next planStable() call captures a full per-
-  // candidate snapshot for offline analysis. One-shot, opt-in, off in
-  // production. See plan-inspector.ts and scripts/interwheel/inspect-plan.mjs.
-  private inspectorArmed = false;
-  private lastInspectionRecord: InspectionRecord | null = null;
 
   constructor(sim: InterwheelSim, cfg: PlannerConfig = {}) {
     this.sim = sim;
@@ -480,14 +474,6 @@ export class InterwheelPlanner {
       maxEdgeRollouts: this.cfg.maxEdgeRollouts,
       budgetMs: this.cfg.budgetMs,
     };
-  }
-
-  armInspection(): void {
-    this.inspectorArmed = true;
-  }
-
-  lastInspection(): InspectionRecord | null {
-    return this.lastInspectionRecord;
   }
 
   invalidate(): void {
@@ -610,18 +596,6 @@ export class InterwheelPlanner {
     const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, supportResult.support, nodes) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
     const diagnostics = this.computeDiagnostics(nodes, edges, supportResult, bestEdgeIds);
-    if (this.inspectorArmed) {
-      this.lastInspectionRecord = this.buildInspectionRecord(
-        rootState,
-        nodes,
-        edges,
-        targetNode,
-        stableNodesExpanded,
-        performance.now() - startTime,
-        perceived,
-      );
-      this.inspectorArmed = false;
-    }
     return {
       plan: plan.length > 0 ? plan : [false],
       segments,
@@ -1165,67 +1139,6 @@ export class InterwheelPlanner {
     const expandedNodeIds = new Set<number>();
     for (const edge of edges) expandedNodeIds.add(edge.parentId);
     return edges.filter((edge) => !expandedNodeIds.has(edge.childId));
-  }
-
-  private buildInspectionRecord(
-    rootState: SimSnapshot,
-    nodes: SearchNode[],
-    edges: SearchEdge[],
-    targetNode: SearchNode,
-    stableNodesExpanded: number,
-    planMs: number,
-    perceived: PerceivedSnapshot,
-  ): InspectionRecord {
-    const leafSet = new Set(this.leafEdgeIds(edges).map((e) => e.id));
-    const candidates: InspectionCandidate[] = edges.map((edge) => {
-      const childNode = edge.childId >= 0 ? nodes[edge.childId] : null;
-      const depth = childNode?.depth ?? 0;
-      const parentNode = nodes[edge.parentId];
-      const parentEdgeId = parentNode?.edgeId ?? -1;
-      const actionChain = childNode ? this.planForNode(nodes, edges, childNode) : edge.plan.slice();
-      const pathHeight = childNode ? Math.max(0, rootState.blob.y - childNode.pathApexY) : 0;
-      return {
-        edgeId: edge.id,
-        parentEdgeId,
-        childNodeId: edge.childId,
-        depth,
-        isLeaf: leafSet.has(edge.id),
-        isStable: edge.isStable,
-        isDead: edge.isDead,
-        pathHeight,
-        pathWallTicks: edge.pathWallTicks,
-        pathWallLandings: edge.pathWallLandings,
-        pathOffAxis: edge.pathOffAxis,
-        totalTicks: childNode?.totalTicks ?? edge.plan.length,
-        collectedKeys: Array.from(edge.pathReward.collectedKeys),
-        score: { ...edge.scoreBreakdown },
-        actionChain,
-        endStateBlobX: edge.endState.blob.x,
-        endStateBlobY: edge.endState.blob.y,
-        endStateBlobState: edge.endState.blob.state,
-      };
-    });
-    return {
-      tick: rootState.tick,
-      seed: null,
-      policy: { ...this.cfg.policy },
-      searchLimits: {
-        maxStableDepth: this.cfg.maxStableDepth,
-        maxEdgeRollouts: this.cfg.maxEdgeRollouts,
-        budgetMs: this.cfg.budgetMs,
-      },
-      rootStateBlobX: rootState.blob.x,
-      rootStateBlobY: rootState.blob.y,
-      rootStateBlobState: rootState.blob.state,
-      perceivedWheels: perceived.perceivedWheels,
-      perceivedPastilles: perceived.perceivedPastilles,
-      candidates,
-      chosenEdgeId: targetNode.edgeId,
-      chosenLeafNodeId: targetNode.id,
-      edgesEvaluated: edges.length,
-      stableNodesExpanded,
-      planMs,
-    };
   }
 
   private segmentsForEdges(

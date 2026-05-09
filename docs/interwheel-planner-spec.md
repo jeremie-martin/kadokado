@@ -104,7 +104,7 @@ reported as tradeoff diagnostics.
 
 ## Study Requirements
 
-Policy studies must make responsiveness first-class:
+Interwheel studies must make responsiveness first-class:
 
 - Every non-climb metric must be studied mixed with climb.
 - Parameter value -> behavior response should be reported directly.
@@ -112,15 +112,19 @@ Policy studies must make responsiveness first-class:
   range.
 - Metric parameters, such as `wallLandingBonus` and `wallTickBonus`, must be
   sweepable separately from policy coefficients.
+- New metrics should be registered in the study runner rather than adding a new
+  one-off script.
 - Reports should include run speed (`height / elapsed trial time`), height,
   death rate, wall jumps/min, wall time, perceived pastilles, collected
   pastilles, capture percentage, and planner score-spread diagnostics.
+- Parity is opt-in for the study runner; use `--parity` when validating that the
+  pure-planner path still matches the mounted path.
 
 The current entrypoint is:
 
 ```sh
-npm run analyze:interwheel:policies
+npm run analyze:interwheel:study
 ```
 
 It writes `raw.json`, `summary.json`, and `report.md` under
-`.tmp/interwheel-policy-studies/<timestamp>/`.
+`.tmp/interwheel-studies/<timestamp>/`.
