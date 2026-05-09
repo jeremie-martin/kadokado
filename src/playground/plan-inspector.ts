@@ -120,10 +120,10 @@ export function formatInspectionMarkdown(
   lines.push(`## Leaf candidates (${leaves.length} total, top ${featured.length} shown)`);
   lines.push('');
   lines.push(
-    '| # | tag | total | climb | thor | wall | pace | detour | stab | safety | depth | wallL | wallT | offAx | tick | grabs | end |',
+    '| # | tag | total | climb | wall | stab | safety | depth | wallL | wallT | offAx | tick | grabs | end |',
   );
   lines.push(
-    '|---|-----|-------|-------|------|------|------|--------|------|--------|-------|-------|-------|-------|------|-------|-----|',
+    '|---|-----|-------|-------|------|------|--------|-------|-------|-------|-------|------|-------|-----|',
   );
   let row = 1;
   for (const { candidate, tag } of featured) {
@@ -131,10 +131,7 @@ export function formatInspectionMarkdown(
       `| ${row} | ${tag || ''} | ` +
         `${fmtNum(candidate.score.total)} | ` +
         `${fmtNum(candidate.score.climb)} | ` +
-        `${fmtNum(candidate.score.thoroughness)} | ` +
         `${fmtNum(candidate.score.wall)} | ` +
-        `${fmtNum(-candidate.score.pace)} | ` +
-        `${fmtNum(-candidate.score.detour)} | ` +
         `${fmtNum(candidate.score.stability)} | ` +
         `${fmtNum(-candidate.score.safety)} | ` +
         `${candidate.depth} | ` +
@@ -172,10 +169,7 @@ export function formatInspectionMarkdown(
           `grabbed ${maxPastLeaf.collectedKeys.length} (vs chosen ${chosenLeaf.collectedKeys.length}) ` +
           `but lost on score by ${fmtNum(delta)}: ` +
           `Δclimb=${fmtNum(chosenLeaf.score.climb - maxPastLeaf.score.climb)}, ` +
-          `Δthor=${fmtNum(chosenLeaf.score.thoroughness - maxPastLeaf.score.thoroughness)}, ` +
-          `Δwall=${fmtNum(chosenLeaf.score.wall - maxPastLeaf.score.wall)}, ` +
-          `Δpace=${fmtNum(maxPastLeaf.score.pace - chosenLeaf.score.pace)}, ` +
-          `Δdetour=${fmtNum(maxPastLeaf.score.detour - chosenLeaf.score.detour)}.`,
+          `Δwall=${fmtNum(chosenLeaf.score.wall - maxPastLeaf.score.wall)}.`,
       );
     }
   } else {

@@ -4,7 +4,6 @@ import {
   BLOB_STATE_GRAB,
   BLOB_STATE_WALL,
   InterwheelSim as ScratchInterwheelSim,
-  SCORE_PASTILLE,
   STAGE_HEIGHT,
   clamp,
   type InterwheelSim,
@@ -64,11 +63,9 @@ const WATER_SAFETY_MARGIN = 160;
 // Px above water at which water urgency drops to zero (no influence on
 // climb/collect modulation). Between SAFETY and FAR, urgency lerps 1 → 0.
 const WATER_URGENCY_FAR = 320;
-// Multiplier coupling water urgency to climb (boost) and collect/miss
-// (damp). Hidden contextual modulator: as water rises, urgency → 1, climb
-// scales by (1 + 1.2), collect scales by (1 - 0.85). Documented physics.
+// Multiplier coupling water urgency to climb. Hidden contextual modulator:
+// as water rises, urgency → 1 and climb scales by (1 + 1.2).
 const WATER_CLIMB_BOOST = 1.2;
-const WATER_COLLECT_DAMP = 0.85;
 // Per-state stability bonus added to the leaf score. GRAB > WALL > FALLBACK.
 // Independent of policy: encourages the planner to land on stable surfaces.
 const STATE_BONUS: Record<number, number> = {
@@ -88,34 +85,13 @@ const BACKTRACK_GRADIENT = 25;
 const LOOP_PENALTY = 650;
 const LOOP_GAIN_THRESH_PX = 20;
 
-// Thoroughness signal: count of pastilles physically collected by the path
-// (`pathReward.collectedKeys.size`) × per-pastille bonus. Pure positive
-// reward, count-based, no value weighting, no miss penalty. The agent's
-// incentive to detour for one pastille is bounded by THOROUGHNESS_PER_PASTILLE:
-// at coefficient 1 with detour=1, ~12px of lateral detour for one pastille
-// is breakeven.
-//
-// Note: this magnitude is intentionally smaller than the climb / pace /
-// detour normalizations — at coefficient 1 the per-knob steering range
-// from thoroughness scales with the *number of grabs* on a path (typical
-// 0–10), whereas the others scale with continuous integrals (much larger
-// natural magnitudes). To produce climb-comparable steering, coefficients
-// up to ~4 may be needed. This is documented in the policy knob's range
-// (slider 0–4).
-const THOROUGHNESS_PER_PASTILLE = 30;
-
-// === Signal normalization (continuous-integral signals only) ===
-// Each path-cumulative continuous signal has a different intrinsic magnitude.
-// Without these constants, coefficient=1 would mean different things per
-// knob: pathOffAxis leaf-spreads measured ~9000 while pathHeight leaf-spreads
-// measured ~460 (~20× ratio). After normalization, coefficient=1 yields
-// comparable per-knob leaf-steering ranges (~500), so user-facing sliders
-// behave as a true weighted average. Calibrated empirically from
-// .tmp/interwheel-ratios/2026-05-08T17-42-47-440Z (climb=1 reference,
-// climb steering range ≈ 460).
+// === Signal normalization ===
+// The current live policy is deliberately small: climb is the base objective,
+// wall is an optional style/objective term. Pastille capture, pace, detour,
+// patience, and focus were removed from the live score because their previous
+// forms did not produce controllable behavior. Reintroduce future metrics only
+// as independent signals with first-class responsiveness studies.
 const CLIMB_NORMALIZE   = 1;            // reference: pathHeight is the gauge
-const DETOUR_NORMALIZE  = 1 / 20;       // pathOffAxis spread ≈ 9500 → ÷20 ≈ 475
-const PACE_NORMALIZE    = 2;            // pathTime spread ≈ 250 → ×2 ≈ 500
 // Wall signal has two parts:
 //   • WALL_LANDING_BONUS: per-edge categorical bonus for the canonical
 //     wall-jump-and-land event (started off the wall, touched it during the
@@ -129,16 +105,6 @@ const PACE_NORMALIZE    = 2;            // pathTime spread ≈ 250 → ×2 ≈ 5
 // vs a same-height grab→grab path getting 0 from the wall term.
 const WALL_LANDING_BONUS = 300;
 const WALL_NORMALIZE     = 5;
-
-// --- Search-bias decay (not in scoreCandidate, but related) ---
-const NODE_BIAS_DECAY_PX = 400;
-const NODE_BIAS_FACTOR = 1.5;
-// Orbit-tube radius used by `computeStableClaimableSet` for the patience
-// mechanism: a pastille is "claimable from a higher wheel" when its
-// distance from that wheel's orbit ring is within this radius. Geometric
-// reasoning, not a pickup prediction — the live game's pickup is point-
-// to-point `distance(blob, pastille) < 70` (sim.ts:800), not orbit-band.
-const COLLECT_PICKUP_RADIUS = 70;
 
 type CollectReward = {
   /** Set of pastille keys physically grabbed during the rollout (live-game
@@ -162,7 +128,6 @@ type SearchNode = {
   depth: number;
   totalTicks: number;
   value: number;
-  collectibleBias: number;
   pathReward: CollectReward;
   /** Highest y reached anywhere on this root-to-node path (min in screen coords). */
   pathApexY: number;
@@ -253,8 +218,7 @@ export type PlannerStats = {
 };
 
 const SPREAD_KEYS = [
-  'climb', 'thoroughness', 'wall', 'pace', 'detour',
-  'stability', 'safety', 'backtrack', 'loop', 'total',
+  'climb', 'wall', 'stability', 'safety', 'backtrack', 'loop', 'total',
 ] as const satisfies ReadonlyArray<keyof CandidateScoreBreakdown>;
 
 export function emptyLeafSpread(): LeafSpread {
@@ -303,20 +267,12 @@ export type PlannerConfig = {
   memoryScreensBelow?: number;
   collectSegments?: boolean;
   policy?: Partial<PlannerPolicy>;
+  metricParams?: Partial<PlannerMetricParams>;
 };
 
 export type PlannerPolicy = {
   /** How much to value path height (px climbed from root to leaf apex). */
   climb: number;
-  /**
-   * Positive reward for each pastille the path physically grabs (live-game
-   * pickup geometry: blob comes within 70px of the pastille). Pure positive
-   * count signal — the planner gets +THOROUGHNESS_PER_PASTILLE per grab
-   * regardless of pastille type. Detour-for-pickup is naturally bounded by
-   * the per-pastille magnitude. Range typically 0–4; higher values trade
-   * altitude for capture rate (the agent waits longer on each wheel).
-   */
-  thoroughness: number;
   /**
    * How much to value wall use, scoring `pathWallLandings × WALL_LANDING_BONUS
    * + pathWallTicks × WALL_NORMALIZE`. The landings term anchors a discrete
@@ -324,28 +280,26 @@ export type PlannerPolicy = {
    * touched it, ended on it); the ticks term softly rewards contact duration.
    */
   wall: number;
-  /** Per-tick time cost on the path. */
-  pace: number;
-  /** Per-pixel-tick cost of off-axis path travel (lateral wandering). */
-  detour: number;
+};
+
+export type PlannerMetricParams = {
   /**
-   * Defer-grab discount in [0, 1] applied to the thoroughness count. When
-   * the path grabbed a pastille that is also reachable from any wheel above
-   * the agent, scale that grab's contribution by (1 − patience). 0 = full
-   * credit (grab it now); 1 = no credit for above-reachable grabs (trust
-   * that the higher wheel will grab it later, climb instead). Composes
-   * cleanly with thoroughness — at thoroughness=0, patience does nothing.
+   * Score added for each canonical wall-jump-and-land event. Study-only
+   * parameter: changing it alters the wall metric's response curve without
+   * adding another user-facing policy knob.
    */
-  patience: number;
+  wallLandingBonus: number;
+  /**
+   * Score added per path tick spent on a wall. Study-only parameter paired
+   * with wallLandingBonus to tune the wall metric's smoothness.
+   */
+  wallTickBonus: number;
 };
 
 export type CandidateScoreBreakdown = {
   // Knob-driven terms (one line per user knob, scaling one signal each).
   climb: number;
-  thoroughness: number;
   wall: number;
-  pace: number;
-  detour: number;
   // Internal mechanisms (planner physics, not user-tunable).
   stability: number;
   safety: number;
@@ -366,22 +320,17 @@ export type LeafSpread = {
 };
 export type LeafScoreSpreads = Record<keyof CandidateScoreBreakdown, LeafSpread>;
 
-// Operating point post-orbit-claim-fix. The cleanest defaults are the
-// pace+detour+wall combo (best in the balanced sweep at h=5129m / 183
-// past/min vs climb-only's 4373m / 168, +18% / +9%). Thoroughness defaults
-// to 0 because it intrinsically trades altitude for in-place harvest —
-// even at 0.25, the cost (~-8% past/min) outweighs the marginal capture-%
-// benefit. Users who want explicit "grab the pastilles" behavior can dial
-// it up to 0.25–0.5; thor=4 is what it takes to get capture% above
-// baseline, with a steep altitude cost. Patience defaults to 0 because
-// its mechanism only fires when thoroughness > 0.
+// Live operating point after removing non-controllable policy terms. Climb is
+// the base objective; wall remains as the only optional non-climb objective
+// until the next study framework can validate smoother responsiveness curves.
 export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
   climb: 1.0,
-  thoroughness: 0,
   wall: 0.5,
-  pace: 1.5,
-  detour: 1.0,
-  patience: 0,
+};
+
+export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
+  wallLandingBonus: WALL_LANDING_BONUS,
+  wallTickBonus: WALL_NORMALIZE,
 };
 
 export const PLANNER_PERCEPTION_DEFAULTS = {
@@ -402,13 +351,19 @@ export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): Plann
   };
 }
 
+export function resolvePlannerMetricParams(
+  metricParams: Partial<PlannerMetricParams> = {},
+): PlannerMetricParams {
+  return {
+    ...DEFAULT_PLANNER_METRIC_PARAMS,
+    ...metricParams,
+  };
+}
+
 export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
   return {
     climb: 0,
-    thoroughness: 0,
     wall: 0,
-    pace: 0,
-    detour: 0,
     stability: 0,
     safety: 0,
     backtrack: 0,
@@ -420,7 +375,10 @@ export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
 export class InterwheelPlanner {
   private readonly sim: InterwheelSim;
   private readonly scratch = new ScratchInterwheelSim();
-  private readonly cfg: Required<Omit<PlannerConfig, 'policy'>> & { policy: PlannerPolicy };
+  private readonly cfg: Required<Omit<PlannerConfig, 'policy' | 'metricParams'>> & {
+    policy: PlannerPolicy;
+    metricParams: PlannerMetricParams;
+  };
 
   private lastResult: PlanResult | null = null;
   private knownWheelIdx = new Set<number>();
@@ -428,14 +386,6 @@ export class InterwheelPlanner {
   private lastSeenTick = -1;
   private currentPerceived: PerceivedSnapshot | null = null;
   private currentPerceivedKeys: string[] = [];
-  // Set once per plan in planStable() so `thoroughnessSignal` can look up
-  // "is this pastille reachable from any wheel above the agent" without
-  // re-scanning every pickup credit. Used by the patience knob to discount
-  // grabs of pastilles the agent could reach later from a higher wheel.
-  // Geometry note: this uses an orbit-band approximation (planner constants
-  // header) which over-includes pastilles that are not reachable from any
-  // single point on the ring; the discount is therefore mildly over-eager.
-  private currentStableClaimable = new Set<string>();
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
   // Inspector: when armed, the next planStable() call captures a full per-
@@ -458,6 +408,7 @@ export class InterwheelPlanner {
       memoryScreensBelow: cfg.memoryScreensBelow ?? PLANNER_PERCEPTION_DEFAULTS.memoryScreensBelow,
       collectSegments: cfg.collectSegments ?? true,
       policy: resolvePlannerPolicy(cfg.policy),
+      metricParams: resolvePlannerMetricParams(cfg.metricParams),
     };
   }
 
@@ -578,23 +529,18 @@ export class InterwheelPlanner {
   private planStable(perceived: PerceivedSnapshot): PlanResult {
     const rootState = perceived.snap;
     const startTime = performance.now();
-    this.currentStableClaimable = this.computeStableClaimableSet(rootState);
     // Root reward starts empty: pathReward.collectedKeys must reflect ONLY
     // pastilles physically grabbed during this plan's simulation. Pre-credit
-    // here would over-claim (the blob hasn't actually grabbed anything yet
-    // at root). The orbit-tube `stableSurfaceCollectReward` path was removed
-    // because its 70px orbit-band claim does not match the live game's 70px
-    // blob-to-pastille distance pickup geometry — see scoreCandidate header.
+    // here would over-claim: the blob has not actually grabbed anything yet.
+    // Pastille telemetry remains recorded here, but it is not part of the
+    // current score until the replacement capture objective is designed.
     const rootReward = this.emptyCollectReward();
     const rootScore = this.scoreCandidate(
       rootState,
       rootState,
       rootState,
-      0,
-      rootReward,
       rootReward,
       rootState.blob.y,
-      0,
       0,
       0,
       false,
@@ -607,7 +553,6 @@ export class InterwheelPlanner {
       depth: 0,
       totalTicks: 0,
       value: rootScore.total,
-      collectibleBias: this.collectibleBias(rootState),
       pathReward: rootReward,
       pathApexY: rootState.blob.y,
       pathOffAxis: 0,
@@ -641,7 +586,6 @@ export class InterwheelPlanner {
           depth: node.depth + 1,
           totalTicks: node.totalTicks + edge.plan.length,
           value: edge.value,
-          collectibleBias: this.collectibleBias(edge.endState),
           pathReward: edge.pathReward,
           pathApexY: edge.pathApexY,
           pathOffAxis: edge.pathOffAxis,
@@ -840,7 +784,7 @@ export class InterwheelPlanner {
     // sameStableTarget edges are scoops that landed back where they started.
     // Skip both the edge's pickups (would double-credit pastilles already
     // accessible from this wheel via a "real" landing) and the off-axis
-    // integral (dominates detour without representing real progress). Keep
+    // diagnostic integral (it does not represent stable route progress). Keep
     // the apex because reaching a high arc on the way still happened.
     const effectiveReward = sameStableTarget ? this.emptyCollectReward() : reward;
     const pathReward = this.extendCollectReward(parent.pathReward, effectiveReward);
@@ -860,11 +804,8 @@ export class InterwheelPlanner {
       rootState,
       parent.state,
       endState,
-      parent.totalTicks + plan.length,
-      pathReward,
       effectiveReward,
       pathApexY,
-      pathOffAxis,
       pathWallTicks,
       pathWallLandings,
       sameStableTarget,
@@ -935,25 +876,15 @@ export class InterwheelPlanner {
     reward.sparkCount += sim.events.collectedSparks.length;
   }
 
-  // Orthogonal score formulation: each user-facing knob scales exactly one
-  // (normalized) path-cumulative signal, and planner physics (state bonus,
-  // water urgency, backtrack/loop/safety) live as named constants distinct
-  // from policy.
+  // Score formulation: each live policy knob scales one path-cumulative
+  // signal, and planner physics (state bonus, water urgency,
+  // backtrack/loop/safety) live as named constants distinct from policy.
   //
   //   total =
-  //     + climb        × pathHeight   × CLIMB_NORMALIZE × waterClimbBoost
-  //     + thoroughness × thoroughnessSignal × THOROUGHNESS_PER_PASTILLE × waterCollectDamp
-  //     + wall         × (pathWallLandings × WALL_LANDING_BONUS + pathWallTicks × WALL_NORMALIZE)
-  //     − pace         × pathTime     × PACE_NORMALIZE
-  //     − detour       × pathOffAxis  × DETOUR_NORMALIZE
+  //     + climb × pathHeight × CLIMB_NORMALIZE × waterClimbBoost
+  //     + wall  × (pathWallLandings × WALL_LANDING_BONUS + pathWallTicks × WALL_NORMALIZE)
   //     + endStableBonus
   //     − endSafetyCost − endBacktrackCost − endLoopCost
-  //
-  // *_NORMALIZE constants make coefficient=1 produce comparable per-knob
-  // leaf-steering ranges (~500), so user-facing sliders behave as a true
-  // weighted average for the continuous-integral signals (climb, pace,
-  // detour). Thoroughness is intentionally on a different scale
-  // (per-grab count, not continuous integral) — see THOROUGHNESS_PER_PASTILLE.
   //
   // pathHeight = max(0, root.y - pathApexY) is the single height signal.
   // Wall is a hybrid event+continuous signal: pathWallLandings counts the
@@ -962,46 +893,31 @@ export class InterwheelPlanner {
   // accumulator. The event term restores the discrete-tier preference of
   // the pre-orthogonalization wallRouteValue (commit 8b65c5b) for actual
   // wall-jumps over passive wall-clinging.
-  // thoroughnessSignal is `pathReward.collectedKeys.size` — count of
-  // pastilles physically grabbed during simulation (sim's 70px blob-distance
-  // pickup geometry). Patience discounts grabs of pastilles also reachable
-  // from a higher wheel.
-  // pace is linear (no ×4 magic, no nonlinear wait penalty).
   private scoreCandidate(
     root: SimSnapshot,
     start: SimSnapshot,
     end: SimSnapshot,
-    totalTicks: number,
-    pathReward: CollectReward,
     edgeReward: CollectReward,
     pathApexY: number,
-    pathOffAxis: number,
     pathWallTicks: number,
     pathWallLandings: number,
     sameStableTarget: boolean,
   ): CandidateScoreBreakdown {
     const policy = this.cfg.policy;
+    const metricParams = this.cfg.metricParams;
     const waterMargin = end.waterY - end.blob.y;
     const waterUrgency = this.waterUrgency(waterMargin);
     const waterClimbBoost = 1 + waterUrgency * WATER_CLIMB_BOOST;
-    const waterCollectDamp = 1 - waterUrgency * WATER_COLLECT_DAMP;
 
-    // Knob terms — one signal each. Continuous-integral signals (climb,
-    // pace, detour) are normalized so coefficient=1 produces comparable
-    // leaf-steering ranges; thoroughness is count-based; wall is hybrid.
     const pathHeight = Math.max(0, root.blob.y - pathApexY);
     // Wall: per-edge wall-jump-and-land event bonus + continuous wall-time
     // weight. The event term anchors "this is a wall-jump-class route";
     // the tick term provides a soft gradient on wall contact duration.
-    const wallSignal = pathWallLandings * WALL_LANDING_BONUS
-                     + pathWallTicks * WALL_NORMALIZE;
+    const wallSignal = pathWallLandings * metricParams.wallLandingBonus
+                     + pathWallTicks * metricParams.wallTickBonus;
 
     const climb        = policy.climb        * pathHeight  * CLIMB_NORMALIZE * waterClimbBoost;
-    const thoroughness = policy.thoroughness * this.thoroughnessSignal(pathReward)
-                                             * THOROUGHNESS_PER_PASTILLE * waterCollectDamp;
     const wall         = policy.wall         * wallSignal;
-    const pace         = policy.pace         * totalTicks  * PACE_NORMALIZE;
-    const detour       = policy.detour       * pathOffAxis * DETOUR_NORMALIZE;
 
     // Frontier physics — leaf state shapes the score independent of policy.
     const stability = STATE_BONUS[end.blob.state] ?? STATE_BONUS_FALLBACK;
@@ -1024,18 +940,18 @@ export class InterwheelPlanner {
       : 0;
 
     if (this.isTerminal(end)) {
-      const total = climb + thoroughness + wall - pace - detour - TERMINAL_DEATH_COST;
+      const total = climb + wall - TERMINAL_DEATH_COST;
       return {
         ...emptyScoreBreakdown(),
-        climb, thoroughness, wall, pace, detour,
+        climb,
+        wall,
         safety: TERMINAL_DEATH_COST,
         total,
       };
     }
 
-    const total = climb + thoroughness + wall + stability
-                - pace - detour - safety - backtrack - loop;
-    return { climb, thoroughness, wall, pace, detour, stability, safety, backtrack, loop, total };
+    const total = climb + wall + stability - safety - backtrack - loop;
+    return { climb, wall, stability, safety, backtrack, loop, total };
   }
 
   private creditPastilleReward(
@@ -1043,67 +959,6 @@ export class InterwheelPlanner {
     reward: CollectReward,
   ): void {
     reward.collectedKeys.add(this.pastilleKey(pastille));
-  }
-
-  private computeStableClaimableSet(rootState: SimSnapshot): Set<string> {
-    const set = new Set<string>();
-    if (this.cfg.policy.patience <= 0) return set;
-    const wheels = rootState.wheels;
-    for (const pastille of rootState.pastilles) {
-      for (const wheel of wheels) {
-        if (wheel.destroyed) continue;
-        // Only wheels strictly above the agent count — a "later, easier"
-        // claim is one the route would normally reach by climbing.
-        if (wheel.y >= rootState.blob.y) continue;
-        const dx = pastille.x - wheel.x;
-        const dy = pastille.y - wheel.y;
-        const orbitDistance = Math.abs(Math.sqrt(dx * dx + dy * dy) - wheel.ray);
-        if (orbitDistance < COLLECT_PICKUP_RADIUS) {
-          set.add(this.pastilleKey(pastille));
-          break;
-        }
-      }
-    }
-    return set;
-  }
-
-  // Thoroughness signal: count of pastilles the path collected. Pure
-  // positive reward — each pastille on the path adds 1. Patience discounts
-  // pastilles also reachable from a higher wheel ("don't credit grabbing
-  // this one if I could get it next plan from above either way").
-  private thoroughnessSignal(reward: CollectReward): number {
-    const patience = clamp(this.cfg.policy.patience, 0, 1);
-    if (patience <= 0 || this.currentStableClaimable.size === 0) {
-      return reward.collectedKeys.size;
-    }
-    let count = 0;
-    for (const key of reward.collectedKeys) {
-      const discount = this.currentStableClaimable.has(key) ? 1 - patience : 1;
-      count += discount;
-    }
-    return count;
-  }
-
-  // Bias for how attractive a node is for further search expansion when the
-  // policy weights collect. Decays exponentially with blob-to-pastille
-  // distance, summed over still-uncollected perceived pastilles.
-  // Search-expansion bias toward states near uncollected pastilles. Driven
-  // by `policy.thoroughness` rather than a separate knob: when the user
-  // values thoroughness, the search should also spend its budget exploring
-  // pastille-rich regions.
-  private collectibleBias(state: SimSnapshot): number {
-    if (this.cfg.policy.thoroughness <= 0) return 0;
-    const pastilles = state.pastilles;
-    if (pastilles.length === 0) return 0;
-    let bias = 0;
-    const bx = state.blob.x, by = state.blob.y;
-    for (const p of pastilles) {
-      const dx = p.x - bx, dy = p.y - by;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      const decay = Math.exp(-d / NODE_BIAS_DECAY_PX);
-      bias += (SCORE_PASTILLE[p.type] ?? SCORE_PASTILLE[0]) * decay;
-    }
-    return bias * this.cfg.policy.thoroughness * NODE_BIAS_FACTOR;
   }
 
   private waitSamples(snap: SimSnapshot, depth: number): number[] {
@@ -1136,7 +991,10 @@ export class InterwheelPlanner {
   private nodePriority(node: SearchNode, root: SimSnapshot): number {
     const yGain = root.blob.y - node.state.blob.y;
     const yGainTerm = Math.max(0, yGain) * 2;
-    return node.value + yGainTerm - node.totalTicks * 1.5 + node.collectibleBias;
+    // Search expansion ordering is not a score term. Keep a small internal
+    // time bias so the frontier reaches promising stable states quickly while
+    // the final leaf choice remains governed by scoreCandidate().
+    return node.value + yGainTerm - node.totalTicks * 1.5;
   }
 
   private bestStableLeafNode(nodes: SearchNode[], edges: SearchEdge[]): SearchNode | null {

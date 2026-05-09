@@ -71,8 +71,7 @@ test('analytics harness is faithful to live game and records movement stats', as
           bestScoreBreakdown: {
             total: { count: number; mean: number };
             climb: { count: number; mean: number };
-            thoroughness: { count: number; mean: number };
-            pace: { count: number; mean: number };
+            wall: { count: number; mean: number };
           };
         };
       };
@@ -138,7 +137,7 @@ test('analytics harness is faithful to live game and records movement stats', as
   expect(results[0].analytics.summary.planner.planMs.p95).toBeGreaterThanOrEqual(0);
   expect(results[0].analytics.summary.planner.bestScoreBreakdown.total.count).toBe(results[0].analytics.summary.planner.plans);
   expect(results[0].analytics.summary.planner.bestScoreBreakdown.climb.mean).toBeGreaterThan(0);
-  expect(results[0].analytics.summary.planner.bestScoreBreakdown.pace.mean).toBeGreaterThanOrEqual(0);
+  expect(results[0].analytics.summary.planner.bestScoreBreakdown.wall.mean).toBeGreaterThanOrEqual(0);
 
   const noPastilles = await page.evaluate(async () => {
     const w = window as unknown as {
@@ -148,7 +147,7 @@ test('analytics harness is faithful to live game and records movement stats', as
           trials: number;
           seedBase: number;
           maxTicks: number;
-          policy?: { thoroughness?: number };
+          policy?: { wall?: number };
         }) => Promise<{ trials: Trial[] }>;
       };
     };
@@ -158,7 +157,7 @@ test('analytics harness is faithful to live game and records movement stats', as
         trials: 1,
         seedBase: 42,
         maxTicks: 300,
-        policy: { thoroughness: 4 },
+        policy: { wall: 0.5 },
       });
     } finally {
       w.__interwheelAnalytics__.setPastilleSpawnChanceOverride(null);
@@ -166,7 +165,6 @@ test('analytics harness is faithful to live game and records movement stats', as
   });
   expect(noPastilles.trials[0].uniquePerceivedPastilles).toBe(0);
   expect(noPastilles.trials[0].analytics.summary.pastilles).toBe(0);
-  expect(noPastilles.trials[0].analytics.summary.planner.bestScoreBreakdown.thoroughness.mean).toBe(0);
 
   const replayEquivalence = await page.evaluate(async () => {
     const w = window as unknown as {

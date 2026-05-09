@@ -2,14 +2,26 @@
 
 ## Interwheel Planner
 
-- After the overnight policy study, investigate folding an "as fast as possible"
-  component into the climb objective. The likely target is a climb-rate signal
-  such as height gained per path time, or a normalized path-height reward that
-  already accounts for elapsed ticks. If this works, the standalone `pace`
-  penalty may become redundant or need to be redefined.
-- After the overnight policy study, revisit the pastille objective definition.
-  Current `thoroughness` only rewards physical pickup events inside the
-  simulated path. Consider a separate path-level input that measures whether a
-  route is getting closer to a pastille, moving onto a plausible pickup route,
-  or otherwise making a pastille likely to be collected later. Validate this
-  against capture% before merging it into the score.
+- Redo policy studies as the first-class foundation before designing new
+  climb-efficient or capture metrics. The study tool must support both policy
+  coefficient sweeps and metric-parameter sweeps, for example sweeping
+  `wallLandingBonus` / `wallTickBonus` independently from `policy.wall`.
+- Improve every non-climb metric's responsiveness when mixed with climb. A
+  metric's policy coefficient should produce a smooth, predictable, ideally
+  near-linear behavior curve over its useful range. Study reports should make
+  that response curve explicit instead of only ranking final outcomes.
+- Study and redesign the climb objective as "climb high efficiently", not just
+  "eventually reach a high apex". Candidate formulas include height per elapsed
+  path time, height reward normalized by path ticks, and height reward minus a
+  named internal time cost. Compare against the current `climb + wall` default
+  using explicit run speed (`height / elapsed trial time`) across fixed trial
+  durations.
+- Redesign the pastille objective later under a better name than
+  `thoroughness`. The target behavior is capture-priority: when a pastille is
+  perceived, bias toward not leaving it behind, even if height suffers. Treat
+  perceived pastilles as obligations and validate capture% over perceived
+  obligations, with collected count, perceived count, height, run speed, and
+  deaths as tradeoff diagnostics.
+- Reintroduce a focus-style control only after the capture objective exists. It
+  should tune capture targeting, not lerp climb against the removed
+  `thoroughness` metric.

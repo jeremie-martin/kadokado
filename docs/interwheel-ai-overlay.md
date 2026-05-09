@@ -56,31 +56,18 @@ actually collected.
 
 An edge that launches away and lands back on the same stable target does not
 add its transient pickups to `pathReward`. It has not improved the stable route;
-the scoop is treated as a detour rather than path progress.
+the scoop is treated as transient movement rather than path progress.
 
-`scoreCandidate()` uses the cumulative path reward for:
-
-- `thoroughness`: count of pastilles physically grabbed on the whole path,
-  optionally discounted by `patience` when the pastille is also reachable from a
-  higher wheel.
-
-This keeps the pickup score path-cumulative: a later leaf that has grabbed more
-pastilles makes its ancestor route valuable. It does not, by itself, model
-"secured later by a stable route"; that question is tracked separately in
-`docs/interwheel-collectibles-objective.md` and summarized in
-`docs/interwheel-planner-spec.md`.
-
-This is the important invariant: a valuable pickup leaf makes the whole
-route to that leaf valuable. Do not reintroduce local-only pickup score as
-the ranking signal.
+Pastille pickup facts are telemetry only in the current score. The old
+`thoroughness`/`patience` pickup objective was removed because it did not give a
+controllable capture mode. A future capture metric should still follow the same
+path-accumulator rule: if a future leaf satisfies a perceived-pastille
+obligation, its ancestor route must receive that value.
 
 Wall routes follow the same principle. Each edge records wall ticks and the
 canonical wall-jump-and-land event. These are added to `pathWallTicks` and
 `pathWallLandings`, and `scoreCandidate()` reads those path values instead of
 only the currently evaluated edge.
-
-Pace is also path-level. Nodes carry total elapsed ticks; `pace` is computed
-from the full root-to-node time cost.
 
 Height is path-level too:
 

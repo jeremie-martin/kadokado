@@ -61,7 +61,7 @@ function help() {
 
 USAGE:
   node scripts/interwheel/inspect-plan.mjs --seed=42 --tick=200
-  node scripts/interwheel/inspect-plan.mjs --seed=42 --tick=400 --policy=climb=1,thoroughness=1
+  node scripts/interwheel/inspect-plan.mjs --seed=42 --tick=400 --policy=climb=1,wall=1
   node scripts/interwheel/inspect-plan.mjs --seed=42 --tick=200 --policy=wall=2 --out=.tmp/inspect-wall2.md
   node scripts/interwheel/inspect-plan.mjs --seed=42 --tick=200 --search=maxStableDepth=5,maxEdgeRollouts=480
 
@@ -69,7 +69,7 @@ OPTIONS:
   --seed=<int>          deterministic level seed (default 42)
   --tick=<int>          game tick at which to arm the inspector (default 200)
   --max-extra=<int>     extra ticks to wait for a stable plan capture (default 120)
-  --policy=k=v,...      override policy knobs (climb, thoroughness, wall, pace, detour, patience)
+  --policy=k=v,...      override policy knobs (climb, wall)
   --search=k=v,...      override search limits (maxStableDepth, maxEdgeRollouts, budgetMs)
   --out=<path>          write markdown to file (in addition to stdout)
   --json                also dump the raw inspection record to stdout
@@ -77,7 +77,7 @@ OPTIONS:
 This is a single-shot diagnostic. It runs one trial up to the target tick,
 captures one plan tick, and dumps a markdown table comparing all leaf
 candidates (top by score, plus the chosen leaf, plus the candidate with
-maximum pastilles). Use it when sweeps are not telling you why a knob does
+maximum pastilles). Use it when policy studies are not telling you why a knob does
 or does not change behavior.
 `);
 }

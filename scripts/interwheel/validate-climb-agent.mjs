@@ -177,9 +177,7 @@ async function main() {
         collectSegments: false,
         policy: {
           climb: 1.6,
-          thoroughness: 0,
           wall: 0,
-          pace: 0.8,
         },
       };
       const trial = await page.evaluate(async ({ seed, maxTicks, plannerConfig, noWater, stopHeightMeters }) => {

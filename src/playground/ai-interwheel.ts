@@ -21,17 +21,11 @@ type PolicyKey = keyof PlannerPolicy;
 
 const POLICY_KEYS: PolicyKey[] = [
   'climb',
-  'thoroughness',
   'wall',
-  'pace',
-  'detour',
-  'patience',
 ];
 const policyInputs = new Map<PolicyKey, HTMLInputElement>();
 const policyOutputs = new Map<PolicyKey, HTMLOutputElement>();
 const policyReset = document.getElementById('policy-reset') as HTMLButtonElement | null;
-const focusInput = document.getElementById('policy-focus') as HTMLInputElement | null;
-const focusOutput = document.getElementById('policy-focus-value') as HTMLOutputElement | null;
 const lookaheadInput = document.getElementById('planner-lookahead') as HTMLInputElement | null;
 const lookaheadOutput = document.getElementById('planner-lookahead-value') as HTMLOutputElement | null;
 const searchDepthInput = document.getElementById('planner-searchDepth') as HTMLInputElement | null;
@@ -40,15 +34,6 @@ const edgeBudgetInput = document.getElementById('planner-edgeBudget') as HTMLInp
 const edgeBudgetOutput = document.getElementById('planner-edgeBudget-value') as HTMLOutputElement | null;
 const planBudgetInput = document.getElementById('planner-planBudgetMs') as HTMLInputElement | null;
 const planBudgetOutput = document.getElementById('planner-planBudgetMs-value') as HTMLOutputElement | null;
-// Focus lerps climb and thoroughness in opposite directions: focus=0 is
-// pure climber (max climb, no thoroughness — agent doesn't worry about
-// missed in-reach pastilles), focus=1 is thorough collector (lower climb,
-// strong miss-fraction penalty — agent grabs everything in reach).
-// Thoroughness is a bounded penalty so coefficients up to ~2 stay safe.
-const FOCUS_CLIMB_MAX = 1.6;
-const FOCUS_CLIMB_MIN = 0.3;
-const FOCUS_THOROUGHNESS_MAX = 2;
-
 // Renderer params trigger a redraw of the cached segments; lineage params
 // require a re-plan to recompute support.
 const OVERLAY_PARAM_DEFAULTS = {
@@ -125,23 +110,6 @@ function syncPolicyControls(): void {
     if (input) input.value = String(policy[key]);
     if (output) output.value = formatPolicyValue(policy[key]);
   }
-  // Focus reflects thoroughness position on the lerp; climb may drift off
-  // the line if user adjusts it directly, that's OK — focus is a fast-path
-  // preset.
-  if (focusInput || focusOutput) {
-    const focus = clamp(policy.thoroughness / FOCUS_THOROUGHNESS_MAX, 0, 1);
-    if (focusInput) focusInput.value = String(focus);
-    if (focusOutput) focusOutput.value = focus.toFixed(2);
-  }
-}
-
-function policyFromFocus(focus: number, base: PlannerPolicy): PlannerPolicy {
-  const f = clamp(focus, 0, 1);
-  return {
-    ...base,
-    climb: FOCUS_CLIMB_MAX - (FOCUS_CLIMB_MAX - FOCUS_CLIMB_MIN) * f,
-    thoroughness: FOCUS_THOROUGHNESS_MAX * f,
-  };
 }
 
 function readPolicyControls(): PlannerPolicy {
@@ -173,12 +141,6 @@ function setupPolicyControls(): void {
     policyInputs.set(rawKey, input);
     if (output) policyOutputs.set(rawKey, output);
     input.addEventListener('input', () => applyPolicy(readPolicyControls()));
-  });
-
-  focusInput?.addEventListener('input', () => {
-    const focus = Number(focusInput.value);
-    if (!Number.isFinite(focus)) return;
-    applyPolicy(policyFromFocus(focus, policy));
   });
 
   policyReset?.addEventListener('click', () => applyPolicy({ ...DEFAULT_PLANNER_POLICY }));

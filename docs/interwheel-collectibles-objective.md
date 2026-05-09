@@ -8,10 +8,10 @@ planner controls.
 
 Status note: this brief describes the collectible-objective problem and some
 historical experiments. The current planner contract is summarized in
-`docs/interwheel-planner-spec.md`: the live pickup knob is `thoroughness`, and
-it counts physical simulator pickup events in a path-cumulative
-`CollectReward`. Stable-surface orbit claims are not active in the current
-planner.
+`docs/interwheel-planner-spec.md`: there is currently no live pickup policy
+knob. Physical simulator pickup events are still recorded in path-cumulative
+`CollectReward` telemetry, but they are not part of the score until the capture
+objective is redesigned.
 
 ## Goal
 
@@ -55,14 +55,11 @@ Relevant files:
 
 Current planner concepts:
 
-- `CollectReward` stores pastille value, spark score, collected keys, and
-  minimum distance to perceived pastilles.
+- `CollectReward` stores collected pastille keys and spark count.
 - `SearchNode.pathReward` is the cumulative root-to-node collectible state.
 - `SearchEdge.reward` is the edge-local realized pickup facts.
-- `scoreCandidate()` uses cumulative `pathReward` for:
-  - `collectibles`
-  - `missedCollect`
-- Wall routes and pace are also path accumulators.
+- `scoreCandidate()` no longer uses `pathReward`; capture is deferred.
+- Wall routes are path accumulators and remain part of the current score.
 
 The problematic detail is the definition of "collected" or "secured". So far,
 the planner has mostly counted realized simulator pickup events. That makes

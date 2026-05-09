@@ -349,9 +349,7 @@ function summarizePlannerStats(stats: PlannerRunStats): TrialPlannerStats {
 
 function scoreBreakdownKeys(): Array<keyof CandidateScoreBreakdown> {
   return [
-    'climb', 'thoroughness', 'wall', 'pace', 'detour',
-    'stability', 'safety', 'backtrack', 'loop',
-    'total',
+    'climb', 'wall', 'stability', 'safety', 'backtrack', 'loop', 'total',
   ];
 }
 

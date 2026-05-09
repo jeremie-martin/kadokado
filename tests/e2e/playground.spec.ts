@@ -70,7 +70,11 @@ test.describe('AI playground', () => {
       timeout: 15000,
     });
 
-    await expect(page.locator('#policy-focus-value')).toHaveText('0.00');
+    await expect(page.locator('#policy-focus')).toHaveCount(0);
+    await expect(page.locator('#policy-thoroughness')).toHaveCount(0);
+    await expect(page.locator('#policy-pace')).toHaveCount(0);
+    await expect(page.locator('#policy-detour')).toHaveCount(0);
+    await expect(page.locator('#policy-patience')).toHaveCount(0);
     await expect(page.locator('#policy-wall-value')).toHaveText('0.50');
     await expect(page.locator('#planner-lookahead-value')).toHaveText('0.50');
     await expect(page.locator('#planner-searchDepth-value')).toHaveText('4');
@@ -167,29 +171,26 @@ test.describe('AI playground', () => {
 
     const policy = await page.evaluate(() => {
       const w = window as unknown as {
-        __planner__: { policy: () => { climb: number; thoroughness: number; wall: number; pace: number } };
+        __planner__: { policy: () => { climb: number; wall: number } };
       };
       return w.__planner__.policy();
     });
 
     expect(policy.climb).toBeCloseTo(1.0);
-    expect(policy.thoroughness).toBeCloseTo(0);
-    expect(policy).toMatchObject({ wall: 0.8, pace: 1.5 });
+    expect(policy).toMatchObject({ wall: 0.8 });
     await expect(page.locator('#stats')).not.toContainText('wall 0.80');
 
     await page.locator('#policy-reset').click();
-    await expect(page.locator('#policy-focus-value')).toHaveText('0.00');
     await expect(page.locator('#policy-wall-value')).toHaveText('0.50');
 
     const resetPolicy = await page.evaluate(() => {
       const w = window as unknown as {
-        __planner__: { policy: () => { climb: number; thoroughness: number; wall: number; pace: number } };
+        __planner__: { policy: () => { climb: number; wall: number } };
       };
       return w.__planner__.policy();
     });
     expect(resetPolicy.climb).toBeCloseTo(1.0);
-    expect(resetPolicy.thoroughness).toBeCloseTo(0);
-    expect(resetPolicy).toMatchObject({ wall: 0.5, pace: 1.5 });
+    expect(resetPolicy).toMatchObject({ wall: 0.5 });
 
     await page.locator('#overlay-shareWidthScale').evaluate((el) => {
       const input = el as HTMLInputElement;
