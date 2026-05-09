@@ -83,11 +83,6 @@ const METRICS = {
         range: [0, 8],
         metricParams: { climbMode: 'wait-cost' },
       },
-      {
-        key: 'climbAboveAimWeight',
-        range: [0, 4],
-        metricParams: { climbMode: 'time-cost', climbTickCost: 3 },
-      },
     ],
   },
   wall: {
@@ -116,9 +111,16 @@ const POLICY_KEYS = [...new Set(['climb', ...Object.values(METRICS).map((metric)
 const SWEEP_METRIC_PARAM_KEYS = [
   ...new Set(Object.values(METRICS).flatMap((metric) => metric.params.map((param) => param.key))),
 ];
+// Boolean metric params: not registered in METRICS sweep ranges (the sweep
+// machinery is for continuous responses), but accepted via
+// `--metric-param.KEY=true/false` or `--config=...,metric.KEY=true/false`.
+const BOOL_METRIC_PARAM_KEYS = new Set([
+  'climbPhantomWheelEnabled',
+]);
 const METRIC_PARAM_KEYS = [...new Set([
   'climbMode',
   ...SWEEP_METRIC_PARAM_KEYS,
+  ...BOOL_METRIC_PARAM_KEYS,
 ])];
 
 // Response curves are intentionally shared across metric studies. A metric
@@ -316,6 +318,11 @@ function parseMetricParamValue(key, rawValue) {
   if (key === 'climbMode') {
     return CLIMB_METRIC_MODES.includes(rawValue) ? rawValue : undefined;
   }
+  if (BOOL_METRIC_PARAM_KEYS.has(key)) {
+    if (rawValue === 'true' || rawValue === '1') return true;
+    if (rawValue === 'false' || rawValue === '0') return false;
+    return undefined;
+  }
   const value = Number(rawValue);
   return Number.isFinite(value) ? value : undefined;
 }
@@ -354,14 +361,18 @@ function parseConfigSpec(spec) {
       out.policy[policyKey] = value;
     } else if (key.startsWith('metric.')) {
       const metricKey = key.slice('metric.'.length);
-      const value = parseConfigValue(rawValue);
+      const isBool = BOOL_METRIC_PARAM_KEYS.has(metricKey);
+      const value = isBool ? parseMetricParamValue(metricKey, rawValue) : parseConfigValue(rawValue);
       if (!METRIC_PARAM_KEYS.includes(metricKey)) {
         throw new Error(`Invalid --config metric segment: ${part}`);
       }
       if (metricKey === 'climbMode' && !CLIMB_METRIC_MODES.includes(value)) {
         throw new Error(`Invalid climbMode in --config: ${rawValue}`);
       }
-      if (metricKey !== 'climbMode' && typeof value !== 'number') {
+      if (isBool && typeof value !== 'boolean') {
+        throw new Error(`Invalid boolean metric parameter in --config: ${part}`);
+      }
+      if (!isBool && metricKey !== 'climbMode' && typeof value !== 'number') {
         throw new Error(`Invalid numeric metric parameter in --config: ${part}`);
       }
       out.metricParams[metricKey] = value;

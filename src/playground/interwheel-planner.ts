@@ -98,19 +98,25 @@ const CLIMB_METRIC_MODES = ['legacy', 'time-cost', 'wait-cost'] as const;
 const CLIMB_METRIC_MODE_DEFAULT: ClimbMetricMode = 'time-cost';
 const CLIMB_TICK_COST_DEFAULT = 3;
 const CLIMB_WAIT_COST_DEFAULT = 0;
-// "Aim above what we can see" virtual target. Bonus per pixel of leaf
-// proximity to a heuristic point above the AI's perception cone, in the
-// middle horizontally. Addresses the lookahead=0 wall-loop trap where the
-// planner has no perceived wheel above the viewport to aim at: instead of
-// requiring perception, encode "go up" as a fictitious attractor. Default
-// 0 disables. The attractor sits 0.25 screens above the reveal top so
-// higher lookahead pushes the aim higher (matches: more visible = aim
-// further up).
-const CLIMB_ABOVE_AIM_WEIGHT_DEFAULT = 0;
-// Vertical offset of the virtual aim target above the reveal top, in
-// screen-heights. 0.25 keeps the target close to perception edge so
-// in-flight apex paths can plausibly approach it.
-const ABOVE_AIM_Y_OFFSET_SCREENS = 0.25;
+// Phantom wheel: a virtual mid-size wheel injected into the perceived
+// snapshot at every plan tick, sitting 0.25 screens above the reveal cone
+// in the middle horizontally. The search's scratch sim treats it as a
+// real landing target; existing stability + path-apex scoring naturally
+// rewards plans that aim for it. Encodes "go up" as a heuristic that
+// doesn't depend on perceiving a specific wheel above. Anchored to the
+// root mapY so it's stable for the entire search invocation. Live game
+// wheels are unchanged — the phantom is per-plan only.
+const CLIMB_PHANTOM_WHEEL_ENABLED_DEFAULT = true;
+// Vertical offset of the phantom above the reveal top, in screen-heights.
+// 0.25 keeps it just past perception so an in-flight apex can plausibly
+// reach it from a single jump.
+const PHANTOM_WHEEL_Y_OFFSET_SCREENS = 0.25;
+// Phantom wheel physical properties. Mid-size wheel so the search sim's
+// collision check reliably catches the blob's flight without forcing
+// awkward angles.
+const PHANTOM_WHEEL_RAY = 20;
+const PHANTOM_WHEEL_SPEED = 0.1;
+const PHANTOM_WHEEL_FR = 2;
 // Wall signal has two parts:
 //   • WALL_LANDING_BONUS: per-edge categorical bonus for the canonical
 //     wall-jump-and-land event (started off the wall, touched it during the
@@ -338,14 +344,15 @@ export type PlannerMetricParams = {
    */
   wallTickBonus: number;
   /**
-   * Study-only knob. Score weight per pixel of leaf proximity to a virtual
-   * "aim point" above the planner's perception cone, in the middle
-   * horizontally. Encodes "go up" as a heuristic that doesn't depend on
-   * actually seeing a wheel above. 0 = unchanged. >0 pulls leaf choice
-   * toward this attractor by the negative Euclidean distance from leaf to
-   * target, scaled by the weight.
+   * Inject a phantom wheel into the perceived snapshot above the
+   * planner's reveal cone, in the middle horizontally. The search's
+   * scratch sim treats it as a real landing target; existing stability +
+   * path-apex scoring rewards plans that reach it. Encodes "go up" as a
+   * principle that doesn't depend on perceiving an actual wheel above.
+   * Default true — the planner is shaped around having this attractor.
+   * Set to false to compare against the un-phantom shape in studies.
    */
-  climbAboveAimWeight: number;
+  climbPhantomWheelEnabled: boolean;
 };
 
 export type CandidateScoreBreakdown = {
@@ -386,7 +393,7 @@ export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
   climbWaitCost: CLIMB_WAIT_COST_DEFAULT,
   wallLandingBonus: WALL_LANDING_BONUS,
   wallTickBonus: WALL_NORMALIZE,
-  climbAboveAimWeight: CLIMB_ABOVE_AIM_WEIGHT_DEFAULT,
+  climbPhantomWheelEnabled: CLIMB_PHANTOM_WHEEL_ENABLED_DEFAULT,
 };
 
 export const PLANNER_PERCEPTION_DEFAULTS = {
@@ -1047,23 +1054,7 @@ export class InterwheelPlanner {
     const wallSignal = pathWallLandings * metricParams.wallLandingBonus
                      + pathWallTicks * metricParams.wallTickBonus;
 
-    // "Aim above what we can see": virtual attractor 0.25 screens above the
-    // reveal top, in the middle horizontally. Encodes "go up" without
-    // depending on perceiving a specific wheel above. Linear penalty for
-    // leaf distance to the target — closer leaves score higher. Off by
-    // default. Uses root.mapY so the target is fixed for the entire search
-    // (the planner aims at one stable point, not a moving one).
-    let aimSignal = 0;
-    if (metricParams.climbAboveAimWeight > 0) {
-      const viewTop = -root.mapY;
-      const targetY = viewTop - STAGE_HEIGHT * (this.cfg.revealScreensAbove + ABOVE_AIM_Y_OFFSET_SCREENS);
-      const targetX = STAGE_WIDTH * 0.5;
-      const dx = end.blob.x - targetX;
-      const dy = end.blob.y - targetY;
-      aimSignal = -Math.sqrt(dx * dx + dy * dy);
-    }
-
-    const climb        = policy.climb        * (climbSignal + metricParams.climbAboveAimWeight * aimSignal);
+    const climb        = policy.climb        * climbSignal;
     const wall         = policy.wall         * wallSignal;
 
     // Frontier physics — leaf state shapes the score independent of policy.
@@ -1384,6 +1375,27 @@ export class InterwheelPlanner {
       const wheel = full.wheels[idx];
       return { ...wheel, mines: wheel.mines.slice() };
     });
+    if (this.cfg.metricParams.climbPhantomWheelEnabled) {
+      const position = this.phantomWheelPosition(full);
+      // Phantom is fed straight to the search's scratch sim via the perceived
+      // snapshot. Live game wheels are unchanged. The phantom starts inactive
+      // (above viewport), and the scratch sim's `isElementActive` check
+      // activates it once the simulated camera scrolls high enough — so the
+      // search only "lands" on it after a credible upward arc.
+      wheels.push({
+        x: position.x,
+        y: position.y,
+        ray: PHANTOM_WHEEL_RAY,
+        speed: PHANTOM_WHEEL_SPEED,
+        a: 0,
+        fr: PHANTOM_WHEEL_FR,
+        mines: [],
+        destroyed: false,
+        boomAngle: null,
+        active: false,
+        dustTick: 0,
+      });
+    }
     const pastilles = full.pastilles
       .filter((p) => this.knownPastilleKeys.has(this.pastilleKey(p)) && this.intersectsY(p.y, p.ray, planningTop, planningBottom))
       .map((p) => ({ ...p }));
@@ -1398,6 +1410,17 @@ export class InterwheelPlanner {
       sparks: full.sparks.map((spark) => ({ ...spark })),
     };
     return { snap, perceivedWheels: wheels.length, perceivedPastilles: pastilles.length };
+  }
+
+  // Phantom wheel position. y sits `0.25` screen-heights above the reveal
+  // top so it's just past what the planner can see; x is the map center.
+  // Computed from the planner's root snapshot so the phantom is stable for
+  // the entire search invocation.
+  private phantomWheelPosition(snap: SimSnapshot): { x: number; y: number } {
+    const viewTop = -snap.mapY;
+    const y = viewTop - STAGE_HEIGHT * (this.cfg.revealScreensAbove + PHANTOM_WHEEL_Y_OFFSET_SCREENS);
+    const x = STAGE_WIDTH * 0.5;
+    return { x, y };
   }
 
   private intersectsY(y: number, ray: number, top: number, bottom: number): boolean {
