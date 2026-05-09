@@ -43,19 +43,15 @@ const runBtn = document.getElementById('run') as HTMLButtonElement;
 const run100Btn = document.getElementById('run100') as HTMLButtonElement;
 const detBtn = document.getElementById('determinism') as HTMLButtonElement;
 const stage = document.getElementById('hidden-stage') as HTMLDivElement;
+// budgetMs omitted → inherits PLANNER_SEARCH_DEFAULTS.budgetMs (Infinity).
+// Analytics is gated by edge rollouts only so results are deterministic
+// across machines and across mounted vs pure runners.
 const ANALYTICS_PLANNER_CONFIG = {
-  budgetMs: 5,
   maxEdgeRollouts: 360,
   maxStableDepth: 3,
   collectSegments: false,
 } satisfies PlannerConfig;
-const DETERMINISTIC_PLANNER_CONFIG = {
-  ...ANALYTICS_PLANNER_CONFIG,
-  // Pure-planner equivalence compares two independently planned transcripts.
-  // The live wall-clock cutoff can legitimately stop the mounted and pure
-  // runs after different edge counts, so this verifier uses only the edge cap.
-  budgetMs: Number.POSITIVE_INFINITY,
-} satisfies PlannerConfig;
+const DETERMINISTIC_PLANNER_CONFIG = ANALYTICS_PLANNER_CONFIG;
 
 function plannerConfigForPolicy(policy: Partial<PlannerPolicy> = {}): PlannerConfig {
   return {

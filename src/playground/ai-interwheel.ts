@@ -97,7 +97,10 @@ const highlightChosenInput = document.getElementById('overlay-highlightChosen') 
 let overlayParams: Record<OverlayParamKey, number> = { ...OVERLAY_PARAM_DEFAULTS };
 let overlayColor: number = OVERLAY_DEFAULTS.color;
 let lookaheadScreens = PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove;
-let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
+// Live HUD opts in to a finite wall-clock cap as a soft frame-time guard.
+// Headless analytics & video rendering keep the planner default (Infinity)
+// so the search is gated purely by edge rollouts and stays CPU-independent.
+let searchLimits = { ...PLANNER_SEARCH_DEFAULTS, budgetMs: 5 };
 
 // Scene knobs (apply on reset). Each "natural" toggle delegates to the
 // production curves; turning the toggle off applies the slider value.
@@ -480,8 +483,8 @@ function syncPlannerExperimentControls(): void {
   if (searchDepthOutput) searchDepthOutput.value = String(searchLimits.maxStableDepth);
   if (edgeBudgetInput) edgeBudgetInput.value = String(searchLimits.maxEdgeRollouts);
   if (edgeBudgetOutput) edgeBudgetOutput.value = String(searchLimits.maxEdgeRollouts);
-  if (planBudgetInput) planBudgetInput.value = String(searchLimits.budgetMs);
-  if (planBudgetOutput) planBudgetOutput.value = `${searchLimits.budgetMs.toFixed(0)}ms`;
+  if (planBudgetInput && Number.isFinite(searchLimits.budgetMs)) planBudgetInput.value = String(searchLimits.budgetMs);
+  if (planBudgetOutput) planBudgetOutput.value = Number.isFinite(searchLimits.budgetMs) ? `${searchLimits.budgetMs.toFixed(0)}ms` : '∞';
 }
 
 function applyLookaheadScreens(value: number): void {
@@ -495,7 +498,9 @@ function applyLookaheadScreens(value: number): void {
 
 function applySearchLimits(next: Partial<typeof PLANNER_SEARCH_DEFAULTS>): void {
   searchLimits = {
-    budgetMs: next.budgetMs !== undefined ? clamp(next.budgetMs, 1, 50) : searchLimits.budgetMs,
+    budgetMs: next.budgetMs !== undefined
+      ? (Number.isFinite(next.budgetMs) ? clamp(next.budgetMs, 1, 50) : next.budgetMs)
+      : searchLimits.budgetMs,
     maxEdgeRollouts: next.maxEdgeRollouts !== undefined ? Math.round(clamp(next.maxEdgeRollouts, 16, 2_000)) : searchLimits.maxEdgeRollouts,
     maxStableDepth: next.maxStableDepth !== undefined ? Math.round(clamp(next.maxStableDepth, 1, 8)) : searchLimits.maxStableDepth,
   };
@@ -718,6 +723,10 @@ function statItem(label: string, value: string): HTMLElement {
 
 function refreshStats(): void {
   if (!stats || !game) return;
+  if (new URLSearchParams(window.location.search).get('hud') === 'off') {
+    stats.replaceChildren();
+    return;
+  }
   const heightMeters = Math.floor(game.maxHeight * 0.2);
   stats.replaceChildren(
     statItem('AI', aiActive ? 'on' : 'off'),
@@ -732,7 +741,7 @@ function refreshStats(): void {
     statItem('Visible', lastPerceived),
     statItem('Lookahead', `${lookaheadScreens.toFixed(2)}x`),
     statItem('Depth', `${searchLimits.maxStableDepth} jumps`),
-    statItem('Budget', `${searchLimits.maxEdgeRollouts}e/${searchLimits.budgetMs.toFixed(0)}ms`),
+    statItem('Budget', `${searchLimits.maxEdgeRollouts}e/${Number.isFinite(searchLimits.budgetMs) ? `${searchLimits.budgetMs.toFixed(0)}ms` : '∞'}`),
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
     statItem('Culled', `${lastCulledEdges} edges`),
     statItem('Support', lastSupportRange),

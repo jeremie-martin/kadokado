@@ -10,7 +10,7 @@
 //   npm run video:interwheel
 //   npm run video:interwheel -- --seed-base=4200 --max-seconds=60 --presets=x1,x2
 
-import { mkdir, symlink, lstat } from 'node:fs/promises';
+import { mkdir, symlink, lstat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -26,6 +26,11 @@ const DEFAULT_TAIL_SECONDS = 2;
 const DEFAULT_MAX_PROBES = 50;
 const DEFAULT_PROBE_TIMEOUT_SECONDS = 5 * 60;
 const DEFAULT_FPS = 40;
+// Render-time planner config. Step-budget only (budgetMs = Infinity) so the
+// AI's plans depend solely on edge rollouts — same input produces the same
+// frames on any CPU. 500 leaves comfortable headroom over the ~180-edge
+// average and the 360 worst-case observed in headless analytics.
+const VIDEO_MAX_EDGE_ROLLOUTS = 500;
 
 // Asset roots are URL paths served by Vite from `public/assets/`. The x2/x4
 // variant trees live in `generated-assets/interwheel-upscale/` (gitignored,
@@ -34,6 +39,7 @@ const DEFAULT_FPS = 40;
 const ASSET_TARGETS = {
   x1: { label: 'x1', root: '/assets/interwheel', scale: 1 },
   x2: { label: 'x2', root: '/assets/interwheel-2x/waifu2x-cunet-n1', scale: 2 },
+  x4: { label: 'x4', root: '/assets/interwheel-4x/animejanai-v3-compact-x2x2', scale: 4 },
 };
 
 const ASSET_MOUNTS = [
@@ -41,6 +47,11 @@ const ASSET_MOUNTS = [
     presetKey: 'x2',
     publicDir: 'public/assets/interwheel-2x',
     sourceDir: 'generated-assets/interwheel-upscale/interwheel-2x',
+  },
+  {
+    presetKey: 'x4',
+    publicDir: 'public/assets/interwheel-4x',
+    sourceDir: 'generated-assets/interwheel-upscale/interwheel-4x',
   },
 ];
 
@@ -233,12 +244,12 @@ function startRawVideoEncoder(opts, outPath) {
   return { child, closed };
 }
 
-async function probeSeed(page, seed, maxTicks) {
+async function probeSeed(page, seed, maxTicks, maxEdgeRollouts) {
   // Single page.evaluate so applyScene/reseed/loop run with no inter-eval
   // boundaries — keeps Math.random consumption identical to the render path
   // (where setupFrameCanvas + reseedRandomFresh + first stepFrame is the
   // equivalent boundary).
-  return await page.evaluate(({ s, maxT }) => {
+  return await page.evaluate(({ s, maxT, edgeCap }) => {
     const game = window.__game__;
     if (!game?.app) throw new Error('Interwheel game is not ready');
     game.app.ticker.stop();
@@ -254,6 +265,11 @@ async function probeSeed(page, seed, maxTicks) {
     const reseedBtn = document.getElementById('game-reseed');
     if (!reseedBtn) throw new Error('game-reseed button missing');
     reseedBtn.click();
+    // Pin search limits AFTER reseed (so it's not overwritten by any reset
+    // hook) and BEFORE the first game.update so probe and render plan with
+    // identical configs. Infinity budgetMs = step-budget only.
+    if (!window.__planner__) throw new Error('Planner is not ready');
+    window.__planner__.setSearchLimits({ maxEdgeRollouts: edgeCap, budgetMs: Number.POSITIVE_INFINITY });
     // Reseed Math.random AFTER the wrapped-reset's own seed/save/restore so
     // every subsequent game.update consumes from a known fresh stream.
     let rs = (s | 0) >>> 0;
@@ -278,7 +294,7 @@ async function probeSeed(page, seed, maxTicks) {
       heightMeters: Math.floor(game.maxHeight * 0.2),
       score: game.score,
     };
-  }, { s: seed, maxT: maxTicks });
+  }, { s: seed, maxT: maxTicks, edgeCap: maxEdgeRollouts });
 }
 
 async function setupRenderRun(page, opts, seed) {
@@ -297,6 +313,10 @@ async function setupRenderRun(page, opts, seed) {
     const reseedBtn = document.getElementById('game-reseed');
     if (!reseedBtn) throw new Error('game-reseed button missing');
     reseedBtn.click();
+    // Pin search limits to match probe (step-budget only, same edge cap).
+    // Wall-clock independence here is what makes probe→render frame-aligned.
+    if (!window.__planner__) throw new Error('Planner is not ready');
+    window.__planner__.setSearchLimits({ maxEdgeRollouts: init.maxEdgeRollouts, budgetMs: Number.POSITIVE_INFINITY });
     // Set up the recording canvas centered over the game canvas.
     const source = game.app.canvas;
     const sourceWidth = source.width;
@@ -335,6 +355,12 @@ async function setupRenderRun(page, opts, seed) {
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     const seed = init.seed;
     let isFirstFrame = true;
+    // Captured per real game tick, then read by the hook. The playground
+    // wraps game.update to also run the planner, whose sim.step() speculation
+    // would otherwise stomp sim.events. We snapshot at the FIRST sim.step
+    // after each game.update — that's the real tick.
+    let lastRealEvents = null;
+    const STATE_NAME = { 1: 'FLY', 2: 'GRAB', 3: 'WALL', 4: 'DEAD' };
     window.__captureInterwheelStepFrame = () => {
       if (isFirstFrame) {
         isFirstFrame = false;
@@ -346,9 +372,55 @@ async function setupRenderRun(page, opts, seed) {
           t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
           return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
         };
+        // Wrap sim.step + game.update so the first sim.step inside each
+        // game.update snapshots the real events before planner speculation.
+        const realSimStep = game.sim.step.bind(game.sim);
+        let captureNext = false;
+        game.sim.step = function (...args) {
+          const result = realSimStep(...args);
+          if (captureNext) {
+            captureNext = false;
+            const ev = game.sim.events;
+            lastRealEvents = {
+              jumpAngle: ev.blobJumpAngle,
+              drowned: ev.blobDrowned,
+              exploded: ev.blobExploded != null,
+              endingStarted: ev.endingStarted,
+              runFinished: ev.runFinished,
+              sparkScore: ev.collectedSparks.reduce((s, sp) => s + sp.score, 0),
+              pastilleCount: ev.collectedPastilles.length,
+            };
+          }
+          return result;
+        };
+        const realGameUpdate = game.update.bind(game);
+        game.update = function () {
+          captureNext = true;
+          return realGameUpdate();
+        };
       }
       game.update();
       draw();
+      const sim = game.sim;
+      const blob = sim.blob;
+      const sidecar = {
+        tick: game.tick,
+        t: game.tick / 40,
+        score: sim.score,
+        maxHeight: sim.maxHeight,
+        heightM: Math.floor(sim.maxHeight * 0.2),
+        waterY: sim.waterY,
+        blob: {
+          x: blob.x, y: blob.y, vx: blob.vx, vy: blob.vy,
+          state: STATE_NAME[blob.state] ?? 'UNKNOWN',
+          wallSide: blob.wallSide,
+        },
+        events: lastRealEvents ?? {
+          jumpAngle: null, drowned: false, exploded: false,
+          endingStarted: false, runFinished: false,
+          sparkScore: 0, pastilleCount: 0,
+        },
+      };
       const pixels = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
       return {
         pixels,
@@ -357,6 +429,7 @@ async function setupRenderRun(page, opts, seed) {
         ending: game.ending,
         heightMeters: Math.floor(game.maxHeight * 0.2),
         score: game.score,
+        sidecar,
       };
     };
     window.__captureInterwheelMeta = {
@@ -377,6 +450,8 @@ async function captureRunFrames(page, opts, outPath, seed, tailFrames, hardCapFr
   const expectedBytes = opts.width * opts.height * 4;
   const meta = await setupRenderRun(page, opts, seed);
   const { child, closed } = startRawVideoEncoder(opts, outPath);
+  const sidecarPath = outPath.replace(/\.mp4$/, '.ndjson');
+  const sidecarLines = [];
   let lastFrame = { tick: 0, score: 0, heightMeters: 0, ending: false, ended: false };
   let endingFirstFrame = -1;
   let frameCount = 0;
@@ -388,6 +463,7 @@ async function captureRunFrames(page, opts, outPath, seed, tailFrames, hardCapFr
       }
       const pixels = Buffer.from(frame.pixels.buffer, frame.pixels.byteOffset, frame.pixels.byteLength);
       await writeStream(child.stdin, pixels);
+      sidecarLines.push(JSON.stringify(frame.sidecar));
       lastFrame = {
         tick: frame.tick,
         score: frame.score,
@@ -410,7 +486,8 @@ async function captureRunFrames(page, opts, outPath, seed, tailFrames, hardCapFr
   }
   child.stdin.end();
   await closed;
-  return { ...meta, frameCount, lastFrame, endingFirstFrame };
+  await writeFile(sidecarPath, sidecarLines.join('\n') + '\n');
+  return { ...meta, frameCount, lastFrame, endingFirstFrame, sidecarPath };
 }
 
 async function renderRun(repoRoot, port, args, target, seed, tailFrames, hardCapFrames, outName) {
@@ -419,6 +496,7 @@ async function renderRun(repoRoot, port, args, target, seed, tailFrames, hardCap
   const url = new URL(`http://127.0.0.1:${port}/playground.html`);
   url.searchParams.set('assetRoot', target.root);
   url.searchParams.set('assetScale', String(target.scale));
+  url.searchParams.set('hud', 'off');
 
   const browser = await chromium.launch({ headless: !args.headed });
   try {
@@ -447,6 +525,7 @@ async function renderRun(repoRoot, port, args, target, seed, tailFrames, hardCap
       height: outputSide,
       fps: args.fps,
       background: '#0e1418',
+      maxEdgeRollouts: VIDEO_MAX_EDGE_ROLLOUTS,
     }, outPath, seed, tailFrames, hardCapFrames);
     return { outPath, meta };
   } finally {
@@ -507,7 +586,7 @@ async function main() {
     for (let i = 0; i < args.maxProbes; i += 1) {
       const seed = args.seedBase + i;
       const probeStart = Date.now();
-      const probe = await probeSeed(probePage, seed, probeMaxTicks);
+      const probe = await probeSeed(probePage, seed, probeMaxTicks, VIDEO_MAX_EDGE_ROLLOUTS);
       const elapsed = ((Date.now() - probeStart) / 1000).toFixed(1);
       const deathSec = (probe.endingTick > 0 ? probe.endingTick : probe.ticks) / GAME_FPS;
       const verdict = !probe.ended
@@ -569,6 +648,7 @@ async function main() {
       : null;
     console.log(`  ${r.presetKey} render:`);
     console.log(`    file:              ${path.relative(repoRoot, r.outPath)}`);
+    console.log(`    sidecar:           ${path.relative(repoRoot, meta.sidecarPath)}`);
     console.log(`    canvas:            ${meta.width}x${meta.height} (game ${meta.sourceWidth}x${meta.sourceHeight} at ${meta.gameX},${meta.gameY})`);
     console.log(`    assets:            ${meta.assetRoot} @ ${meta.assetScale}x`);
     console.log(`    frames:            ${meta.frameCount} (${(meta.frameCount / GAME_FPS).toFixed(2)}s)`);
