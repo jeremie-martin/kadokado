@@ -117,6 +117,9 @@ Interwheel studies must make responsiveness first-class:
 - Reports should include run speed (`height / elapsed trial time`), height,
   death rate, wall jumps/min, wall time, perceived pastilles, collected
   pastilles, capture percentage, and planner score-spread diagnostics.
+- Response-curve tables are shared tracked analytics, not metric-owned target
+  declarations. For example, a wall study should focus on wall jumps/min, wall
+  time, and wall steering; capture percentage remains visible as a side effect.
 - Parity is opt-in for the study runner; use `--parity` when validating that the
   pure-planner path still matches the mounted path.
 

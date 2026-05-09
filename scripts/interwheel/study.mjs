@@ -58,7 +58,6 @@ const METRICS = {
   wall: {
     label: 'Wall',
     policyKey: 'wall',
-    defaultWeight: DEFAULT_POLICY.wall,
     mixPolicyWeight: 1,
     coefficientValues: {
       smoke: [0, 0.5, 1],
@@ -83,17 +82,42 @@ const METRICS = {
         },
       },
     ],
-    responseMetrics: [
-      'wallJumpsPerMin',
-      'wallPercent',
-      'height',
-      'runClimbMetersPerSec',
-      'died',
-      'captureRate',
-    ],
-    steerField: 'spreadRangeWall',
   },
 };
+
+// Response curves are intentionally shared across metric studies. A wall study
+// should focus on wallJ/min, wall%, and wall steer, but side effects such as
+// climb speed or capture rate stay visible in the same report. The metric
+// registry decides how to sweep; people decide which analytics matter.
+const RESPONSE_ANALYTICS = [
+  { key: 'wallJumpsPerMin', label: 'wallJ/min', noiseFloor: 0.5 },
+  { key: 'wallPercent', label: 'wall%', noiseFloor: 0.25 },
+  { key: 'spreadRangeWall', label: 'wall steer', noiseFloor: 5 },
+  { key: 'height', label: 'height', noiseFloor: 10 },
+  { key: 'runClimbMetersPerSec', label: 'run m/s', noiseFloor: 0.25 },
+  { key: 'died', label: 'died%', noiseFloor: 1, scale: 100 },
+  { key: 'captureRate', label: 'capture%', noiseFloor: 2, scale: 100 },
+  { key: 'pastillesPerMin', label: 'past/min', noiseFloor: 1 },
+  { key: 'uniquePerceivedPastilles', label: 'perceived', noiseFloor: 1 },
+];
+
+const SUMMARY_FIELDS = [
+  'score',
+  'jumpsPerMin',
+  'wheelJumpsPerMin',
+  'pastilles',
+  'flightPercent',
+  'wheelPercent',
+  'wheelRevMedian',
+  'wallDrifts',
+  'planMs',
+  'edges',
+  'scoreClimb',
+  'scoreWall',
+  'scoreTotal',
+  'spreadRangeClimb',
+  ...RESPONSE_ANALYTICS.map((analytics) => analytics.key),
+];
 
 function parseArgs(argv) {
   const args = {
@@ -425,16 +449,10 @@ function stats(values) {
 }
 
 function summarizeCondition(condition) {
-  const fields = [
-    'height', 'runClimbMetersPerSec', 'score', 'died',
-    'jumpsPerMin', 'wheelJumpsPerMin', 'wallJumpsPerMin',
-    'pastillesPerMin', 'pastilles', 'uniquePerceivedPastilles', 'captureRate',
-    'flightPercent', 'wheelPercent', 'wallPercent', 'wheelRevMedian',
-    'wallDrifts', 'planMs', 'edges', 'scoreClimb', 'scoreWall', 'scoreTotal',
-    'spreadRangeClimb', 'spreadRangeWall',
-  ];
   const metrics = {};
-  for (const field of fields) metrics[field] = stats(condition.trials.map((trial) => trial[field] ?? 0));
+  for (const field of [...new Set(SUMMARY_FIELDS)]) {
+    metrics[field] = stats(condition.trials.map((trial) => trial[field] ?? 0));
+  }
   return {
     group: condition.group,
     suite: condition.suite,
@@ -450,7 +468,7 @@ function summarizeCondition(condition) {
   };
 }
 
-function linearFit(points) {
+function linearFit(points, noiseFloor = 0) {
   const clean = points.filter((point) => Number.isFinite(point.x) && Number.isFinite(point.y));
   if (clean.length < 2) return { slope: 0, intercept: 0, r2: 0, maxStep: 0, range: 0, shape: 'insufficient' };
   const xMean = clean.reduce((sum, point) => sum + point.x, 0) / clean.length;
@@ -481,26 +499,28 @@ function linearFit(points) {
   }
   const maxStepRatio = range > 0 ? maxStep / range : 0;
   let shape = 'near-linear';
-  if (range <= 1e-9) shape = 'flat';
+  if (range <= Math.max(noiseFloor, 1e-9)) shape = 'flat';
   else if (leadingFlatSteps >= 2) shape = 'dead-zone';
   else if (maxStepRatio >= 0.5) shape = 'jumpy';
   else if (r2 < 0.85) shape = 'nonlinear';
   return { slope, intercept, r2, maxStep, range, leadingFlatSteps, shape };
 }
 
-function responsiveness(summaries) {
+function responseCurves(summaries) {
   const out = {};
   const groups = [...new Set(summaries.map((summary) => summary.group).filter((group) => group.includes(':')))];
   for (const group of groups) {
     const rows = summaries.filter((summary) => summary.group === group).sort((a, b) => a.value - b.value);
-    const metric = METRICS[rows[0]?.metric] ?? null;
-    const responseMetrics = metric?.responseMetrics ?? ['height', 'runClimbMetersPerSec', 'died', 'captureRate'];
     out[group] = {};
-    for (const responseMetric of responseMetrics) {
-      out[group][responseMetric] = linearFit(rows.map((row) => ({
-        x: row.value,
-        y: row.metrics[responseMetric].mean,
-      })));
+    for (const analytics of RESPONSE_ANALYTICS) {
+      const scale = analytics.scale ?? 1;
+      out[group][analytics.key] = {
+        label: analytics.label,
+        ...linearFit(rows.map((row) => ({
+          x: row.value,
+          y: row.metrics[analytics.key].mean * scale,
+        })), analytics.noiseFloor),
+      };
     }
   }
   return out;
@@ -508,7 +528,7 @@ function responsiveness(summaries) {
 
 function summarize(raw, meta) {
   const summaries = raw.map(summarizeCondition);
-  return { meta, summaries, responsiveness: responsiveness(summaries) };
+  return { meta, summaries, responseCurves: responseCurves(summaries) };
 }
 
 function fmt(value, digits = 1) {
@@ -548,15 +568,16 @@ function reportMarkdown(summary) {
     );
   }
 
-  lines.push('', '## Responsiveness', '');
+  lines.push('', '## Response Curves', '');
+  lines.push('Each row is one tracked analytic plotted against the swept value. Not every row is the target behavior of the metric; some rows are tradeoffs or side effects.', '');
   lines.push('Shape is a compact warning label for the response curve: flat, dead-zone, jumpy, nonlinear, or near-linear.', '');
 
-  for (const [group, metrics] of Object.entries(summary.responsiveness)) {
+  for (const [group, metrics] of Object.entries(summary.responseCurves)) {
     lines.push(`### ${group}`, '');
-    lines.push('| response | shape | slope | r2 | maxStep | range |');
+    lines.push('| analytic | shape | slope | r2 | maxStep | range |');
     lines.push('| --- | --- | ---: | ---: | ---: | ---: |');
     for (const [metric, fit] of Object.entries(metrics)) {
-      lines.push(`| ${metric} | ${fit.shape} | ${fmt(fit.slope, 3)} | ${fmt(fit.r2, 3)} | ${fmt(fit.maxStep, 2)} | ${fmt(fit.range, 2)} |`);
+      lines.push(`| ${fit.label ?? metric} | ${fit.shape} | ${fmt(fit.slope, 3)} | ${fmt(fit.r2, 3)} | ${fmt(fit.maxStep, 2)} | ${fmt(fit.range, 2)} |`);
     }
     lines.push('');
   }
@@ -581,10 +602,10 @@ function printConditionSummary(result) {
   );
 }
 
-function printResponsiveness(summary) {
-  for (const [group, metrics] of Object.entries(summary.responsiveness)) {
+function printResponseCurves(summary) {
+  for (const [group, metrics] of Object.entries(summary.responseCurves)) {
     const compact = Object.entries(metrics)
-      .map(([metric, fit]) => `${metric}:${fit.shape},r2=${fit.r2.toFixed(2)},step=${fit.maxStep.toFixed(1)}`)
+      .map(([metric, fit]) => `${fit.label ?? metric}:${fit.shape},r2=${fit.r2.toFixed(2)},step=${fit.maxStep.toFixed(1)}`)
       .join('  ');
     console.log(`${group}  ${compact}`);
   }
@@ -652,7 +673,7 @@ async function main() {
     await writeFile(join(outDir, 'raw.json'), JSON.stringify(raw, null, 2));
     await writeFile(join(outDir, 'summary.json'), JSON.stringify(summary, null, 2));
     await writeFile(join(outDir, 'report.md'), reportMarkdown(summary));
-    printResponsiveness(summary);
+    printResponseCurves(summary);
     console.log(JSON.stringify({ outDir, ...meta }, null, 2));
   } finally {
     await browser.close();
