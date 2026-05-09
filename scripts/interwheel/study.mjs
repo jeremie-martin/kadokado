@@ -18,9 +18,9 @@ const PRESETS = {
   smoke: {
     description: 'wiring check only',
     trials: 1,
-    maxSeconds: 15,
-    revealScreensAbove: 0,
-    maxStableDepth: 3,
+    maxSeconds: 30,
+    revealScreensAbove: 0.5,
+    maxStableDepth: 4,
     maxEdgeRollouts: 240,
     budgetMs: 2,
     valueSet: 'smoke',
@@ -29,8 +29,8 @@ const PRESETS = {
   quick: {
     description: 'fast directional read',
     trials: 4,
-    maxSeconds: 30,
-    revealScreensAbove: 0,
+    maxSeconds: 60,
+    revealScreensAbove: 0.5,
     maxStableDepth: 4,
     maxEdgeRollouts: 360,
     budgetMs: 5,
