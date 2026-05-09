@@ -22,12 +22,12 @@ export const OVERLAY_DEFAULTS: {
   highlightChosenChain: boolean;
 } = {
   minSupportRank: 0.7,
-  widthMin: 0.3,
-  widthMax: 7,
+  widthMin: 0.5,
+  widthMax: 5,
   shareWidthScale: 18,
   alphaMin: 0.07,
   alphaMax: 0.9,
-  alphaGamma: 4,
+  alphaGamma: 6,
   generationWidthWeights: DEFAULT_TRAJECTORY_GENERATION_WIDTH_WEIGHTS,
   color: 0xff3333,
   highlightChosenChain: false,

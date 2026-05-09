@@ -85,8 +85,8 @@ test.describe('AI playground', () => {
     await expect(page.locator('#overlay-lineageClaimAmp')).toHaveCount(0);
     await expect(page.locator('#objective-asymmetricYGain')).toHaveCount(0);
     await expect(page.locator('#overlay-minSupportRank-value')).toHaveText('0.70');
-    await expect(page.locator('#overlay-widthMin-value')).toHaveText('0.30');
-    await expect(page.locator('#overlay-widthMax-value')).toHaveText('7.0');
+    await expect(page.locator('#overlay-widthMin-value')).toHaveText('0.50');
+    await expect(page.locator('#overlay-widthMax-value')).toHaveText('5.0');
     await expect(page.locator('#overlay-shareWidthScale-value')).toHaveText('18.0');
     await expect(page.locator('#overlay-generationWeight1-value')).toHaveText('1.00');
     await expect(page.locator('#overlay-generationWeight2-value')).toHaveText('0.90');
@@ -94,7 +94,7 @@ test.describe('AI playground', () => {
     await expect(page.locator('#overlay-generationWeight4')).toHaveCount(0);
     await expect(page.locator('#overlay-alphaMin-value')).toHaveText('0.07');
     await expect(page.locator('#overlay-alphaMax-value')).toHaveText('0.90');
-    await expect(page.locator('#overlay-alphaGamma-value')).toHaveText('4.0');
+    await expect(page.locator('#overlay-alphaGamma-value')).toHaveText('6.0');
     await expect(page.locator('#overlay-color')).toHaveValue('#ff3333');
     await expect(page.locator('#overlay-highlightChosen')).not.toBeChecked();
     await page.waitForFunction(() => {
