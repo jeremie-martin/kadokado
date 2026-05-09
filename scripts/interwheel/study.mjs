@@ -89,12 +89,16 @@ const METRICS = {
 // should focus on wallJ/min, wall%, and wall steer, but side effects such as
 // climb speed or capture rate stay visible in the same report. The metric
 // registry decides how to sweep; people decide which analytics matter.
+// Derived analytics use generic formulas (`perMinute`, `percentTicks`,
+// `ratio`) from raw trial facts, but the useful output list stays explicit so
+// the report does not invent meaningless fields like seed/minute.
 const RESPONSE_ANALYTICS = [
   { key: 'wallJumpsPerMin', label: 'wallJ/min', noiseFloor: 0.5 },
   { key: 'wallPercent', label: 'wall%', noiseFloor: 0.25 },
   { key: 'spreadRangeWall', label: 'wall steer', noiseFloor: 5 },
   { key: 'height', label: 'height', noiseFloor: 10 },
-  { key: 'runClimbMetersPerSec', label: 'run m/s', noiseFloor: 0.25 },
+  { key: 'heightPerMin', label: 'h/min', noiseFloor: 10 },
+  { key: 'scorePerMin', label: 'score/min', noiseFloor: 10 },
   { key: 'died', label: 'died%', noiseFloor: 1, scale: 100 },
   { key: 'captureRate', label: 'capture%', noiseFloor: 2, scale: 100 },
   { key: 'pastillesPerMin', label: 'past/min', noiseFloor: 1 },
@@ -103,11 +107,19 @@ const RESPONSE_ANALYTICS = [
 
 const SUMMARY_FIELDS = [
   'score',
+  'durationSeconds',
+  'heightPerSec',
+  'runClimbMetersPerSec',
   'jumpsPerMin',
   'wheelJumpsPerMin',
+  'sparksPerMin',
+  'bonusScorePerMin',
   'pastilles',
+  'sparks',
+  'bonusScore',
   'flightPercent',
   'wheelPercent',
+  'classifiedPercent',
   'wheelRevMedian',
   'wallDrifts',
   'planMs',
@@ -381,29 +393,31 @@ async function runCondition(browser, url, condition, args) {
         function compactTrial(trial, maxTicksLocal) {
           const summary = trial.analytics.summary;
           const planner = summary.planner;
-          const died = trial.ticks < maxTicksLocal ? 1 : 0;
+          const ticks = trial.ticks;
+          const durationSeconds = ticks / 40;
+          const durationMinutes = durationSeconds / 60;
+          const died = ticks < maxTicksLocal ? 1 : 0;
           const range = planner.leafScoreSpreadRange ?? {};
-          return {
+          const facts = {
             seed: trial.seed,
             height: trial.heightMeters,
             score: trial.score,
-            ticks: trial.ticks,
-            runClimbMetersPerSec: trial.ticks > 0 ? trial.heightMeters / (trial.ticks / 40) : 0,
+            ticks,
+            durationSeconds,
             cpuMs: trial.cpuMs,
             died,
             deathCause: summary.deathCause,
-            jumpsPerMin: summary.actionsPerMinute.jumpsPerMinute,
-            wheelJumpsPerMin: summary.actionsPerMinute.wheelJumpsPerMinute,
-            wallJumpsPerMin: summary.actionsPerMinute.wallJumpsPerMinute,
-            pastillesPerMin: summary.actionsPerMinute.pastillesPerMinute,
+            jumps: summary.jumps,
+            wheelJumps: summary.wheelJumps,
+            wallJumps: summary.wallJumps,
             pastilles: summary.pastilles,
+            sparks: summary.sparks,
+            bonusScore: summary.bonusScore,
             uniquePerceivedPastilles: trial.uniquePerceivedPastilles,
-            captureRate: trial.uniquePerceivedPastilles > 0
-              ? summary.pastilles / trial.uniquePerceivedPastilles
-              : 0,
-            flightPercent: summary.phaseTime.flightPercent,
-            wheelPercent: summary.phaseTime.wheelPercent,
-            wallPercent: summary.phaseTime.wallPercent,
+            flightTicks: summary.phaseTime.flightTicks,
+            wheelTicks: summary.phaseTime.wheelTicks,
+            wallTicks: summary.phaseTime.wallTicks,
+            classifiedTicks: summary.phaseTime.classifiedTicks,
             wheelRevMedian: summary.wheelStayRevolutions.median,
             wallDrifts: summary.wallDrifts,
             planMs: trial.planner.avgPlanMs,
@@ -413,6 +427,28 @@ async function runCondition(browser, url, condition, args) {
             scoreTotal: planner.bestScoreBreakdown.total?.mean ?? 0,
             spreadRangeClimb: range.climb?.mean ?? 0,
             spreadRangeWall: range.wall?.mean ?? 0,
+          };
+          const perMinute = (value) => (durationMinutes > 0 ? value / durationMinutes : 0);
+          const perSecond = (value) => (durationSeconds > 0 ? value / durationSeconds : 0);
+          const percentTicks = (value) => (ticks > 0 ? (100 * value) / ticks : 0);
+          const ratio = (num, den) => (den > 0 ? num / den : 0);
+          return {
+            ...facts,
+            heightPerSec: perSecond(facts.height),
+            runClimbMetersPerSec: perSecond(facts.height),
+            heightPerMin: perMinute(facts.height),
+            scorePerMin: perMinute(facts.score),
+            jumpsPerMin: perMinute(facts.jumps),
+            wheelJumpsPerMin: perMinute(facts.wheelJumps),
+            wallJumpsPerMin: perMinute(facts.wallJumps),
+            pastillesPerMin: perMinute(facts.pastilles),
+            sparksPerMin: perMinute(facts.sparks),
+            bonusScorePerMin: perMinute(facts.bonusScore),
+            flightPercent: percentTicks(facts.flightTicks),
+            wheelPercent: percentTicks(facts.wheelTicks),
+            wallPercent: percentTicks(facts.wallTicks),
+            classifiedPercent: percentTicks(facts.classifiedTicks),
+            captureRate: ratio(facts.pastilles, facts.uniquePerceivedPastilles),
           };
         }
       }, {
@@ -552,15 +588,15 @@ function reportMarkdown(summary) {
     '',
     '## Headline',
     '',
-    '| condition | policy | metric params | h(m) | run m/s | wallJ/min | wall% | died | capture% | perceived | past/min | wall steer |',
-    '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
+    '| condition | policy | metric params | h(m) | h/min | score/min | wallJ/min | wall% | died | capture% | perceived | past/min | wall steer |',
+    '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
   ];
 
   for (const s of summary.summaries) {
     const m = s.metrics;
     lines.push(
       `| ${s.name} | ${policyLabel(s.policy)} | ${metricLabel(s.metricParams)} | ` +
-      `${fmt(m.height.mean, 0)} | ${fmt(m.runClimbMetersPerSec.mean, 2)} | ` +
+      `${fmt(m.height.mean, 0)} | ${fmt(m.heightPerMin.mean, 1)} | ${fmt(m.scorePerMin.mean, 1)} | ` +
       `${fmt(m.wallJumpsPerMin.mean, 1)} | ${fmt(m.wallPercent.mean, 1)} | ` +
       `${fmt(m.died.mean * 100, 0)}% | ${fmt(m.captureRate.mean * 100, 1)}% | ` +
       `${fmt(m.uniquePerceivedPastilles.mean, 1)} | ${fmt(m.pastillesPerMin.mean, 1)} | ` +
@@ -596,7 +632,7 @@ function metricLabel(metricParams) {
 function printConditionSummary(result) {
   const m = summarizeCondition(result).metrics;
   console.log(
-    `  h=${m.height.mean.toFixed(1)}m run=${m.runClimbMetersPerSec.mean.toFixed(2)}m/s ` +
+    `  h=${m.height.mean.toFixed(1)}m h/min=${m.heightPerMin.mean.toFixed(1)} score/min=${m.scorePerMin.mean.toFixed(1)} ` +
     `wallJ=${m.wallJumpsPerMin.mean.toFixed(1)}/min wall=${m.wallPercent.mean.toFixed(1)}% ` +
     `capture=${(m.captureRate.mean * 100).toFixed(1)}% died=${(m.died.mean * 100).toFixed(0)}%`,
   );

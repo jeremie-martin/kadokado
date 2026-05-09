@@ -120,6 +120,9 @@ Interwheel studies must make responsiveness first-class:
 - Response-curve tables are shared tracked analytics, not metric-owned target
   declarations. For example, a wall study should focus on wall jumps/min, wall
   time, and wall steering; capture percentage remains visible as a side effect.
+- Per-minute, percent, and ratio analytics should be derived from raw trial
+  facts through common formulas, then selected explicitly for the report. Do not
+  auto-generate every possible numeric variant.
 - Parity is opt-in for the study runner; use `--parity` when validating that the
   pure-planner path still matches the mounted path.
 
