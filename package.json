@@ -16,7 +16,8 @@
     "analyze:interwheel:study": "node scripts/interwheel/study.mjs",
     "analyze:interwheel:climb": "node scripts/interwheel/validate-climb-agent.mjs",
     "analyze:interwheel:edges": "node scripts/interwheel/validate-edges.mjs",
-    "capture:interwheel": "node scripts/capture-interwheel.mjs"
+    "capture:interwheel": "node scripts/capture-interwheel.mjs",
+    "video:interwheel": "node scripts/interwheel/make-video.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
