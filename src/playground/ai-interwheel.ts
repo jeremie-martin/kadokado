@@ -273,20 +273,52 @@ function syncSlider(
   if (output) output.value = value.toFixed(digits);
 }
 
+// Updates the visual fill of a dual-thumb range-slider container based on
+// the current values of its two child <input type="range"> elements. Called
+// from syncSceneControls() so the highlighted band always reflects [min,max].
+function syncRangeSliderFill(container: HTMLElement | null, lo: number, hi: number, disabled: boolean): void {
+  if (!container) return;
+  const lowInput = container.querySelector<HTMLInputElement>('input:nth-of-type(1)');
+  const highInput = container.querySelector<HTMLInputElement>('input:nth-of-type(2)');
+  const fill = container.querySelector<HTMLElement>('.range-slider-fill');
+  if (!lowInput || !highInput || !fill) return;
+  const min = Number(lowInput.min);
+  const max = Number(lowInput.max);
+  const range = max - min || 1;
+  const loPct = ((lo - min) / range) * 100;
+  const hiPct = ((hi - min) / range) * 100;
+  fill.style.left = `${loPct}%`;
+  fill.style.right = `${100 - hiPct}%`;
+  container.dataset.disabled = String(disabled);
+}
+
+
 function syncSceneControls(): void {
   syncSlider(sceneWaterMarginInput, sceneWaterMarginOutput, sceneWaterMarginMeters, sceneWaterMarginNatural, 0);
   if (sceneWaterMarginNaturalInput) sceneWaterMarginNaturalInput.checked = sceneWaterMarginNatural;
 
   syncSlider(sceneWaterSpeedMinInput, sceneWaterSpeedMinOutput, sceneWaterSpeedMin, sceneWaterSpeedNatural);
   syncSlider(sceneWaterSpeedMaxInput, sceneWaterSpeedMaxOutput, sceneWaterSpeedMax, sceneWaterSpeedNatural);
+  syncRangeSliderFill(
+    sceneWaterSpeedMinInput?.closest<HTMLElement>('.range-slider') ?? null,
+    sceneWaterSpeedMin, sceneWaterSpeedMax, sceneWaterSpeedNatural,
+  );
   if (sceneWaterSpeedNaturalInput) sceneWaterSpeedNaturalInput.checked = sceneWaterSpeedNatural;
 
   syncSlider(sceneDifficultyMinInput, sceneDifficultyMinOutput, sceneDifficultyMin, sceneDifficultyNatural);
   syncSlider(sceneDifficultyMaxInput, sceneDifficultyMaxOutput, sceneDifficultyMax, sceneDifficultyNatural);
+  syncRangeSliderFill(
+    sceneDifficultyMinInput?.closest<HTMLElement>('.range-slider') ?? null,
+    sceneDifficultyMin, sceneDifficultyMax, sceneDifficultyNatural,
+  );
   if (sceneDifficultyNaturalInput) sceneDifficultyNaturalInput.checked = sceneDifficultyNatural;
 
   syncSlider(sceneMineDensityMinInput, sceneMineDensityMinOutput, sceneMineDensityMin, sceneMineDensityNatural);
   syncSlider(sceneMineDensityMaxInput, sceneMineDensityMaxOutput, sceneMineDensityMax, sceneMineDensityNatural);
+  syncRangeSliderFill(
+    sceneMineDensityMinInput?.closest<HTMLElement>('.range-slider') ?? null,
+    sceneMineDensityMin, sceneMineDensityMax, sceneMineDensityNatural,
+  );
   if (sceneMineDensityNaturalInput) sceneMineDensityNaturalInput.checked = sceneMineDensityNatural;
 
   syncSlider(scenePastilleSpawnInput, scenePastilleSpawnOutput, scenePastilleSpawn, scenePastilleSpawnNatural);
@@ -338,16 +370,34 @@ function setupSceneControls(): void {
   bindSliderInput(sceneWaterMarginInput, (v) => { sceneWaterMarginMeters = Math.round(v); }, { min: 0, max: 1000 });
   bindToggle(sceneWaterMarginNaturalInput, (v) => { sceneWaterMarginNatural = v; });
 
-  bindSliderInput(sceneWaterSpeedMinInput, (v) => { sceneWaterSpeedMin = v; }, { min: 0, max: 10 });
-  bindSliderInput(sceneWaterSpeedMaxInput, (v) => { sceneWaterSpeedMax = v; }, { min: 0, max: 10 });
+  bindSliderInput(sceneWaterSpeedMinInput, (v) => {
+    sceneWaterSpeedMin = v;
+    if (sceneWaterSpeedMin > sceneWaterSpeedMax) sceneWaterSpeedMax = sceneWaterSpeedMin;
+  }, { min: 0, max: 10 });
+  bindSliderInput(sceneWaterSpeedMaxInput, (v) => {
+    sceneWaterSpeedMax = v;
+    if (sceneWaterSpeedMax < sceneWaterSpeedMin) sceneWaterSpeedMin = sceneWaterSpeedMax;
+  }, { min: 0, max: 10 });
   bindToggle(sceneWaterSpeedNaturalInput, (v) => { sceneWaterSpeedNatural = v; });
 
-  bindSliderInput(sceneDifficultyMinInput, (v) => { sceneDifficultyMin = v; }, { min: 0, max: 1 });
-  bindSliderInput(sceneDifficultyMaxInput, (v) => { sceneDifficultyMax = v; }, { min: 0, max: 1 });
+  bindSliderInput(sceneDifficultyMinInput, (v) => {
+    sceneDifficultyMin = v;
+    if (sceneDifficultyMin > sceneDifficultyMax) sceneDifficultyMax = sceneDifficultyMin;
+  }, { min: 0, max: 1 });
+  bindSliderInput(sceneDifficultyMaxInput, (v) => {
+    sceneDifficultyMax = v;
+    if (sceneDifficultyMax < sceneDifficultyMin) sceneDifficultyMin = sceneDifficultyMax;
+  }, { min: 0, max: 1 });
   bindToggle(sceneDifficultyNaturalInput, (v) => { sceneDifficultyNatural = v; });
 
-  bindSliderInput(sceneMineDensityMinInput, (v) => { sceneMineDensityMin = v; }, { min: 0, max: 2 });
-  bindSliderInput(sceneMineDensityMaxInput, (v) => { sceneMineDensityMax = v; }, { min: 0, max: 2 });
+  bindSliderInput(sceneMineDensityMinInput, (v) => {
+    sceneMineDensityMin = v;
+    if (sceneMineDensityMin > sceneMineDensityMax) sceneMineDensityMax = sceneMineDensityMin;
+  }, { min: 0, max: 2 });
+  bindSliderInput(sceneMineDensityMaxInput, (v) => {
+    sceneMineDensityMax = v;
+    if (sceneMineDensityMax < sceneMineDensityMin) sceneMineDensityMin = sceneMineDensityMax;
+  }, { min: 0, max: 2 });
   bindToggle(sceneMineDensityNaturalInput, (v) => { sceneMineDensityNatural = v; });
 
   bindSliderInput(scenePastilleSpawnInput, (v) => { scenePastilleSpawn = v; }, { min: 0, max: 3 });

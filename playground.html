@@ -25,6 +25,23 @@
       .control label { color: #edf6f8; font-size: 13px; }
       .control output { min-width: 44px; font: 12px/1.2 monospace; color: #9fd5e2; text-align: right; }
       .control input { grid-column: 1 / -1; width: 100%; accent-color: #72c7d6; }
+      /* Dual-thumb range slider: two <input type="range"> stacked over one
+         track div. Pointer-events:none on the inputs lets clicks pass through
+         to the thumb pseudo-elements only, which makes both thumbs grabbable
+         even though the inputs share the same area. */
+      .range-slider { grid-column: 1 / -1; position: relative; height: 24px; padding: 0; }
+      .range-slider-track { position: absolute; top: 50%; left: 0; right: 0; height: 4px; background: #2a3a44; border-radius: 2px; transform: translateY(-50%); }
+      .range-slider-fill { position: absolute; top: 0; bottom: 0; background: #72c7d6; border-radius: 2px; }
+      .range-slider input[type="range"] { position: absolute; top: 0; left: 0; width: 100%; height: 24px; margin: 0; padding: 0; pointer-events: none; background: transparent; -webkit-appearance: none; appearance: none; grid-column: auto; }
+      .range-slider input[type="range"]::-webkit-slider-runnable-track { background: transparent; height: 100%; }
+      .range-slider input[type="range"]::-moz-range-track { background: transparent; height: 100%; }
+      .range-slider input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; pointer-events: auto; width: 14px; height: 14px; border-radius: 50%; background: #72c7d6; border: 2px solid #0e1418; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.5); }
+      .range-slider input[type="range"]::-moz-range-thumb { pointer-events: auto; width: 14px; height: 14px; border-radius: 50%; background: #72c7d6; border: 2px solid #0e1418; cursor: pointer; box-shadow: 0 1px 2px rgba(0,0,0,.5); }
+      .range-slider[data-disabled="true"] { opacity: .4; }
+      .range-slider[data-disabled="true"] input[type="range"]::-webkit-slider-thumb { cursor: not-allowed; pointer-events: none; }
+      .range-slider[data-disabled="true"] input[type="range"]::-moz-range-thumb { cursor: not-allowed; pointer-events: none; }
+      .range-slider-output { display: flex; gap: 4px; align-items: center; }
+      .range-slider-output .arrow { color: #78919b; }
       .actions { display: flex; gap: 8px; margin-top: 14px; }
       .actions button { border: 1px solid #365866; background: #18282f; color: #dbecef; border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
       .actions button:hover { background: #20343d; }
@@ -103,10 +120,16 @@
               <input id="scene-waterSpeed-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
-            <output id="scene-waterSpeedMin-value">1.00</output>
-            <input id="scene-waterSpeedMin" type="range" min="0" max="10" step="0.1" value="1.00" disabled aria-label="Water speed min">
-            <output id="scene-waterSpeedMax-value">1.00</output>
-            <input id="scene-waterSpeedMax" type="range" min="0" max="10" step="0.1" value="1.00" disabled aria-label="Water speed max">
+            <span class="range-slider-output">
+              <output id="scene-waterSpeedMin-value">1.00</output>
+              <span class="arrow">→</span>
+              <output id="scene-waterSpeedMax-value">1.00</output>
+            </span>
+            <div class="range-slider" data-disabled="true">
+              <div class="range-slider-track"><div class="range-slider-fill"></div></div>
+              <input id="scene-waterSpeedMin" type="range" min="0" max="10" step="0.1" value="1.00" disabled aria-label="Water speed min">
+              <input id="scene-waterSpeedMax" type="range" min="0" max="10" step="0.1" value="1.00" disabled aria-label="Water speed max">
+            </div>
           </div>
           <div class="control">
             <label>
@@ -114,10 +137,16 @@
               <input id="scene-difficulty-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
-            <output id="scene-difficultyMin-value">0.30</output>
-            <input id="scene-difficultyMin" type="range" min="0" max="1" step="0.05" value="0.30" disabled aria-label="Difficulty min">
-            <output id="scene-difficultyMax-value">0.30</output>
-            <input id="scene-difficultyMax" type="range" min="0" max="1" step="0.05" value="0.30" disabled aria-label="Difficulty max">
+            <span class="range-slider-output">
+              <output id="scene-difficultyMin-value">0.30</output>
+              <span class="arrow">→</span>
+              <output id="scene-difficultyMax-value">0.30</output>
+            </span>
+            <div class="range-slider" data-disabled="true">
+              <div class="range-slider-track"><div class="range-slider-fill"></div></div>
+              <input id="scene-difficultyMin" type="range" min="0" max="1" step="0.05" value="0.30" disabled aria-label="Difficulty min">
+              <input id="scene-difficultyMax" type="range" min="0" max="1" step="0.05" value="0.30" disabled aria-label="Difficulty max">
+            </div>
           </div>
           <div class="control">
             <label>
@@ -125,10 +154,16 @@
               <input id="scene-mineDensity-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
-            <output id="scene-mineDensityMin-value">0.30</output>
-            <input id="scene-mineDensityMin" type="range" min="0" max="2" step="0.05" value="0.30" disabled aria-label="Mine density min">
-            <output id="scene-mineDensityMax-value">0.30</output>
-            <input id="scene-mineDensityMax" type="range" min="0" max="2" step="0.05" value="0.30" disabled aria-label="Mine density max">
+            <span class="range-slider-output">
+              <output id="scene-mineDensityMin-value">0.30</output>
+              <span class="arrow">→</span>
+              <output id="scene-mineDensityMax-value">0.30</output>
+            </span>
+            <div class="range-slider" data-disabled="true">
+              <div class="range-slider-track"><div class="range-slider-fill"></div></div>
+              <input id="scene-mineDensityMin" type="range" min="0" max="2" step="0.05" value="0.30" disabled aria-label="Mine density min">
+              <input id="scene-mineDensityMax" type="range" min="0" max="2" step="0.05" value="0.30" disabled aria-label="Mine density max">
+            </div>
           </div>
           <div class="control">
             <label for="scene-pastilleSpawn">
