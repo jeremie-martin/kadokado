@@ -98,46 +98,37 @@
             <input id="scene-waterMargin" type="range" min="0" max="240" step="5" value="60" disabled>
           </div>
           <div class="control">
-            <label for="scene-waterSpeed">
+            <label>
               Water speed (×)
               <input id="scene-waterSpeed-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
-            <output id="scene-waterSpeed-value">1.00</output>
-            <input id="scene-waterSpeed" type="range" min="0" max="10" step="0.1" value="1.00" disabled>
+            <output id="scene-waterSpeedMin-value">1.00</output>
+            <input id="scene-waterSpeedMin" type="range" min="0" max="10" step="0.1" value="1.00" disabled aria-label="Water speed min">
+            <output id="scene-waterSpeedMax-value">1.00</output>
+            <input id="scene-waterSpeedMax" type="range" min="0" max="10" step="0.1" value="1.00" disabled aria-label="Water speed max">
           </div>
           <div class="control">
-            <label for="scene-waterSpeedRamp">Water speed ramp</label>
-            <output id="scene-waterSpeedRamp-value">0.00</output>
-            <input id="scene-waterSpeedRamp" type="range" min="0" max="10" step="0.1" value="0.00" disabled>
-          </div>
-          <div class="control">
-            <label for="scene-difficulty">
+            <label>
               Difficulty (wheels)
               <input id="scene-difficulty-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
-            <output id="scene-difficulty-value">0.30</output>
-            <input id="scene-difficulty" type="range" min="0" max="1" step="0.05" value="0.30" disabled>
+            <output id="scene-difficultyMin-value">0.30</output>
+            <input id="scene-difficultyMin" type="range" min="0" max="1" step="0.05" value="0.30" disabled aria-label="Difficulty min">
+            <output id="scene-difficultyMax-value">0.30</output>
+            <input id="scene-difficultyMax" type="range" min="0" max="1" step="0.05" value="0.30" disabled aria-label="Difficulty max">
           </div>
           <div class="control">
-            <label for="scene-difficultyRamp">Difficulty ramp</label>
-            <output id="scene-difficultyRamp-value">0.00</output>
-            <input id="scene-difficultyRamp" type="range" min="0" max="5" step="0.05" value="0.00" disabled>
-          </div>
-          <div class="control">
-            <label for="scene-mineDensity">
+            <label>
               Mine density
               <input id="scene-mineDensity-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
-            <output id="scene-mineDensity-value">0.30</output>
-            <input id="scene-mineDensity" type="range" min="0" max="2" step="0.05" value="0.30" disabled>
-          </div>
-          <div class="control">
-            <label for="scene-mineDensityRamp">Mine density ramp</label>
-            <output id="scene-mineDensityRamp-value">0.00</output>
-            <input id="scene-mineDensityRamp" type="range" min="0" max="5" step="0.05" value="0.00" disabled>
+            <output id="scene-mineDensityMin-value">0.30</output>
+            <input id="scene-mineDensityMin" type="range" min="0" max="2" step="0.05" value="0.30" disabled aria-label="Mine density min">
+            <output id="scene-mineDensityMax-value">0.30</output>
+            <input id="scene-mineDensityMax" type="range" min="0" max="2" step="0.05" value="0.30" disabled aria-label="Mine density max">
           </div>
           <div class="control">
             <label for="scene-pastilleSpawn">
@@ -147,6 +138,11 @@
             </label>
             <output id="scene-pastilleSpawn-value">1.00</output>
             <input id="scene-pastilleSpawn" type="range" min="0" max="3" step="0.05" value="1.00" disabled>
+          </div>
+          <div class="control">
+            <label for="scene-rampSpeed">Ramp speed (×)</label>
+            <output id="scene-rampSpeed-value">1.00</output>
+            <input id="scene-rampSpeed" type="range" min="0" max="5" step="0.1" value="1.00" disabled>
           </div>
         </div>
         <div class="actions">

@@ -179,22 +179,43 @@ export function getInitialWaterMarginPxOverride(): number | null {
 export const INITIAL_WATER_Y_DEFAULT = -300;
 
 // `DifficultyCurve` lets a Scene-panel override be more than a constant: it
-// can specify a floor at altitude=0 and a ramp that grows with height. Used
-// by the wheel-difficulty, mine-density, and water-speed overrides so a video
-// run can start hard and escalate, instead of starting trivially easy and
-// only hitting real difficulty several thousand meters up.
-export type DifficultyCurve = { floor: number; ramp: number };
+// names a `min` (value at altitude 0) and a `max` (target value at the end of
+// the ramp). The progression is governed globally by `rampSpeedOverride`:
+//   value(h) = clamp(min + (max − min) × clamp(h × speed / 1600, 0, 1), ceiling)
+// Setting min === max (the legacy single-value form) gives a flat parameter.
+// Setting max > min plus a non-zero ramp speed lets a Scene escalate as the
+// agent climbs — the recipe for short videos that get harder fast without
+// slowing the AI.
+export type DifficultyCurve = { min: number; max: number };
 function normalizeCurve(value: DifficultyCurve | number | null, ceiling: number): DifficultyCurve | null {
   if (value === null) return null;
-  if (typeof value === 'number') return { floor: clamp(value, 0, ceiling), ramp: 0 };
+  if (typeof value === 'number') {
+    const v = clamp(value, 0, ceiling);
+    return { min: v, max: v };
+  }
   return {
-    floor: clamp(value.floor, 0, ceiling),
-    ramp: Math.max(0, value.ramp),
+    min: clamp(value.min, 0, ceiling),
+    max: clamp(value.max, 0, ceiling),
   };
 }
 function curveAtHeight(curve: DifficultyCurve, heightMeters: number, ceiling: number): number {
-  return clamp(curve.floor + curve.ramp * (heightMeters / DIFFICULTY_KNEE_METERS), 0, ceiling);
+  const speed = rampSpeedOverride ?? RAMP_SPEED_DEFAULT;
+  const t = clamp(heightMeters * speed / DIFFICULTY_KNEE_METERS, 0, 1);
+  return clamp(curve.min + (curve.max - curve.min) * t, 0, ceiling);
 }
+
+// Global ramp speed multiplier shared by all three Scene curves (water speed,
+// wheel difficulty, mine density). `1×` means each curve reaches its `max` at
+// the natural ramp distance (1600m); `2×` reaches max in 800m; `0×` stays at
+// `min` forever (fixed). `null` falls back to the default 1×.
+let rampSpeedOverride: number | null = null;
+export function setRampSpeedOverride(value: number | null): void {
+  rampSpeedOverride = value === null ? null : Math.max(0, value);
+}
+export function getRampSpeedOverride(): number | null {
+  return rampSpeedOverride;
+}
+export const RAMP_SPEED_DEFAULT = 1;
 
 // Optional multiplier on the per-tick water rise rate, applied to both the
 // base WATER_SPEED and the accumulating waterBoost. Accepts either a constant

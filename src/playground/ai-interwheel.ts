@@ -5,6 +5,7 @@ import {
   setInitialWaterMarginPxOverride,
   setMineDifficultyOverride,
   setPastilleSpawnChanceOverride,
+  setRampSpeedOverride,
   setWaterSpeedMultiplierOverride,
 } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
@@ -109,35 +110,39 @@ let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
 //   - pastilleSpawn (0..3) attempts that many pastilles per y-step (>1
 //     stacks multiple per row); useful for visually dense starts.
 // The non-natural sliders for water speed, wheel difficulty, and mine density
-// each have a "floor" (the existing slider value) AND a "ramp" knob. The
-// effective curve is `floor + ramp × (h / 1600m)`, clamped to the
-// parameter's natural ceiling. ramp=0 means a flat fixed value (legacy
-// behavior). ramp>0 makes the parameter escalate as the agent climbs —
-// the recipe for short videos that get harder fast without slowing the AI.
+// each have a Min and a Max. A single global Ramp speed (×) governs how fast
+// each parameter walks from its Min to its Max as the agent climbs:
+//   value(h) = clamp(min + (max − min) × clamp(h × speed / 1600, 0, 1), 0, max)
+// At Min === Max the parameter is flat (legacy fixed-value behavior). With
+// Max > Min and speed=1×, the parameter reaches Max at 1600m altitude —
+// matching the natural ramp pace. speed=2× reaches Max in 800m; speed=0
+// keeps the parameter at Min indefinitely.
 const SCENE_DEFAULTS = {
   waterMarginMeters: 60,
-  waterSpeed: 1.00,
-  waterSpeedRamp: 0.00,
-  difficulty: 0.30,
-  difficultyRamp: 0.00,
-  mineDensity: 0.30,
-  mineDensityRamp: 0.00,
+  waterSpeedMin: 1.00,
+  waterSpeedMax: 1.00,
+  difficultyMin: 0.30,
+  difficultyMax: 0.30,
+  mineDensityMin: 0.30,
+  mineDensityMax: 0.30,
   pastilleSpawn: 1.00,
+  rampSpeed: 1.00,
 };
 const PX_PER_METER = 5;
 let sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
 let sceneWaterMarginNatural = true;
-let sceneWaterSpeed = SCENE_DEFAULTS.waterSpeed;
-let sceneWaterSpeedRamp = SCENE_DEFAULTS.waterSpeedRamp;
+let sceneWaterSpeedMin = SCENE_DEFAULTS.waterSpeedMin;
+let sceneWaterSpeedMax = SCENE_DEFAULTS.waterSpeedMax;
 let sceneWaterSpeedNatural = true;
-let sceneDifficulty = SCENE_DEFAULTS.difficulty;
-let sceneDifficultyRamp = SCENE_DEFAULTS.difficultyRamp;
+let sceneDifficultyMin = SCENE_DEFAULTS.difficultyMin;
+let sceneDifficultyMax = SCENE_DEFAULTS.difficultyMax;
 let sceneDifficultyNatural = true;
-let sceneMineDensity = SCENE_DEFAULTS.mineDensity;
-let sceneMineDensityRamp = SCENE_DEFAULTS.mineDensityRamp;
+let sceneMineDensityMin = SCENE_DEFAULTS.mineDensityMin;
+let sceneMineDensityMax = SCENE_DEFAULTS.mineDensityMax;
 let sceneMineDensityNatural = true;
 let scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
 let scenePastilleSpawnNatural = true;
+let sceneRampSpeed = SCENE_DEFAULTS.rampSpeed;
 
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
@@ -232,167 +237,139 @@ function setupPolicyControls(): void {
 const sceneWaterMarginInput = document.getElementById('scene-waterMargin') as HTMLInputElement | null;
 const sceneWaterMarginOutput = document.getElementById('scene-waterMargin-value') as HTMLOutputElement | null;
 const sceneWaterMarginNaturalInput = document.getElementById('scene-waterMargin-natural') as HTMLInputElement | null;
-const sceneWaterSpeedInput = document.getElementById('scene-waterSpeed') as HTMLInputElement | null;
-const sceneWaterSpeedOutput = document.getElementById('scene-waterSpeed-value') as HTMLOutputElement | null;
+const sceneWaterSpeedMinInput = document.getElementById('scene-waterSpeedMin') as HTMLInputElement | null;
+const sceneWaterSpeedMinOutput = document.getElementById('scene-waterSpeedMin-value') as HTMLOutputElement | null;
+const sceneWaterSpeedMaxInput = document.getElementById('scene-waterSpeedMax') as HTMLInputElement | null;
+const sceneWaterSpeedMaxOutput = document.getElementById('scene-waterSpeedMax-value') as HTMLOutputElement | null;
 const sceneWaterSpeedNaturalInput = document.getElementById('scene-waterSpeed-natural') as HTMLInputElement | null;
-const sceneWaterSpeedRampInput = document.getElementById('scene-waterSpeedRamp') as HTMLInputElement | null;
-const sceneWaterSpeedRampOutput = document.getElementById('scene-waterSpeedRamp-value') as HTMLOutputElement | null;
-const sceneDifficultyRampInput = document.getElementById('scene-difficultyRamp') as HTMLInputElement | null;
-const sceneDifficultyRampOutput = document.getElementById('scene-difficultyRamp-value') as HTMLOutputElement | null;
-const sceneMineDensityRampInput = document.getElementById('scene-mineDensityRamp') as HTMLInputElement | null;
-const sceneMineDensityRampOutput = document.getElementById('scene-mineDensityRamp-value') as HTMLOutputElement | null;
-const sceneDifficultyInput = document.getElementById('scene-difficulty') as HTMLInputElement | null;
-const sceneDifficultyOutput = document.getElementById('scene-difficulty-value') as HTMLOutputElement | null;
+const sceneDifficultyMinInput = document.getElementById('scene-difficultyMin') as HTMLInputElement | null;
+const sceneDifficultyMinOutput = document.getElementById('scene-difficultyMin-value') as HTMLOutputElement | null;
+const sceneDifficultyMaxInput = document.getElementById('scene-difficultyMax') as HTMLInputElement | null;
+const sceneDifficultyMaxOutput = document.getElementById('scene-difficultyMax-value') as HTMLOutputElement | null;
+const sceneMineDensityMinInput = document.getElementById('scene-mineDensityMin') as HTMLInputElement | null;
+const sceneMineDensityMinOutput = document.getElementById('scene-mineDensityMin-value') as HTMLOutputElement | null;
+const sceneMineDensityMaxInput = document.getElementById('scene-mineDensityMax') as HTMLInputElement | null;
+const sceneMineDensityMaxOutput = document.getElementById('scene-mineDensityMax-value') as HTMLOutputElement | null;
+const sceneRampSpeedInput = document.getElementById('scene-rampSpeed') as HTMLInputElement | null;
+const sceneRampSpeedOutput = document.getElementById('scene-rampSpeed-value') as HTMLOutputElement | null;
 const sceneDifficultyNaturalInput = document.getElementById('scene-difficulty-natural') as HTMLInputElement | null;
-const sceneMineDensityInput = document.getElementById('scene-mineDensity') as HTMLInputElement | null;
-const sceneMineDensityOutput = document.getElementById('scene-mineDensity-value') as HTMLOutputElement | null;
 const sceneMineDensityNaturalInput = document.getElementById('scene-mineDensity-natural') as HTMLInputElement | null;
 const scenePastilleSpawnInput = document.getElementById('scene-pastilleSpawn') as HTMLInputElement | null;
 const scenePastilleSpawnOutput = document.getElementById('scene-pastilleSpawn-value') as HTMLOutputElement | null;
 const scenePastilleSpawnNaturalInput = document.getElementById('scene-pastilleSpawn-natural') as HTMLInputElement | null;
 const sceneReset = document.getElementById('scene-reset') as HTMLButtonElement | null;
 
+function syncSlider(
+  input: HTMLInputElement | null,
+  output: HTMLOutputElement | null,
+  value: number,
+  disabled: boolean,
+  digits = 2,
+): void {
+  if (input) {
+    input.value = String(value);
+    input.disabled = disabled;
+  }
+  if (output) output.value = value.toFixed(digits);
+}
+
 function syncSceneControls(): void {
-  if (sceneWaterMarginInput) {
-    sceneWaterMarginInput.value = String(sceneWaterMarginMeters);
-    sceneWaterMarginInput.disabled = sceneWaterMarginNatural;
-  }
-  if (sceneWaterMarginOutput) sceneWaterMarginOutput.value = String(sceneWaterMarginMeters);
+  syncSlider(sceneWaterMarginInput, sceneWaterMarginOutput, sceneWaterMarginMeters, sceneWaterMarginNatural, 0);
   if (sceneWaterMarginNaturalInput) sceneWaterMarginNaturalInput.checked = sceneWaterMarginNatural;
-  if (sceneWaterSpeedInput) {
-    sceneWaterSpeedInput.value = String(sceneWaterSpeed);
-    sceneWaterSpeedInput.disabled = sceneWaterSpeedNatural;
-  }
-  if (sceneWaterSpeedOutput) sceneWaterSpeedOutput.value = sceneWaterSpeed.toFixed(2);
+
+  syncSlider(sceneWaterSpeedMinInput, sceneWaterSpeedMinOutput, sceneWaterSpeedMin, sceneWaterSpeedNatural);
+  syncSlider(sceneWaterSpeedMaxInput, sceneWaterSpeedMaxOutput, sceneWaterSpeedMax, sceneWaterSpeedNatural);
   if (sceneWaterSpeedNaturalInput) sceneWaterSpeedNaturalInput.checked = sceneWaterSpeedNatural;
-  if (sceneWaterSpeedRampInput) {
-    sceneWaterSpeedRampInput.value = String(sceneWaterSpeedRamp);
-    sceneWaterSpeedRampInput.disabled = sceneWaterSpeedNatural;
-  }
-  if (sceneWaterSpeedRampOutput) sceneWaterSpeedRampOutput.value = sceneWaterSpeedRamp.toFixed(2);
-  if (sceneDifficultyInput) {
-    sceneDifficultyInput.value = String(sceneDifficulty);
-    sceneDifficultyInput.disabled = sceneDifficultyNatural;
-  }
-  if (sceneDifficultyOutput) sceneDifficultyOutput.value = sceneDifficulty.toFixed(2);
+
+  syncSlider(sceneDifficultyMinInput, sceneDifficultyMinOutput, sceneDifficultyMin, sceneDifficultyNatural);
+  syncSlider(sceneDifficultyMaxInput, sceneDifficultyMaxOutput, sceneDifficultyMax, sceneDifficultyNatural);
   if (sceneDifficultyNaturalInput) sceneDifficultyNaturalInput.checked = sceneDifficultyNatural;
-  if (sceneDifficultyRampInput) {
-    sceneDifficultyRampInput.value = String(sceneDifficultyRamp);
-    sceneDifficultyRampInput.disabled = sceneDifficultyNatural;
-  }
-  if (sceneDifficultyRampOutput) sceneDifficultyRampOutput.value = sceneDifficultyRamp.toFixed(2);
-  if (sceneMineDensityInput) {
-    sceneMineDensityInput.value = String(sceneMineDensity);
-    sceneMineDensityInput.disabled = sceneMineDensityNatural;
-  }
-  if (sceneMineDensityOutput) sceneMineDensityOutput.value = sceneMineDensity.toFixed(2);
+
+  syncSlider(sceneMineDensityMinInput, sceneMineDensityMinOutput, sceneMineDensityMin, sceneMineDensityNatural);
+  syncSlider(sceneMineDensityMaxInput, sceneMineDensityMaxOutput, sceneMineDensityMax, sceneMineDensityNatural);
   if (sceneMineDensityNaturalInput) sceneMineDensityNaturalInput.checked = sceneMineDensityNatural;
-  if (sceneMineDensityRampInput) {
-    sceneMineDensityRampInput.value = String(sceneMineDensityRamp);
-    sceneMineDensityRampInput.disabled = sceneMineDensityNatural;
-  }
-  if (sceneMineDensityRampOutput) sceneMineDensityRampOutput.value = sceneMineDensityRamp.toFixed(2);
-  if (scenePastilleSpawnInput) {
-    scenePastilleSpawnInput.value = String(scenePastilleSpawn);
-    scenePastilleSpawnInput.disabled = scenePastilleSpawnNatural;
-  }
-  if (scenePastilleSpawnOutput) scenePastilleSpawnOutput.value = scenePastilleSpawn.toFixed(2);
+
+  syncSlider(scenePastilleSpawnInput, scenePastilleSpawnOutput, scenePastilleSpawn, scenePastilleSpawnNatural);
   if (scenePastilleSpawnNaturalInput) scenePastilleSpawnNaturalInput.checked = scenePastilleSpawnNatural;
+
+  // Global ramp speed is dimmed only when none of the curve sliders are
+  // active; if at least one parameter has an override, the ramp speed
+  // matters.
+  const anyCurveActive = !sceneWaterSpeedNatural || !sceneDifficultyNatural || !sceneMineDensityNatural;
+  syncSlider(sceneRampSpeedInput, sceneRampSpeedOutput, sceneRampSpeed, !anyCurveActive);
 }
 
 // Push the current scene knobs into the sim. Called before each reset so a
 // reseed picks them up; also called on initial mount.
 function applySceneOverridesToSim(): void {
   setInitialWaterMarginPxOverride(sceneWaterMarginNatural ? null : sceneWaterMarginMeters * PX_PER_METER);
-  setWaterSpeedMultiplierOverride(sceneWaterSpeedNatural ? null : { floor: sceneWaterSpeed, ramp: sceneWaterSpeedRamp });
-  setGenerationDifficultyOverride(sceneDifficultyNatural ? null : { floor: sceneDifficulty, ramp: sceneDifficultyRamp });
-  setMineDifficultyOverride(sceneMineDensityNatural ? null : { floor: sceneMineDensity, ramp: sceneMineDensityRamp });
+  setWaterSpeedMultiplierOverride(sceneWaterSpeedNatural ? null : { min: sceneWaterSpeedMin, max: sceneWaterSpeedMax });
+  setGenerationDifficultyOverride(sceneDifficultyNatural ? null : { min: sceneDifficultyMin, max: sceneDifficultyMax });
+  setMineDifficultyOverride(sceneMineDensityNatural ? null : { min: sceneMineDensityMin, max: sceneMineDensityMax });
   setPastilleSpawnChanceOverride(scenePastilleSpawnNatural ? null : scenePastilleSpawn);
+  // Ramp speed only matters when at least one curve override is active. If
+  // every curve is in natural mode, the override has no effect, but we set
+  // it anyway for consistency with the user's panel state.
+  const anyCurveActive = !sceneWaterSpeedNatural || !sceneDifficultyNatural || !sceneMineDensityNatural;
+  setRampSpeedOverride(anyCurveActive ? sceneRampSpeed : null);
+}
+
+function bindSliderInput(
+  input: HTMLInputElement | null,
+  setter: (value: number) => void,
+  range: { min: number; max: number },
+): void {
+  input?.addEventListener('input', () => {
+    const v = Number(input.value);
+    if (!Number.isFinite(v)) return;
+    setter(clamp(v, range.min, range.max));
+    syncSceneControls();
+  });
+}
+
+function bindToggle(input: HTMLInputElement | null, setter: (value: boolean) => void): void {
+  input?.addEventListener('change', () => {
+    setter(!!input.checked);
+    syncSceneControls();
+  });
 }
 
 function setupSceneControls(): void {
-  sceneWaterMarginInput?.addEventListener('input', () => {
-    const v = Number(sceneWaterMarginInput.value);
-    if (!Number.isFinite(v)) return;
-    sceneWaterMarginMeters = clamp(Math.round(v), 0, 1000);
-    syncSceneControls();
-  });
-  sceneWaterMarginNaturalInput?.addEventListener('change', () => {
-    sceneWaterMarginNatural = !!sceneWaterMarginNaturalInput.checked;
-    syncSceneControls();
-  });
-  sceneWaterSpeedInput?.addEventListener('input', () => {
-    const v = Number(sceneWaterSpeedInput.value);
-    if (!Number.isFinite(v)) return;
-    sceneWaterSpeed = clamp(v, 0, 10);
-    syncSceneControls();
-  });
-  sceneWaterSpeedNaturalInput?.addEventListener('change', () => {
-    sceneWaterSpeedNatural = !!sceneWaterSpeedNaturalInput.checked;
-    syncSceneControls();
-  });
-  sceneWaterSpeedRampInput?.addEventListener('input', () => {
-    const v = Number(sceneWaterSpeedRampInput.value);
-    if (!Number.isFinite(v)) return;
-    sceneWaterSpeedRamp = clamp(v, 0, 10);
-    syncSceneControls();
-  });
-  sceneDifficultyRampInput?.addEventListener('input', () => {
-    const v = Number(sceneDifficultyRampInput.value);
-    if (!Number.isFinite(v)) return;
-    sceneDifficultyRamp = clamp(v, 0, 5);
-    syncSceneControls();
-  });
-  sceneMineDensityRampInput?.addEventListener('input', () => {
-    const v = Number(sceneMineDensityRampInput.value);
-    if (!Number.isFinite(v)) return;
-    sceneMineDensityRamp = clamp(v, 0, 5);
-    syncSceneControls();
-  });
-  sceneDifficultyInput?.addEventListener('input', () => {
-    const v = Number(sceneDifficultyInput.value);
-    if (!Number.isFinite(v)) return;
-    sceneDifficulty = clamp(v, 0, 1);
-    syncSceneControls();
-  });
-  sceneDifficultyNaturalInput?.addEventListener('change', () => {
-    sceneDifficultyNatural = !!sceneDifficultyNaturalInput.checked;
-    syncSceneControls();
-  });
-  sceneMineDensityInput?.addEventListener('input', () => {
-    const v = Number(sceneMineDensityInput.value);
-    if (!Number.isFinite(v)) return;
-    sceneMineDensity = clamp(v, 0, 2);
-    syncSceneControls();
-  });
-  sceneMineDensityNaturalInput?.addEventListener('change', () => {
-    sceneMineDensityNatural = !!sceneMineDensityNaturalInput.checked;
-    syncSceneControls();
-  });
-  scenePastilleSpawnInput?.addEventListener('input', () => {
-    const v = Number(scenePastilleSpawnInput.value);
-    if (!Number.isFinite(v)) return;
-    scenePastilleSpawn = clamp(v, 0, 3);
-    syncSceneControls();
-  });
-  scenePastilleSpawnNaturalInput?.addEventListener('change', () => {
-    scenePastilleSpawnNatural = !!scenePastilleSpawnNaturalInput.checked;
-    syncSceneControls();
-  });
+  bindSliderInput(sceneWaterMarginInput, (v) => { sceneWaterMarginMeters = Math.round(v); }, { min: 0, max: 1000 });
+  bindToggle(sceneWaterMarginNaturalInput, (v) => { sceneWaterMarginNatural = v; });
+
+  bindSliderInput(sceneWaterSpeedMinInput, (v) => { sceneWaterSpeedMin = v; }, { min: 0, max: 10 });
+  bindSliderInput(sceneWaterSpeedMaxInput, (v) => { sceneWaterSpeedMax = v; }, { min: 0, max: 10 });
+  bindToggle(sceneWaterSpeedNaturalInput, (v) => { sceneWaterSpeedNatural = v; });
+
+  bindSliderInput(sceneDifficultyMinInput, (v) => { sceneDifficultyMin = v; }, { min: 0, max: 1 });
+  bindSliderInput(sceneDifficultyMaxInput, (v) => { sceneDifficultyMax = v; }, { min: 0, max: 1 });
+  bindToggle(sceneDifficultyNaturalInput, (v) => { sceneDifficultyNatural = v; });
+
+  bindSliderInput(sceneMineDensityMinInput, (v) => { sceneMineDensityMin = v; }, { min: 0, max: 2 });
+  bindSliderInput(sceneMineDensityMaxInput, (v) => { sceneMineDensityMax = v; }, { min: 0, max: 2 });
+  bindToggle(sceneMineDensityNaturalInput, (v) => { sceneMineDensityNatural = v; });
+
+  bindSliderInput(scenePastilleSpawnInput, (v) => { scenePastilleSpawn = v; }, { min: 0, max: 3 });
+  bindToggle(scenePastilleSpawnNaturalInput, (v) => { scenePastilleSpawnNatural = v; });
+
+  bindSliderInput(sceneRampSpeedInput, (v) => { sceneRampSpeed = v; }, { min: 0, max: 5 });
+
   sceneReset?.addEventListener('click', () => {
     sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
     sceneWaterMarginNatural = true;
-    sceneWaterSpeed = SCENE_DEFAULTS.waterSpeed;
-    sceneWaterSpeedRamp = SCENE_DEFAULTS.waterSpeedRamp;
+    sceneWaterSpeedMin = SCENE_DEFAULTS.waterSpeedMin;
+    sceneWaterSpeedMax = SCENE_DEFAULTS.waterSpeedMax;
     sceneWaterSpeedNatural = true;
-    sceneDifficulty = SCENE_DEFAULTS.difficulty;
-    sceneDifficultyRamp = SCENE_DEFAULTS.difficultyRamp;
+    sceneDifficultyMin = SCENE_DEFAULTS.difficultyMin;
+    sceneDifficultyMax = SCENE_DEFAULTS.difficultyMax;
     sceneDifficultyNatural = true;
-    sceneMineDensity = SCENE_DEFAULTS.mineDensity;
-    sceneMineDensityRamp = SCENE_DEFAULTS.mineDensityRamp;
+    sceneMineDensityMin = SCENE_DEFAULTS.mineDensityMin;
+    sceneMineDensityMax = SCENE_DEFAULTS.mineDensityMax;
     sceneMineDensityNatural = true;
     scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
     scenePastilleSpawnNatural = true;
+    sceneRampSpeed = SCENE_DEFAULTS.rampSpeed;
     syncSceneControls();
   });
   syncSceneControls();
