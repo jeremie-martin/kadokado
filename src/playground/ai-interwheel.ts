@@ -22,10 +22,24 @@ type PolicyKey = keyof PlannerPolicy;
 const POLICY_KEYS: PolicyKey[] = [
   'climb',
   'wall',
+  'pastille',
 ];
 const policyInputs = new Map<PolicyKey, HTMLInputElement>();
 const policyOutputs = new Map<PolicyKey, HTMLOutputElement>();
 const policyReset = document.getElementById('policy-reset') as HTMLButtonElement | null;
+const focusInput = document.getElementById('policy-focus') as HTMLInputElement | null;
+const focusOutput = document.getElementById('policy-focus-value') as HTMLOutputElement | null;
+// Focus is a derived "Climb ⇄ Pastille" blend that lerps both knobs in
+// opposite directions: focus=0 emphasizes climb (climb=1.5, pastille=0),
+// focus=1 emphasizes pastille capture (climb=0.5, pastille=1). The endpoints
+// span the empirically useful range — pastille=1 in count mode is the
+// saturation knee on capture rate (~90.5%), and the [0.5, 1.5] climb range
+// brackets the live default of 1.0. Underlying climb/pastille sliders stay
+// for fine control; Focus visually tracks pastille position so a manual
+// climb tweak doesn't auto-snap focus.
+const FOCUS_CLIMB_MAX = 1.5;
+const FOCUS_CLIMB_MIN = 0.5;
+const FOCUS_PASTILLE_MAX = 1.0;
 const lookaheadInput = document.getElementById('planner-lookahead') as HTMLInputElement | null;
 const lookaheadOutput = document.getElementById('planner-lookahead-value') as HTMLOutputElement | null;
 const searchDepthInput = document.getElementById('planner-searchDepth') as HTMLInputElement | null;
@@ -110,6 +124,20 @@ function syncPolicyControls(): void {
     if (input) input.value = String(policy[key]);
     if (output) output.value = formatPolicyValue(policy[key]);
   }
+  if (focusInput || focusOutput) {
+    const focus = clamp(policy.pastille / FOCUS_PASTILLE_MAX, 0, 1);
+    if (focusInput) focusInput.value = String(focus);
+    if (focusOutput) focusOutput.value = formatPolicyValue(focus);
+  }
+}
+
+function policyFromFocus(focus: number, base: PlannerPolicy): PlannerPolicy {
+  const f = clamp(focus, 0, 1);
+  return {
+    ...base,
+    climb: FOCUS_CLIMB_MAX - (FOCUS_CLIMB_MAX - FOCUS_CLIMB_MIN) * f,
+    pastille: FOCUS_PASTILLE_MAX * f,
+  };
 }
 
 function readPolicyControls(): PlannerPolicy {
@@ -141,6 +169,12 @@ function setupPolicyControls(): void {
     policyInputs.set(rawKey, input);
     if (output) policyOutputs.set(rawKey, output);
     input.addEventListener('input', () => applyPolicy(readPolicyControls()));
+  });
+
+  focusInput?.addEventListener('input', () => {
+    const focus = Number(focusInput.value);
+    if (!Number.isFinite(focus)) return;
+    applyPolicy(policyFromFocus(focus, policy));
   });
 
   policyReset?.addEventListener('click', () => applyPolicy({ ...DEFAULT_PLANNER_POLICY }));

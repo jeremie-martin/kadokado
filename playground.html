@@ -61,6 +61,11 @@
         <h2>Policy</h2>
         <div class="controls" id="policy-controls">
           <div class="control">
+            <label for="policy-focus">Climb &#x21C4; Pastille</label>
+            <output id="policy-focus-value">0.50</output>
+            <input id="policy-focus" type="range" min="0" max="1" step="0.05" value="0.5">
+          </div>
+          <div class="control">
             <label for="policy-climb">Climb</label>
             <output id="policy-climb-value">1.00</output>
             <input id="policy-climb" type="range" min="0" max="3" step="0.01" value="1.0" data-policy-key="climb">
@@ -69,6 +74,11 @@
             <label for="policy-wall">Wall</label>
             <output id="policy-wall-value">0.50</output>
             <input id="policy-wall" type="range" min="0" max="2" step="0.05" value="0.5" data-policy-key="wall">
+          </div>
+          <div class="control">
+            <label for="policy-pastille">Pastille</label>
+            <output id="policy-pastille-value">0.50</output>
+            <input id="policy-pastille" type="range" min="0" max="2" step="0.05" value="0.5" data-policy-key="pastille">
           </div>
         </div>
         <div class="actions">

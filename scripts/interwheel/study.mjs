@@ -12,8 +12,9 @@ import { join } from 'node:path';
 import { availableParallelism } from 'node:os';
 
 const GAME_FPS = 40;
-const CLIMB_ONLY = { climb: 1, wall: 0 };
+const CLIMB_ONLY = { climb: 1, wall: 0, pastille: 0 };
 const CLIMB_METRIC_MODES = ['legacy', 'time-cost', 'wait-cost'];
+const PASTILLE_MODES = ['count', 'graded'];
 
 const PRESETS = {
   smoke: {
@@ -105,6 +106,32 @@ const METRICS = {
       },
     ],
   },
+  pastille: {
+    label: 'Pastille',
+    policyKey: 'pastille',
+    // Mix-with-climb sweeps push past 1.0 because we need to confirm the
+    // dose-response keeps rising up to ~100% capture, not just that it
+    // moves off the climb-only baseline.
+    mixPolicyWeight: 1,
+    coefficientValues: {
+      smoke: [0, 1, 4],
+      quick: [0, 0.25, 1, 4],
+      standard: [0, 0.1, 0.25, 0.5, 1, 2, 4, 8, 16],
+    },
+    params: [
+      {
+        key: 'pastilleSecureBonus',
+        range: [50, 600],
+      },
+      {
+        key: 'pastilleAttractScale',
+        range: [50, 600],
+        // Attract scale only matters in graded mode; pin the metric to it for
+        // this parameter so non-graded runs don't shadow the read.
+        metricParams: { pastilleMode: 'graded' },
+      },
+    ],
+  },
 };
 
 const POLICY_KEYS = [...new Set(['climb', ...Object.values(METRICS).map((metric) => metric.policyKey)])];
@@ -119,6 +146,7 @@ const BOOL_METRIC_PARAM_KEYS = new Set([
 ]);
 const METRIC_PARAM_KEYS = [...new Set([
   'climbMode',
+  'pastilleMode',
   ...SWEEP_METRIC_PARAM_KEYS,
   ...BOOL_METRIC_PARAM_KEYS,
 ])];
@@ -164,8 +192,10 @@ const SUMMARY_FIELDS = [
   'edges',
   'scoreClimb',
   'scoreWall',
+  'scorePastille',
   'scoreTotal',
   'spreadRangeClimb',
+  'spreadRangePastille',
   ...RESPONSE_ANALYTICS.map((analytics) => analytics.key),
 ];
 
@@ -318,6 +348,9 @@ function parseMetricParamValue(key, rawValue) {
   if (key === 'climbMode') {
     return CLIMB_METRIC_MODES.includes(rawValue) ? rawValue : undefined;
   }
+  if (key === 'pastilleMode') {
+    return PASTILLE_MODES.includes(rawValue) ? rawValue : undefined;
+  }
   if (BOOL_METRIC_PARAM_KEYS.has(key)) {
     if (rawValue === 'true' || rawValue === '1') return true;
     if (rawValue === 'false' || rawValue === '0') return false;
@@ -369,10 +402,13 @@ function parseConfigSpec(spec) {
       if (metricKey === 'climbMode' && !CLIMB_METRIC_MODES.includes(value)) {
         throw new Error(`Invalid climbMode in --config: ${rawValue}`);
       }
+      if (metricKey === 'pastilleMode' && !PASTILLE_MODES.includes(value)) {
+        throw new Error(`Invalid pastilleMode in --config: ${rawValue}`);
+      }
       if (isBool && typeof value !== 'boolean') {
         throw new Error(`Invalid boolean metric parameter in --config: ${part}`);
       }
-      if (!isBool && metricKey !== 'climbMode' && typeof value !== 'number') {
+      if (!isBool && metricKey !== 'climbMode' && metricKey !== 'pastilleMode' && typeof value !== 'number') {
         throw new Error(`Invalid numeric metric parameter in --config: ${part}`);
       }
       out.metricParams[metricKey] = value;
@@ -658,9 +694,11 @@ async function runCondition(browser, url, condition, args) {
             edges: trial.planner.avgEdges,
             scoreClimb: planner.bestScoreBreakdown.climb?.mean ?? 0,
             scoreWall: planner.bestScoreBreakdown.wall?.mean ?? 0,
+            scorePastille: planner.bestScoreBreakdown.pastille?.mean ?? 0,
             scoreTotal: planner.bestScoreBreakdown.total?.mean ?? 0,
             spreadRangeClimb: range.climb?.mean ?? 0,
             spreadRangeWall: range.wall?.mean ?? 0,
+            spreadRangePastille: range.pastille?.mean ?? 0,
           };
           const perMinute = (value) => (durationMinutes > 0 ? value / durationMinutes : 0);
           const perSecond = (value) => (durationSeconds > 0 ? value / durationSeconds : 0);

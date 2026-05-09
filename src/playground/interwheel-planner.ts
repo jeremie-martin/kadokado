@@ -130,6 +130,35 @@ const PHANTOM_WHEEL_FR = 2;
 // vs a same-height grab→grab path getting 0 from the wall term.
 const WALL_LANDING_BONUS = 300;
 const WALL_NORMALIZE     = 5;
+// Pastille capture: rewards path-level "obligation satisfaction" for pastilles
+// the planner currently perceives. A perceived pastille that the path
+// physically grabs contributes 1.0 × bonus; in graded mode, an unsecured one
+// contributes a continuous fraction based on the minimum distance from any
+// flight sample on the root-to-leaf path to the pastille. Bounded per pastille
+// so the signal can't blow up. Same-stable-target edges contribute neither
+// pickups nor approach distance (mirrors existing loop guard at line ~914).
+//
+// `count` is the default because the standard sweep showed it strictly
+// dominates the alternatives on the capture-vs-height frontier: 90.5% capture
+// at h/min=1665 (mix=1), vs graded's 79% at h/min=1173 with the same mix.
+// `graded` remains as an ablation knob for studying smoothness at very low
+// mix; it converges to count behavior as `pastilleAttractScale → 0`.
+const PASTILLE_MODES = ['count', 'graded'] as const;
+const PASTILLE_MODE_DEFAULT: PastilleMode = 'count';
+// Per-pastille bonus magnitude. Calibration: the pure climb signal at a
+// 600 px arc is ~600 score; one secured pastille at bonus=200 is ≈ 1/3 of a
+// jump's worth of climb credit. Mix coefficient scales the rest.
+const PASTILLE_SECURE_BONUS_DEFAULT = 200;
+// Distance scale (world px) over which graded credit decays from full at
+// d=0 to 0 at d≥SCALE. Only used in graded mode. Default kept conservative
+// because the param sweep showed lower scale strictly dominates higher scale
+// on capture% (87.5% at scale=50 vs 69.5% at scale=600, fixed mix=1).
+const PASTILLE_ATTRACT_SCALE_DEFAULT = 50;
+
+// Shared empty distance buffer for plans where there are no perceived
+// pastilles to score against; lets the rest of the search code skip the
+// allocation path without branching on `obligations.length` everywhere.
+const EMPTY_DIST_SQ = new Float64Array(0);
 
 type CollectReward = {
   /** Set of pastille keys physically grabbed during the rollout (live-game
@@ -137,6 +166,16 @@ type CollectReward = {
   collectedKeys: Set<string>;
   /** Count of sparks (chasing-pastille trails) collected during the rollout. */
   sparkCount: number;
+};
+
+/** Snapshot of pastille obligations taken once at the start of a plan: the
+ *  pastilles the planner currently perceives, scored as a "don't leave behind"
+ *  set. Each entry stores key + position so the search can compute graded
+ *  approach distance against the same fixed set across all candidate paths. */
+type PastilleObligation = {
+  key: string;
+  x: number;
+  y: number;
 };
 
 type PerceivedSnapshot = {
@@ -165,6 +204,12 @@ type SearchNode = {
   /** Cumulative count of canonical wall-jump-and-land events along this path
    *  (edge started off the wall, touched it mid-edge, ended on it). */
   pathWallLandings: number;
+  /** Min squared distance from any flight sample on the root-to-this-node path
+   *  to each perceived pastille (keyed by obligation index). Used by the
+   *  graded pastille mode for bounded approach credit. Squared for cheaper
+   *  comparison; sqrt is taken once per pastille at score time. Same-target
+   *  scoop edges do not lower these values (mirrors loop guard). */
+  pathPastilleMinDistSq: Float64Array;
 };
 
 type SearchEdge = {
@@ -186,6 +231,7 @@ type SearchEdge = {
   pathOffAxis: number;
   pathWallTicks: number;
   pathWallLandings: number;
+  pathPastilleMinDistSq: Float64Array;
 };
 
 export type Segment = {
@@ -246,7 +292,7 @@ export type PlannerStats = {
 };
 
 const SPREAD_KEYS = [
-  'climb', 'wall', 'stability', 'safety', 'backtrack', 'loop', 'total',
+  'climb', 'wall', 'pastille', 'stability', 'safety', 'backtrack', 'loop', 'total',
 ] as const satisfies ReadonlyArray<keyof CandidateScoreBreakdown>;
 
 export function emptyLeafSpread(): LeafSpread {
@@ -312,7 +358,22 @@ export type PlannerPolicy = {
    * touched it, ended on it); the ticks term softly rewards contact duration.
    */
   wall: number;
+  /**
+   * How much to value satisfying the path's pastille-capture obligation. The
+   * obligation set is the pastilles the planner perceives at the root of the
+   * current plan. The signal shape is selected by `metricParams.pastilleMode`:
+   *   - count  — bonus × |obligation ∩ pathReward.collectedKeys|
+   *   - graded — per-pastille graded credit (1.0 if collected, else
+   *              max(0, 1 − d_min/scale)) summed and scaled by bonus
+   * Default mode is `count`; graded converges to count behavior at very small
+   * `pastilleAttractScale` and is retained as an ablation knob. The mix knob
+   * itself is monotone non-decreasing in capture rate; `pastille=0` is exactly
+   * the climb-only baseline by construction.
+   */
+  pastille: number;
 };
+
+export type PastilleMode = typeof PASTILLE_MODES[number];
 
 export type ClimbMetricMode = typeof CLIMB_METRIC_MODES[number];
 
@@ -353,12 +414,29 @@ export type PlannerMetricParams = {
    * Set to false to compare against the un-phantom shape in studies.
    */
   climbPhantomWheelEnabled: boolean;
+  /**
+   * Shape of the pastille capture signal. See `PlannerPolicy.pastille` for
+   * the overall meaning; this knob selects between integer count, bounded
+   * fraction, and graded approach modes for ablation studies.
+   */
+  pastilleMode: PastilleMode;
+  /**
+   * Per-pastille bonus magnitude that scales the capture signal in all
+   * modes. Higher values pull harder on the search to detour for pastilles.
+   */
+  pastilleSecureBonus: number;
+  /**
+   * World-pixel scale at which graded mode's per-pastille approach credit
+   * decays from 1.0 (at d=0) to 0.0 (at d≥scale). Only used in graded mode.
+   */
+  pastilleAttractScale: number;
 };
 
 export type CandidateScoreBreakdown = {
   // Knob-driven terms (one line per user knob, scaling one signal each).
   climb: number;
   wall: number;
+  pastille: number;
   // Internal mechanisms (planner physics, not user-tunable).
   stability: number;
   safety: number;
@@ -385,6 +463,11 @@ export type LeafScoreSpreads = Record<keyof CandidateScoreBreakdown, LeafSpread>
 export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
   climb: 1.0,
   wall: 0.5,
+  // Pastille capture default 0.5 in count mode is the sweet spot on the
+  // capture-vs-height frontier: 82.5% capture at h/min ≈ 2070 (8 trials × 60s,
+  // seeds 4200..4207), only ≈25% h/min loss vs climb-only. Higher mix buys
+  // diminishing capture for steep h/min cost.
+  pastille: 0.5,
 };
 
 export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
@@ -394,6 +477,9 @@ export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
   wallLandingBonus: WALL_LANDING_BONUS,
   wallTickBonus: WALL_NORMALIZE,
   climbPhantomWheelEnabled: CLIMB_PHANTOM_WHEEL_ENABLED_DEFAULT,
+  pastilleMode: PASTILLE_MODE_DEFAULT,
+  pastilleSecureBonus: PASTILLE_SECURE_BONUS_DEFAULT,
+  pastilleAttractScale: PASTILLE_ATTRACT_SCALE_DEFAULT,
 };
 
 // Live defaults shape the planner toward "go up" using the phantom-wheel
@@ -431,6 +517,9 @@ export function resolvePlannerMetricParams(
   if (!(CLIMB_METRIC_MODES as readonly string[]).includes(resolved.climbMode)) {
     resolved.climbMode = CLIMB_METRIC_MODE_DEFAULT;
   }
+  if (!(PASTILLE_MODES as readonly string[]).includes(resolved.pastilleMode)) {
+    resolved.pastilleMode = PASTILLE_MODE_DEFAULT;
+  }
   return resolved;
 }
 
@@ -438,6 +527,7 @@ export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
   return {
     climb: 0,
     wall: 0,
+    pastille: 0,
     stability: 0,
     safety: 0,
     backtrack: 0,
@@ -590,12 +680,15 @@ export class InterwheelPlanner {
   private planStable(perceived: PerceivedSnapshot): PlanResult {
     const rootState = perceived.snap;
     const startTime = performance.now();
+    // Snapshot the obligation set once per plan: every candidate path is
+    // scored against the same fixed list of perceived pastilles, so the
+    // pastille signal is well-defined across edges in a single search tree.
+    const obligations = this.snapshotPastilleObligations(perceived.snap);
     // Root reward starts empty: pathReward.collectedKeys must reflect ONLY
     // pastilles physically grabbed during this plan's simulation. Pre-credit
     // here would over-claim: the blob has not actually grabbed anything yet.
-    // Pastille telemetry remains recorded here, but it is not part of the
-    // current score until the replacement capture objective is designed.
     const rootReward = this.emptyCollectReward();
+    const rootPastilleDist = this.initialPastilleDistSq(obligations, rootState.blob);
     const rootScore = this.scoreCandidate(
       rootState,
       rootState,
@@ -607,6 +700,9 @@ export class InterwheelPlanner {
       0,
       0,
       false,
+      rootPastilleDist,
+      obligations,
+      rootReward,
     );
     const root: SearchNode = {
       id: 0,
@@ -622,6 +718,7 @@ export class InterwheelPlanner {
       pathOffAxis: 0,
       pathWallTicks: 0,
       pathWallLandings: 0,
+      pathPastilleMinDistSq: rootPastilleDist,
     };
 
     const nodes: SearchNode[] = [root];
@@ -638,7 +735,7 @@ export class InterwheelPlanner {
 
       for (const waitTicks of this.waitSamples(node.state, node.depth)) {
         if (edges.length >= this.cfg.maxEdgeRollouts) break;
-        const edge = this.evaluateEdge(rootState, node, waitTicks, edges.length);
+        const edge = this.evaluateEdge(rootState, node, waitTicks, edges.length, obligations);
         edges.push(edge);
         if (!fallbackEdge || edge.value > fallbackEdge.value) fallbackEdge = edge;
 
@@ -656,6 +753,7 @@ export class InterwheelPlanner {
           pathOffAxis: edge.pathOffAxis,
           pathWallTicks: edge.pathWallTicks,
           pathWallLandings: edge.pathWallLandings,
+          pathPastilleMinDistSq: edge.pathPastilleMinDistSq,
         };
         edge.childId = child.id;
         nodes.push(child);
@@ -820,7 +918,13 @@ export class InterwheelPlanner {
     }));
   }
 
-  private evaluateEdge(rootState: SimSnapshot, parent: SearchNode, waitTicks: number, edgeId: number): SearchEdge {
+  private evaluateEdge(
+    rootState: SimSnapshot,
+    parent: SearchNode,
+    waitTicks: number,
+    edgeId: number,
+    obligations: PastilleObligation[],
+  ): SearchEdge {
     const sim = this.scratch;
     const plan: boolean[] = [];
     const segments: SegmentBody[] = [];
@@ -839,6 +943,12 @@ export class InterwheelPlanner {
     let edgeWaitTicks = 0;
     const samplesX: number[] = [edgeStartX];
     const samplesY: number[] = [edgeStartY];
+    // Edge-local minimum squared distance from any sample on this edge to
+    // each obligation pastille. Combined with parent.pathPastilleMinDistSq
+    // after we know whether the edge counts as a same-stable-target scoop.
+    const edgeMinDistSq = obligations.length > 0
+      ? this.initialPastilleDistSq(obligations, sim.blob)
+      : EMPTY_DIST_SQ;
     const recordStep = (press: boolean): void => {
       sim.step(press, constantRng);
       plan.push(press);
@@ -847,6 +957,19 @@ export class InterwheelPlanner {
       samplesY.push(sim.blob.y);
       if (sim.blob.y < edgeApexY) edgeApexY = sim.blob.y;
       if (sim.blob.state === BLOB_STATE_WALL) edgeWallTicks += 1;
+      // Update graded-mode approach distance for each obligation. Squared
+      // distance keeps the inner loop branch-free; sqrt is taken once per
+      // pastille at score time. Only walked when obligations are non-empty.
+      if (obligations.length > 0) {
+        const bx = sim.blob.x;
+        const by = sim.blob.y;
+        for (let i = 0; i < obligations.length; i += 1) {
+          const dx = bx - obligations[i].x;
+          const dy = by - obligations[i].y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 < edgeMinDistSq[i]) edgeMinDistSq[i] = d2;
+        }
+      }
       if (!this.cfg.collectSegments) return;
       const terminal = sim.blob.state !== BLOB_STATE_GRAB && sim.blob.state !== BLOB_STATE_WALL && sim.blob.state !== BLOB_STATE_FLY;
       const shouldRecord =
@@ -910,9 +1033,16 @@ export class InterwheelPlanner {
     // Skip both the edge's pickups (would double-credit pastilles already
     // accessible from this wheel via a "real" landing) and the off-axis
     // diagnostic integral (it does not represent stable route progress). Keep
-    // the apex because reaching a high arc on the way still happened.
+    // the apex because reaching a high arc on the way still happened. Mirror
+    // this on the pastille approach distance: a same-target scoop should not
+    // count as "the path approached pastille p" for graded credit either.
     const effectiveReward = sameStableTarget ? this.emptyCollectReward() : reward;
     const pathReward = this.extendCollectReward(parent.pathReward, effectiveReward);
+    const pathPastilleMinDistSq = obligations.length === 0
+      ? EMPTY_DIST_SQ
+      : sameStableTarget
+        ? parent.pathPastilleMinDistSq
+        : this.minMergeDistSq(parent.pathPastilleMinDistSq, edgeMinDistSq);
     const edgeOffAxis = sameStableTarget
       ? 0
       : this.edgeOffAxisIntegral(samplesX, samplesY, edgeStartX, edgeStartY, endState.blob.x, endState.blob.y);
@@ -938,6 +1068,9 @@ export class InterwheelPlanner {
       pathWallTicks,
       pathWallLandings,
       sameStableTarget,
+      pathPastilleMinDistSq,
+      obligations,
+      pathReward,
     );
     const value = scoreBreakdown.total;
     return {
@@ -959,6 +1092,7 @@ export class InterwheelPlanner {
       pathOffAxis,
       pathWallTicks,
       pathWallLandings,
+      pathPastilleMinDistSq,
     };
   }
 
@@ -988,6 +1122,39 @@ export class InterwheelPlanner {
       collectedKeys: new Set<string>(),
       sparkCount: 0,
     };
+  }
+
+  private snapshotPastilleObligations(snap: SimSnapshot): PastilleObligation[] {
+    if (this.cfg.policy.pastille === 0) return [];
+    const out: PastilleObligation[] = [];
+    for (const p of snap.pastilles) {
+      out.push({ key: this.pastilleKey(p), x: p.x, y: p.y });
+    }
+    return out;
+  }
+
+  private initialPastilleDistSq(
+    obligations: PastilleObligation[],
+    blob: { x: number; y: number },
+  ): Float64Array {
+    if (obligations.length === 0) return EMPTY_DIST_SQ;
+    const out = new Float64Array(obligations.length);
+    for (let i = 0; i < obligations.length; i += 1) {
+      const dx = blob.x - obligations[i].x;
+      const dy = blob.y - obligations[i].y;
+      out[i] = dx * dx + dy * dy;
+    }
+    return out;
+  }
+
+  private minMergeDistSq(parent: Float64Array, edge: Float64Array): Float64Array {
+    if (parent.length === 0) return edge;
+    if (edge.length === 0) return parent;
+    const out = new Float64Array(parent.length);
+    for (let i = 0; i < parent.length; i += 1) {
+      out[i] = parent[i] < edge[i] ? parent[i] : edge[i];
+    }
+    return out;
   }
 
   private extendCollectReward(parent: CollectReward, edge: CollectReward): CollectReward {
@@ -1040,6 +1207,9 @@ export class InterwheelPlanner {
     pathWallTicks: number,
     pathWallLandings: number,
     sameStableTarget: boolean,
+    pathPastilleMinDistSq: Float64Array,
+    obligations: PastilleObligation[],
+    pathReward: CollectReward,
   ): CandidateScoreBreakdown {
     const policy = this.cfg.policy;
     const metricParams = this.cfg.metricParams;
@@ -1061,8 +1231,16 @@ export class InterwheelPlanner {
     const wallSignal = pathWallLandings * metricParams.wallLandingBonus
                      + pathWallTicks * metricParams.wallTickBonus;
 
+    // Pastille capture: path-level obligation satisfaction. Skipped entirely
+    // when the policy weight is zero so the live (climb+wall) planner pays no
+    // overhead for a feature it isn't using.
+    const pastilleSignal = policy.pastille !== 0
+      ? this.pastilleSignal(obligations, pathReward, pathPastilleMinDistSq)
+      : 0;
+
     const climb        = policy.climb        * climbSignal;
     const wall         = policy.wall         * wallSignal;
+    const pastille     = policy.pastille     * pastilleSignal;
 
     // Frontier physics — leaf state shapes the score independent of policy.
     const stability = STATE_BONUS[end.blob.state] ?? STATE_BONUS_FALLBACK;
@@ -1085,18 +1263,52 @@ export class InterwheelPlanner {
       : 0;
 
     if (this.isTerminal(end)) {
-      const total = climb + wall - TERMINAL_DEATH_COST;
+      const total = climb + wall + pastille - TERMINAL_DEATH_COST;
       return {
         ...emptyScoreBreakdown(),
         climb,
         wall,
+        pastille,
         safety: TERMINAL_DEATH_COST,
         total,
       };
     }
 
-    const total = climb + wall + stability - safety - backtrack - loop;
-    return { climb, wall, stability, safety, backtrack, loop, total };
+    const total = climb + wall + pastille + stability - safety - backtrack - loop;
+    return { climb, wall, pastille, stability, safety, backtrack, loop, total };
+  }
+
+  private pastilleSignal(
+    obligations: PastilleObligation[],
+    pathReward: CollectReward,
+    pathPastilleMinDistSq: Float64Array,
+  ): number {
+    if (obligations.length === 0) return 0;
+    const params = this.cfg.metricParams;
+    const collected = pathReward.collectedKeys;
+    const bonus = params.pastilleSecureBonus;
+    if (params.pastilleMode === 'count') {
+      let count = 0;
+      for (let i = 0; i < obligations.length; i += 1) {
+        if (collected.has(obligations[i].key)) count += 1;
+      }
+      return count * bonus;
+    }
+    // graded: collected pastilles contribute 1.0; unsecured ones contribute
+    // max(0, 1 − d_min/scale) so a path that "almost grabs" a pastille earns
+    // a continuous fraction of bonus. This is the smoothness mechanism — it
+    // turns a yes/no edge tip-over into a graded slope.
+    const scale = Math.max(1e-3, params.pastilleAttractScale);
+    let sum = 0;
+    for (let i = 0; i < obligations.length; i += 1) {
+      if (collected.has(obligations[i].key)) {
+        sum += 1;
+        continue;
+      }
+      const d = Math.sqrt(pathPastilleMinDistSq[i]);
+      sum += Math.max(0, 1 - d / scale);
+    }
+    return sum * bonus;
   }
 
   private creditPastilleReward(

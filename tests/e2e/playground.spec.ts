@@ -70,14 +70,15 @@ test.describe('AI playground', () => {
       timeout: 15000,
     });
 
-    await expect(page.locator('#policy-focus')).toHaveCount(0);
     await expect(page.locator('#policy-thoroughness')).toHaveCount(0);
     await expect(page.locator('#policy-pace')).toHaveCount(0);
     await expect(page.locator('#policy-detour')).toHaveCount(0);
     await expect(page.locator('#policy-patience')).toHaveCount(0);
     await expect(page.locator('#policy-wall-value')).toHaveText('0.50');
-    await expect(page.locator('#planner-lookahead-value')).toHaveText('0.50');
-    await expect(page.locator('#planner-searchDepth-value')).toHaveText('4');
+    await expect(page.locator('#policy-pastille-value')).toHaveText('0.50');
+    await expect(page.locator('#policy-focus-value')).toHaveText('0.50');
+    await expect(page.locator('#planner-lookahead-value')).toHaveText('0.00');
+    await expect(page.locator('#planner-searchDepth-value')).toHaveText('3');
     await expect(page.locator('#planner-edgeBudget-value')).toHaveText('360');
     await expect(page.locator('#planner-planBudgetMs-value')).toHaveText('5ms');
     await expect(page.locator('#overlay-lineageDecay-value')).toHaveText('0.65');

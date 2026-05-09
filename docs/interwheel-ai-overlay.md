@@ -134,13 +134,11 @@ changes.
 
 Policy controls affect planner score:
 
-- Focus
+- Focus (derived `Climb ⇄ Pastille` blend; lerps `climb` 1.5→0.5 and
+  `pastille` 0→1 in opposite directions)
 - Climb
-- Thoroughness
-- Detour
-- Patience
 - Wall
-- Pace
+- Pastille
 
 Planner controls affect search/perception limits:
 

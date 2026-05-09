@@ -26,27 +26,41 @@ The live policy is intentionally small:
 type PlannerPolicy = {
   climb: number;
   wall: number;
+  pastille: number;
 };
 ```
 
 Current default:
 
 ```ts
-{ climb: 1.0, wall: 0.5 }
+{ climb: 1.0, wall: 0.5, pastille: 0.5 }
 ```
+
+The `pastille` knob multiplies a path-level capture-obligation signal that
+rewards securing pastilles the planner currently perceives. `pastille=0`
+collapses to the climb-only baseline by construction. The default mode is
+`count` (`metricParams.pastilleMode='count'`); the alternate `graded` mode
+adds graded approach credit and is retained as an ablation. The default mix
+of 0.5 in count mode lands on the empirical capture-vs-height sweet spot:
+≈82% capture at ≈75% of climb-only h/min on the standard sweep
+(8 trials × 60s, seeds 4200..4207).
+
+The playground exposes a `Climb ⇄ Pastille` Focus slider that lerps both
+knobs in opposite directions (focus=0 → climb=1.5, pastille=0; focus=1 →
+climb=0.5, pastille=1). The underlying climb/pastille sliders remain for
+fine control; Focus visually tracks the pastille position.
 
 Removed from live policy for now:
 
 - `thoroughness`: immediate physical-pickup reward did not produce a useful
   capture-control objective.
 - `patience`: only modified `thoroughness`, so it had no independent role.
-- `focus`: it was only a climb/thoroughness lerp and was not a smooth capture
-  control.
+- The historical `focus`: it was only a climb/thoroughness lerp and was not
+  a smooth capture control. The current Focus slider is a different knob:
+  it lerps climb and the new path-level `pastille` signal, which has been
+  validated against capture-rate dose-response.
 - `pace` and `detour`: they duplicated work that now belongs to the climb
   efficiency metric and internal route-shaping penalties.
-
-Pastille telemetry is still recorded. It is not part of the current score until
-the capture objective is redesigned.
 
 ## Score
 
@@ -56,6 +70,7 @@ the capture objective is redesigned.
 total =
   climb * (pathHeight * waterClimbBoost - pathTicks * climbTickCost)
   + wall * wallSignal
+  + pastille * pastilleSignal
   + stability
   - safety
   - backtrack
@@ -79,6 +94,19 @@ study alternative that charges only stable waiting ticks.
 
 `wallSignal = pathWallLandings * wallLandingBonus + pathWallTicks * wallTickBonus`.
 
+`pastilleSignal` depends on `pastilleMode`:
+- `count`: `pastilleSecureBonus × |obligation ∩ pathReward.collectedKeys|`
+- `graded`: per perceived pastille `p`, contribution is `1.0` if collected,
+  else `max(0, 1 − d_min(path, p) / pastilleAttractScale)`. The signal is the
+  bonus times the sum of contributions.
+
+Where `obligation` is the set of pastilles perceived at the planner's root
+state, and `d_min` is the minimum distance from any flight sample on the
+root-to-leaf path to pastille `p` (same-stable-target scoop edges are excluded
+to mirror the existing loop guard). The standard sweep showed `count` strictly
+dominates `graded` on the capture-vs-height frontier and that `graded`
+converges to count behavior as `pastilleAttractScale → 0`.
+
 Metric parameters are not policy knobs. The current defaults are:
 
 ```ts
@@ -89,6 +117,9 @@ Metric parameters are not policy knobs. The current defaults are:
   wallLandingBonus: 300,
   wallTickBonus: 5,
   climbPhantomWheelEnabled: true,
+  pastilleMode: 'count',
+  pastilleSecureBonus: 200,
+  pastilleAttractScale: 50,
 }
 ```
 
@@ -148,17 +179,35 @@ These are not user-facing policy:
 frontier nodes are expanded first under budget, but it is not part of the final
 leaf score.
 
-## Pastille Capture Direction
+## Pastille Capture
 
-The next capture objective should not revive the old `thoroughness` shape under
-a new name. The desired behavior is: when a pastille is perceived, bias toward
-not leaving it behind, even if height suffers.
+The capture objective is now the live `pastille` policy knob (see Live Policy
+above and the `pastilleSignal` formulation under Score). It is implemented as
+a path-level capture obligation metric: each candidate path is scored against
+the set of pastilles perceived at the planner's root, and only path-cumulative
+collected keys (which already exclude same-stable-target scoops) earn full
+bonus. This avoids the "bank-now" pathology of the old `thoroughness` term.
 
-That future signal should be designed as a path-level capture obligation
-metric: perceived, collected, missed/abandoned, still pending, and possibly
-route-progress toward a plausible pickup. It must be validated primarily
-against capture percentage over perceived obligations, with height/speed/death
-reported as tradeoff diagnostics.
+Empirical dose-response in `count` mode (8 trials × 60s, seeds 4200..4207,
+climb=1, wall=0):
+
+| `pastille` | capture% | h/min | grabbed |
+| ---:       | ---:     | ---:  | ---:    |
+| 0          | 57.0     | 2773  | 187     |
+| 0.1        | 64.3     | 2588  | 195     |
+| 0.25       | 71.3     | 2397  | 198     |
+| 0.5        | 82.5     | 2073  | 195     |
+| 1          | 90.5     | 1665  | 168     |
+| 2          | 93.3     | 1411  | 145     |
+| 4          | 95.5     | 1297  | 136     |
+| 16         | 95.8     | 1153  | 124     |
+
+The dose-response is monotone non-decreasing in capture rate, smooth (no
+cliff), never below the climb-only baseline at any tested mix, and saturates
+near 96% — the remainder are pastilles that are physically unreachable in this
+generation profile. Total pastilles grabbed peaks around `pastille=0.25` and
+declines at higher mix because the agent climbs less and therefore perceives
+fewer pastilles per minute.
 
 ## Study Requirements
 
