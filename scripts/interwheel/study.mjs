@@ -22,6 +22,7 @@ const PRESETS = {
     maxSeconds: 0.1,
     concurrency: 1,
     valueSet: 'smoke',
+    paramPoints: 2,
     parityTrials: 1,
     paritySeconds: 5,
   },
@@ -31,6 +32,7 @@ const PRESETS = {
     maxSeconds: 30,
     concurrency: 4,
     valueSet: 'quick',
+    paramPoints: 4,
     parityTrials: 2,
     paritySeconds: 30,
   },
@@ -40,6 +42,7 @@ const PRESETS = {
     maxSeconds: 120,
     concurrency: 12,
     valueSet: 'standard',
+    paramPoints: 7,
     parityTrials: 3,
     paritySeconds: 30,
   },
@@ -49,6 +52,7 @@ const PRESETS = {
     maxSeconds: 180,
     concurrency: 12,
     valueSet: 'standard',
+    paramPoints: 9,
     parityTrials: 5,
     paritySeconds: 30,
   },
@@ -67,19 +71,11 @@ const METRICS = {
     params: [
       {
         key: 'wallLandingBonus',
-        values: {
-          smoke: [0, 300],
-          quick: [0, 150, 300, 600],
-          standard: [0, 75, 150, 225, 300, 450, 600],
-        },
+        range: [0, 600],
       },
       {
         key: 'wallTickBonus',
-        values: {
-          smoke: [0, 5],
-          quick: [0, 2, 5, 12],
-          standard: [0, 1, 2, 3.5, 5, 8, 12],
-        },
+        range: [0, 12],
       },
     ],
   },
@@ -145,6 +141,7 @@ function parseArgs(argv) {
     parity: false,
     parityTrials: null,
     paritySeconds: null,
+    paramPoints: null,
     pastilleSpawnChance: 1.0,
     difficulty: 0.3,
     help: false,
@@ -164,6 +161,7 @@ function parseArgs(argv) {
     else if (raw.startsWith('--concurrency=')) args.concurrency = Number(raw.slice('--concurrency='.length));
     else if (raw.startsWith('--budget-ms=')) args.budgetMs = Number(raw.slice('--budget-ms='.length));
     else if (raw.startsWith('--out=')) args.outDir = raw.slice('--out='.length);
+    else if (raw.startsWith('--param-points=')) args.paramPoints = Number(raw.slice('--param-points='.length));
     else if (raw.startsWith('--parity-trials=')) args.parityTrials = Number(raw.slice('--parity-trials='.length));
     else if (raw.startsWith('--parity-seconds=')) args.paritySeconds = Number(raw.slice('--parity-seconds='.length));
     else if (raw === '--pastille-spawn=natural') args.pastilleSpawnChance = null;
@@ -184,8 +182,10 @@ function parseArgs(argv) {
   args.trials ??= preset.trials;
   args.maxSeconds ??= preset.maxSeconds;
   args.concurrency ??= preset.concurrency;
+  args.paramPoints ??= preset.paramPoints;
   args.parityTrials ??= preset.parityTrials;
   args.paritySeconds ??= preset.paritySeconds;
+  args.paramPoints = Math.max(2, Math.round(args.paramPoints));
   args.maxTicks = Math.max(1, Math.ceil(args.maxSeconds * GAME_FPS));
   args.parityTicks = Math.max(1, Math.ceil(args.paritySeconds * GAME_FPS));
   args.valueSet = preset.valueSet;
@@ -204,6 +204,7 @@ USAGE:
   npm run analyze:interwheel:study -- --suite=responsiveness --metric=wall
   npm run analyze:interwheel:study -- --suite=params --metric=wall --preset=standard
   npm run analyze:interwheel:study -- --preset=quick --parity
+  npm run analyze:interwheel:study -- --suite=params --metric=wall --param-points=9
 
 Presets:
 ${presets}
@@ -235,6 +236,19 @@ function selectedMetrics(args) {
 
 function valuesFor(valueSets, args) {
   return valueSets[args.valueSet] ?? valueSets.standard;
+}
+
+function linspace(min, max, points) {
+  if (points <= 1) return [min];
+  const step = (max - min) / (points - 1);
+  return Array.from({ length: points }, (_, i) => {
+    const value = min + step * i;
+    return Math.abs(value) < 1e-9 ? 0 : Number(value.toFixed(6));
+  });
+}
+
+function paramValuesFor(param, args) {
+  return linspace(param.range[0], param.range[1], args.paramPoints);
 }
 
 function makeConditions(args) {
@@ -281,7 +295,7 @@ function makeConditions(args) {
 
     if (includeParams) {
       for (const param of metric.params) {
-        for (const value of valuesFor(param.values, args)) {
+        for (const value of paramValuesFor(param, args)) {
           conditions.push({
             group: `param:${metricName}:${param.key}`,
             suite: 'params',
@@ -581,6 +595,7 @@ function reportMarkdown(summary) {
     `- trials per condition: ${summary.meta.trials}`,
     `- max seconds: ${fmt(summary.meta.maxTicks / GAME_FPS, 1)}`,
     `- seed base: ${summary.meta.seedBase}`,
+    `- parameter points: ${summary.meta.paramPoints}`,
     `- pastille spawn: ${summary.meta.pastilleSpawnChance ?? 'natural'}`,
     `- difficulty: ${summary.meta.difficulty ?? 'natural'}`,
     `- parity: ${summary.meta.parity.enabled ? (summary.meta.parity.equal ? 'passed' : 'failed') : 'not run'}`,
@@ -698,6 +713,7 @@ async function main() {
       seedBase: args.seedBase,
       maxTicks: args.maxTicks,
       concurrency: args.concurrency,
+      paramPoints: args.paramPoints,
       budgetMs: args.budgetMs,
       pastilleSpawnChance: args.pastilleSpawnChance,
       difficulty: args.difficulty,

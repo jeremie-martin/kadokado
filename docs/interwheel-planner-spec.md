@@ -123,6 +123,9 @@ Interwheel studies must make responsiveness first-class:
 - Per-minute, percent, and ratio analytics should be derived from raw trial
   facts through common formulas, then selected explicitly for the report. Do not
   auto-generate every possible numeric variant.
+- Metric-parameter sweeps define a min/max range per parameter and use one
+  shared point count per preset. Override that density with `--param-points=N`
+  when a denser local read is needed.
 - Parity is opt-in for the study runner; use `--parity` when validating that the
   pure-planner path still matches the mounted path.
 
