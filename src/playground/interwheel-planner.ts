@@ -57,15 +57,10 @@ const TERMINAL_DEATH_COST = 1_000_000;
 // than any stable landing.
 const UNRESOLVED_FLIGHT_PENALTY = 50_000;
 // Per-pixel score cost when the blob is below the water-safety margin.
+// This is anti-drown physics, not a policy modulator — it stays.
 const WATER_DEFICIT_GRADIENT = 30;
 // Minimum px above water before water-safety penalty kicks in.
 const WATER_SAFETY_MARGIN = 160;
-// Px above water at which water urgency drops to zero (no influence on
-// climb/collect modulation). Between SAFETY and FAR, urgency lerps 1 → 0.
-const WATER_URGENCY_FAR = 320;
-// Multiplier coupling water urgency to climb. Hidden contextual modulator:
-// as water rises, urgency → 1 and climb scales by (1 + 1.2).
-const WATER_CLIMB_BOOST = 1.2;
 // Per-state stability bonus added to the leaf score. GRAB > WALL > FALLBACK.
 // Independent of policy: encourages the planner to land on stable surfaces.
 const STATE_BONUS: Record<number, number> = {
@@ -1241,12 +1236,12 @@ export class InterwheelPlanner {
   }
 
   // Score formulation: each live policy knob scales one path-cumulative
-  // signal, and planner physics (state bonus, water urgency,
-  // backtrack/loop/safety) live as named constants distinct from policy.
+  // signal, and planner physics (state bonus, water safety, backtrack, loop)
+  // live as named constants distinct from policy.
   //
   //   total =
   //     + climb × (
-  //         pathApexHeight × CLIMB_NORMALIZE × waterClimbBoost
+  //         pathApexHeight × CLIMB_NORMALIZE
   //         +/− climbMode-specific urgency shaping
   //       )
   //     + wall  × (pathWallLandings × WALL_LANDING_BONUS + pathWallTicks × WALL_NORMALIZE)
@@ -1282,11 +1277,9 @@ export class InterwheelPlanner {
     const policy = this.cfg.policy;
     const metricParams = this.cfg.metricParams;
     const waterMargin = end.waterY - end.blob.y;
-    const waterUrgency = this.waterUrgency(waterMargin);
-    const waterClimbBoost = 1 + waterUrgency * WATER_CLIMB_BOOST;
 
     const pathApexHeight = Math.max(0, root.blob.y - pathApexY);
-    const baseClimbSignal = pathApexHeight * CLIMB_NORMALIZE * waterClimbBoost;
+    const baseClimbSignal = pathApexHeight * CLIMB_NORMALIZE;
     let climbSignal = baseClimbSignal;
     if (metricParams.climbMode === 'time-cost') {
       climbSignal = baseClimbSignal - pathTicks * metricParams.climbTickCost;
@@ -1731,12 +1724,6 @@ export class InterwheelPlanner {
     if (start.blob.state === BLOB_STATE_GRAB) return start.blob.cwIdx >= 0 && start.blob.cwIdx === end.blob.cwIdx;
     if (start.blob.state === BLOB_STATE_WALL) return start.blob.wallSide !== 0 && start.blob.wallSide === end.blob.wallSide;
     return false;
-  }
-
-  private waterUrgency(waterMargin: number): number {
-    if (waterMargin >= WATER_URGENCY_FAR) return 0;
-    if (waterMargin <= WATER_SAFETY_MARGIN) return 1;
-    return (WATER_URGENCY_FAR - waterMargin) / (WATER_URGENCY_FAR - WATER_SAFETY_MARGIN);
   }
 
   private emptyResult(startBlobY: number, perceived: PerceivedSnapshot, mode: PlannerStats['mode']): PlanResult {

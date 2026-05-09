@@ -148,6 +148,21 @@ export function mineDifficultyAtHeight(heightMeters: number): number {
   return 1 + DIFFICULTY_OVERSHOOT_MAX * overshoot;
 }
 
+// Optional override for the initial water Y at game reset, in world-px.
+// `null` uses the production default of -300 (≈60m of margin below the
+// blob). Set to a value closer to 0 for "stress" starts where water is
+// already near the blob — useful for short demo videos where the run
+// needs to feel urgent from the first second. Conventional reading:
+// `initialWaterY` is the world-y position of the water surface at t=0.
+let initialWaterYOverride: number | null = null;
+export function setInitialWaterYOverride(value: number | null): void {
+  initialWaterYOverride = value;
+}
+export function getInitialWaterYOverride(): number | null {
+  return initialWaterYOverride;
+}
+export const INITIAL_WATER_Y_DEFAULT = -300;
+
 // Optional override for benchmark/sweep comparisons: when set to a number,
 // `pastilleSpawnChanceAtY` returns that constant value instead of the
 // height-ramp curve. Production gameplay uses null (the curve). Set to 1.0
@@ -300,7 +315,7 @@ export class InterwheelSim {
   mapY = 0;
   svy = 0;
   roof = 0;
-  waterY = -300;
+  waterY = INITIAL_WATER_Y_DEFAULT;
   waterBoost = 0;
   maxHeight = 0;
   score = 0;
@@ -319,7 +334,7 @@ export class InterwheelSim {
     this.tick = 0;
     this.mapY = 0;
     this.svy = 0;
-    this.waterY = -300;
+    this.waterY = initialWaterYOverride ?? INITIAL_WATER_Y_DEFAULT;
     this.waterBoost = 0;
     this.maxHeight = 0;
     this.score = 0;

@@ -76,7 +76,7 @@ Removed from live policy for now:
 
 ```text
 total =
-  climb * (pathHeight * waterClimbBoost - pathTicks * climbTickCost)
+  climb * (pathHeight - pathTicks * climbTickCost)
   + wall * wallSignal
   + pastille * pastilleSignal
   + stability

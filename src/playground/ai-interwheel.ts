@@ -1,5 +1,10 @@
 import { mount, type InterwheelGame } from '../games/interwheel/index';
-import { clamp } from '../games/interwheel/sim';
+import {
+  clamp,
+  setGenerationDifficultyOverride,
+  setInitialWaterYOverride,
+  setPastilleSpawnChanceOverride,
+} from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
 import { makeSeededRng } from './interwheel-edge-validator';
 import {
@@ -91,6 +96,21 @@ let overlayColor: number = OVERLAY_DEFAULTS.color;
 let lookaheadScreens = PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove;
 let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
 
+// Scene knobs (apply on reset). Default values match the production sim:
+//  - waterMarginMeters=60 maps to waterY=-300 (5 px = 1 m)
+//  - difficulty/pastilleSpawn use natural=true → height-ramp curves
+const SCENE_DEFAULTS = {
+  waterMarginMeters: 60,
+  difficulty: 0.30,
+  pastilleSpawn: 1.00,
+};
+const PX_PER_METER = 5;
+let sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
+let sceneDifficulty = SCENE_DEFAULTS.difficulty;
+let sceneDifficultyNatural = true;
+let scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
+let scenePastilleSpawnNatural = true;
+
 let game: InterwheelGame | null = null;
 let planner: InterwheelPlanner | null = null;
 let overlay: TrajectoryOverlay | null = null;
@@ -179,6 +199,79 @@ function setupPolicyControls(): void {
 
   policyReset?.addEventListener('click', () => applyPolicy({ ...DEFAULT_PLANNER_POLICY }));
   syncPolicyControls();
+}
+
+const sceneWaterMarginInput = document.getElementById('scene-waterMargin') as HTMLInputElement | null;
+const sceneWaterMarginOutput = document.getElementById('scene-waterMargin-value') as HTMLOutputElement | null;
+const sceneDifficultyInput = document.getElementById('scene-difficulty') as HTMLInputElement | null;
+const sceneDifficultyOutput = document.getElementById('scene-difficulty-value') as HTMLOutputElement | null;
+const sceneDifficultyNaturalInput = document.getElementById('scene-difficulty-natural') as HTMLInputElement | null;
+const scenePastilleSpawnInput = document.getElementById('scene-pastilleSpawn') as HTMLInputElement | null;
+const scenePastilleSpawnOutput = document.getElementById('scene-pastilleSpawn-value') as HTMLOutputElement | null;
+const scenePastilleSpawnNaturalInput = document.getElementById('scene-pastilleSpawn-natural') as HTMLInputElement | null;
+const sceneReset = document.getElementById('scene-reset') as HTMLButtonElement | null;
+
+function syncSceneControls(): void {
+  if (sceneWaterMarginInput) sceneWaterMarginInput.value = String(sceneWaterMarginMeters);
+  if (sceneWaterMarginOutput) sceneWaterMarginOutput.value = String(sceneWaterMarginMeters);
+  if (sceneDifficultyInput) {
+    sceneDifficultyInput.value = String(sceneDifficulty);
+    sceneDifficultyInput.disabled = sceneDifficultyNatural;
+  }
+  if (sceneDifficultyOutput) sceneDifficultyOutput.value = sceneDifficulty.toFixed(2);
+  if (sceneDifficultyNaturalInput) sceneDifficultyNaturalInput.checked = sceneDifficultyNatural;
+  if (scenePastilleSpawnInput) {
+    scenePastilleSpawnInput.value = String(scenePastilleSpawn);
+    scenePastilleSpawnInput.disabled = scenePastilleSpawnNatural;
+  }
+  if (scenePastilleSpawnOutput) scenePastilleSpawnOutput.value = scenePastilleSpawn.toFixed(2);
+  if (scenePastilleSpawnNaturalInput) scenePastilleSpawnNaturalInput.checked = scenePastilleSpawnNatural;
+}
+
+// Push the current scene knobs into the sim. Called before each reset so a
+// reseed picks them up; also called on initial mount.
+function applySceneOverridesToSim(): void {
+  setInitialWaterYOverride(-sceneWaterMarginMeters * PX_PER_METER);
+  setGenerationDifficultyOverride(sceneDifficultyNatural ? null : sceneDifficulty);
+  setPastilleSpawnChanceOverride(scenePastilleSpawnNatural ? null : scenePastilleSpawn);
+}
+
+function setupSceneControls(): void {
+  sceneWaterMarginInput?.addEventListener('input', () => {
+    const v = Number(sceneWaterMarginInput.value);
+    if (!Number.isFinite(v)) return;
+    sceneWaterMarginMeters = clamp(Math.round(v), 0, 1000);
+    syncSceneControls();
+  });
+  sceneDifficultyInput?.addEventListener('input', () => {
+    const v = Number(sceneDifficultyInput.value);
+    if (!Number.isFinite(v)) return;
+    sceneDifficulty = clamp(v, 0, 1);
+    syncSceneControls();
+  });
+  sceneDifficultyNaturalInput?.addEventListener('change', () => {
+    sceneDifficultyNatural = !!sceneDifficultyNaturalInput.checked;
+    syncSceneControls();
+  });
+  scenePastilleSpawnInput?.addEventListener('input', () => {
+    const v = Number(scenePastilleSpawnInput.value);
+    if (!Number.isFinite(v)) return;
+    scenePastilleSpawn = clamp(v, 0, 1);
+    syncSceneControls();
+  });
+  scenePastilleSpawnNaturalInput?.addEventListener('change', () => {
+    scenePastilleSpawnNatural = !!scenePastilleSpawnNaturalInput.checked;
+    syncSceneControls();
+  });
+  sceneReset?.addEventListener('click', () => {
+    sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
+    sceneDifficulty = SCENE_DEFAULTS.difficulty;
+    sceneDifficultyNatural = true;
+    scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
+    scenePastilleSpawnNatural = true;
+    syncSceneControls();
+  });
+  syncSceneControls();
 }
 
 function syncPlannerExperimentControls(): void {
@@ -449,10 +542,13 @@ function refreshStats(): void {
 
 function attachAI(g: InterwheelGame): void {
   // Wrap reset so any reset (initial mount, death-respawn, manual reseed)
-  // honors the current seed. Without this, the seeded RNG would only apply to
-  // the first reset() call.
+  // honors the current seed AND the latest scene knobs (water margin,
+  // difficulty, pastille spawn). Without this, the seeded RNG would only
+  // apply to the first reset() call and scene-panel changes wouldn't take
+  // effect until the page reloads.
   const originalReset = g.reset.bind(g);
   g.reset = (() => {
+    applySceneOverridesToSim();
     if (currentSeed === null) {
       originalReset();
       return;
@@ -590,6 +686,7 @@ mount(stage as HTMLElement, {
     (window as unknown as { __game__: InterwheelGame }).__game__ = game;
     attachAI(game);
     setupPolicyControls();
+    setupSceneControls();
     setupPlannerExperimentControls();
     setupOverlayParamControls();
     refreshStats();

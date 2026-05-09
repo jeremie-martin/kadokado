@@ -86,6 +86,38 @@
         </div>
       </div>
       <div class="panel">
+        <h2>Scene</h2>
+        <div class="controls" id="scene-controls">
+          <div class="control">
+            <label for="scene-waterMargin">Water margin (m)</label>
+            <output id="scene-waterMargin-value">60</output>
+            <input id="scene-waterMargin" type="range" min="0" max="120" step="5" value="60">
+          </div>
+          <div class="control">
+            <label for="scene-difficulty">
+              Difficulty
+              <input id="scene-difficulty-natural" type="checkbox" checked>
+              <span class="hint">natural</span>
+            </label>
+            <output id="scene-difficulty-value">0.30</output>
+            <input id="scene-difficulty" type="range" min="0" max="1" step="0.05" value="0.30" disabled>
+          </div>
+          <div class="control">
+            <label for="scene-pastilleSpawn">
+              Pastille spawn
+              <input id="scene-pastilleSpawn-natural" type="checkbox" checked>
+              <span class="hint">natural</span>
+            </label>
+            <output id="scene-pastilleSpawn-value">1.00</output>
+            <input id="scene-pastilleSpawn" type="range" min="0" max="1" step="0.05" value="1.00" disabled>
+          </div>
+        </div>
+        <div class="actions">
+          <button id="scene-reset" type="button">Reset</button>
+          <span class="hint">Applied on reseed.</span>
+        </div>
+      </div>
+      <div class="panel">
         <h2>Planner</h2>
         <div class="controls" id="planner-controls">
           <div class="control">
