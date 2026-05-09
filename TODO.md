@@ -14,11 +14,15 @@
   The current default is `climbMode=time-cost`, `climbTickCost=3`, selected
   from standard and overnight climb-only studies because it improved run speed
   substantially without the low-tail outliers seen at higher time costs.
-- High priority: reduce perception discontinuities in the planner. Seed 10
-  shows that while rotating on a wheel, a newly revealed wheel can abruptly
-  change the chosen route and predicted launch tick. Study approaches such as
-  freezing the perceived wheel set while attached, revealing farther only on
-  stable landings, or adding explicit hysteresis for newly revealed routes.
+- Continue reducing perception discontinuities. Reveal is now frozen while
+  attached so the post-landing camera settle no longer drips new wheels into
+  the search mid-rotation (seed 10, climb=1, wall=0: 13 perception-driven
+  flips → 0). Residual ~20 stable-mode wobbles per 600 ticks remain, all with
+  `perceivedDelta=0`: 1-tick launch-tick wobble from the discrete root wait
+  step plus search-budget timing noise, and rare target-wheel flips when two
+  edges score within rounding (e.g. seed 10 tick 223, w18↔w17). Open ideas:
+  hysteresis on chosen-edge identity, and tightening the reveal trigger from
+  "empty knownWheelIdx" to a discrete FLY→stable transition event.
 - Redesign the pastille objective later under a better name than
   `thoroughness`. The target behavior is capture-priority: when a pastille is
   perceived, bias toward not leaving it behind, even if height suffers. Treat

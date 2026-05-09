@@ -271,7 +271,12 @@ export type PlannerConfig = {
   maxDepth?: number;
   maxEdgeRollouts?: number;
   maxStableDepth?: number;
+  /** Reveal lookahead in screen-heights. Applied during FLY only; perception
+   *  is frozen while attached so the post-landing camera settle does not
+   *  flicker the chosen route mid-rotation. */
   revealScreensAbove?: number;
+  /** Planning-band depth below the viewport, in screen-heights. Crops the
+   *  perceived snapshot every tick regardless of attached/flight state. */
   memoryScreensBelow?: number;
   collectSegments?: boolean;
   policy?: Partial<PlannerPolicy>;
@@ -361,6 +366,11 @@ export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
   wallTickBonus: WALL_NORMALIZE,
 };
 
+// Reveal extends only during FLY (the planner widens its known wheel/pastille
+// set as the camera scrolls in flight) — once attached, perception is frozen
+// until the next jump so route choice doesn't flicker as mapY settles. The
+// memory band below the viewport keeps cropping the planning snapshot every
+// tick regardless of state.
 export const PLANNER_PERCEPTION_DEFAULTS = {
   revealScreensAbove: 0.5,
   memoryScreensBelow: 2,
@@ -1303,15 +1313,25 @@ export class InterwheelPlanner {
   private updatePerception(snap: SimSnapshot): void {
     const viewTop = -snap.mapY;
     const viewBottom = viewTop + STAGE_HEIGHT;
-    const revealTop = viewTop - STAGE_HEIGHT * this.cfg.revealScreensAbove;
-    const revealBottom = viewBottom;
-    for (let i = 0; i < snap.wheels.length; i += 1) {
-      const wheel = snap.wheels[i];
-      if (this.intersectsY(wheel.y, wheel.ray, revealTop, revealBottom)) this.knownWheelIdx.add(i);
-    }
-    for (const pastille of snap.pastilles) {
-      if (this.intersectsY(pastille.y, pastille.ray, revealTop, revealBottom)) {
-        this.knownPastilleKeys.add(this.pastilleKey(pastille));
+    // Reveal only during FLY, plus a one-shot bootstrap when knownWheelIdx is
+    // empty so the very first plan after spawn/invalidate has the start-wheel
+    // neighborhood. While the blob is attached (GRAB or WALL), the post-landing
+    // camera lerps mapY toward the wheel-anchored focus for ~25 ticks; without
+    // this gate, that settle drips fresh wheels into knownWheelIdx one by one
+    // and re-ranks the chosen edge mid-rotation. Lookahead therefore extends
+    // discretely between rotations: each rotation plans against a stable set.
+    const shouldReveal = snap.blob.state === BLOB_STATE_FLY || this.knownWheelIdx.size === 0;
+    if (shouldReveal) {
+      const revealTop = viewTop - STAGE_HEIGHT * this.cfg.revealScreensAbove;
+      const revealBottom = viewBottom;
+      for (let i = 0; i < snap.wheels.length; i += 1) {
+        const wheel = snap.wheels[i];
+        if (this.intersectsY(wheel.y, wheel.ray, revealTop, revealBottom)) this.knownWheelIdx.add(i);
+      }
+      for (const pastille of snap.pastilles) {
+        if (this.intersectsY(pastille.y, pastille.ray, revealTop, revealBottom)) {
+          this.knownPastilleKeys.add(this.pastilleKey(pastille));
+        }
       }
     }
     if (snap.blob.cwIdx >= 0) this.knownWheelIdx.add(snap.blob.cwIdx);
