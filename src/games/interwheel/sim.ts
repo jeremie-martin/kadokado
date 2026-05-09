@@ -31,7 +31,15 @@ export const WHEEL_RAY_MIN = 8;
 export const WHEEL_RAY_MAX = 32;
 export const WHEEL_RAY_RANDOM = 50;
 export const DIF_RANDOMIZER = 0.1;
-export const DIFFICULTY_FULL_HEIGHT_METERS = 20_000;
+// Knee of the difficulty ramp. Set to the original game's generated roof
+// (~1600m, WMAX=50) so the per-meter ramp through phase 1 matches the
+// original `c = i/WMAX` curve.
+export const DIFFICULTY_KNEE_METERS = 1_600;
+// Past the knee, mine difficulty keeps drifting upward over this height range
+// to make far-up sections harder than the original ever became. Geometry
+// difficulty (wheel ray/speed, inter-wheel chance) stays clamped at 1.0.
+export const DIFFICULTY_OVERSHOOT_RANGE_METERS = 10_400;
+export const DIFFICULTY_OVERSHOOT_MAX = 0.3;
 export const WHEEL_DIST_HARD_FACTOR = 0.75;
 export const WHEEL_RAY_RANDOM_HARD_FACTOR = 0.9;
 export const WHEEL_SPEED_RANDOM_HARD_FACTOR = 0.35;
@@ -55,6 +63,10 @@ export const BLOB_BLOP_FRICT = 0.94;
 export const MINE_SPACE = 36;
 export const MINE_SAFE_SPACE_FACTOR = 2.2;
 export const MINE_MAX_PLACEMENT_ATTEMPTS = 12;
+// Constant offset on the per-attempt mine roll: rng() + MINE_ROLL_BIAS < d.
+// 0.4 matches the original's `Math.random() + 0.4 < c`, so first mines appear
+// at d ≈ 0.4 (height ≈ 640m) exactly as in the original.
+export const MINE_ROLL_BIAS = 0.4;
 export const ENDGAME_DELAY = 30;
 
 // Blob state values (numeric — avoid TS const-enum so external code can use
@@ -101,11 +113,12 @@ export function heightMetersFromY(y: number): number {
 }
 
 // Optional override for benchmark/sweep comparisons: when set to a number,
-// `generationDifficultyAtHeight` returns that constant value instead of the
-// height-ramp curve. Drives wheel size, wheel speed, inter-wheel spacing,
-// and mine density. Production gameplay uses null (the curve). Set to a
-// fixed value (e.g., 0.3) for "uniform difficulty" sweeps so policies
-// aren't confounded by reaching harder terrain at different rates.
+// `generationDifficultyAtHeight` and `mineDifficultyAtHeight` both return
+// that constant value instead of the height-ramp curves. Drives wheel size,
+// wheel speed, inter-wheel spacing, and mine density. Production gameplay
+// uses null (the curves). Set to a fixed value (e.g., 0.3) for "uniform
+// difficulty" sweeps so policies aren't confounded by reaching harder
+// terrain at different rates.
 let generationDifficultyOverride: number | null = null;
 export function setGenerationDifficultyOverride(value: number | null): void {
   generationDifficultyOverride = value === null ? null : clamp(value, 0, 1);
@@ -114,10 +127,25 @@ export function getGenerationDifficultyOverride(): number | null {
   return generationDifficultyOverride;
 }
 
+// Geometry difficulty (wheel ray, wheel speed, inter-wheel chance, spacing).
+// Linear from 0 to 1 over 0..DIFFICULTY_KNEE_METERS, matching the original's
+// per-wheel `c = i/WMAX` ramp expressed per-meter via the original ~1600m
+// roof. Clamps at 1.0 so high-altitude wheel geometry stays inside the
+// parameter ranges the original produced.
 export function generationDifficultyAtHeight(heightMeters: number): number {
   if (generationDifficultyOverride !== null) return generationDifficultyOverride;
-  const t = clamp(heightMeters / DIFFICULTY_FULL_HEIGHT_METERS, 0, 1);
-  return t * t * (3 - 2 * t);
+  return clamp(heightMeters / DIFFICULTY_KNEE_METERS, 0, 1);
+}
+
+// Mine difficulty. Identical to geometry difficulty up to the knee, then
+// keeps drifting upward past 1.0 to DIFFICULTY_OVERSHOOT_MAX over the next
+// DIFFICULTY_OVERSHOOT_RANGE_METERS, so very high sections feel harder than
+// the original's peak via mine density alone (geometry stays bounded).
+export function mineDifficultyAtHeight(heightMeters: number): number {
+  if (generationDifficultyOverride !== null) return generationDifficultyOverride;
+  if (heightMeters <= DIFFICULTY_KNEE_METERS) return Math.max(0, heightMeters / DIFFICULTY_KNEE_METERS);
+  const overshoot = clamp((heightMeters - DIFFICULTY_KNEE_METERS) / DIFFICULTY_OVERSHOOT_RANGE_METERS, 0, 1);
+  return 1 + DIFFICULTY_OVERSHOOT_MAX * overshoot;
 }
 
 // Optional override for benchmark/sweep comparisons: when set to a number,
@@ -474,8 +502,17 @@ export class InterwheelSim {
     return generationDifficultyAtHeight(heightMetersFromY(y));
   }
 
+  private mineDifficultyAtY(y: number): number {
+    return mineDifficultyAtHeight(heightMetersFromY(y));
+  }
+
   private noisyDifficulty(base: number, rng: RNG): number {
     return clamp(base + (rng() * 2 - 1) * DIF_RANDOMIZER, 0, 1);
+  }
+
+  // Mine difficulty can exceed 1.0 past the knee, so do not clamp to 1.0.
+  private noisyMineDifficulty(base: number, rng: RNG): number {
+    return Math.max(0, base + (rng() * 2 - 1) * DIF_RANDOMIZER);
   }
 
   private wheelRay(difficulty: number, rng: RNG): number {
@@ -493,9 +530,8 @@ export class InterwheelSim {
   }
 
   private addDifficultyMines(wheel: Wheel, difficulty: number, rng: RNG): void {
-    const rollBias = 0.35 - difficulty * 0.25;
     let placed = 0;
-    while (placed < MINE_MAX_PLACEMENT_ATTEMPTS && rng() + rollBias < difficulty) {
+    while (placed < MINE_MAX_PLACEMENT_ATTEMPTS && rng() + MINE_ROLL_BIAS < difficulty) {
       if (!this.addMine(wheel, rng)) break;
       placed += 1;
     }
@@ -534,7 +570,7 @@ export class InterwheelSim {
         tries += 1;
       }
 
-      this.addDifficultyMines(wheel, this.noisyDifficulty(this.difficultyAtY(wheel.y), rng), rng);
+      this.addDifficultyMines(wheel, this.noisyMineDifficulty(this.mineDifficultyAtY(wheel.y), rng), rng);
 
       if (rng() < this.interWheelChance(c)) {
         const interWheel = this.createWheelData(rng);
