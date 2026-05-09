@@ -126,8 +126,12 @@ Interwheel studies must make responsiveness first-class:
 - Metric-parameter sweeps define a min/max range per parameter and use one
   shared point count per preset. Override that density with `--param-points=N`
   when a denser local read is needed.
-- Parity is opt-in for the study runner; use `--parity` when validating that the
-  pure-planner path still matches the mounted path.
+- Study presets also define planner search settings: lookahead screens, search
+  depth in jumps, edge budget, and per-plan CPU budget. Concurrency is not a
+  preset value; by default the runner uses roughly two thirds of available CPU
+  cores.
+- Parity checks belong to the analytics harness (`npm run analyze:interwheel
+  -- --verify-pure-planner`), not the study runner.
 
 The current entrypoint is:
 

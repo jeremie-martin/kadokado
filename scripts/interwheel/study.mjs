@@ -9,52 +9,55 @@ import { createServer } from 'vite';
 import { chromium } from '@playwright/test';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { availableParallelism } from 'node:os';
 
 const GAME_FPS = 40;
-const DEFAULT_POLICY = { climb: 1, wall: 0.5 };
 const CLIMB_ONLY = { climb: 1, wall: 0 };
-const DEFAULT_METRIC_PARAMS = { wallLandingBonus: 300, wallTickBonus: 5 };
 
 const PRESETS = {
   smoke: {
     description: 'wiring check only',
     trials: 1,
-    maxSeconds: 0.1,
-    concurrency: 1,
+    maxSeconds: 15,
+    revealScreensAbove: 0,
+    maxStableDepth: 3,
+    maxEdgeRollouts: 240,
+    budgetMs: 2,
     valueSet: 'smoke',
     paramPoints: 2,
-    parityTrials: 1,
-    paritySeconds: 5,
   },
   quick: {
     description: 'fast directional read',
     trials: 4,
     maxSeconds: 30,
-    concurrency: 4,
+    revealScreensAbove: 0,
+    maxStableDepth: 4,
+    maxEdgeRollouts: 360,
+    budgetMs: 5,
     valueSet: 'quick',
     paramPoints: 4,
-    parityTrials: 2,
-    paritySeconds: 30,
   },
   standard: {
     description: 'default comparison run',
     trials: 16,
     maxSeconds: 120,
-    concurrency: 12,
+    revealScreensAbove: 0.5,
+    maxStableDepth: 4,
+    maxEdgeRollouts: 360,
+    budgetMs: 5,
     valueSet: 'standard',
     paramPoints: 7,
-    parityTrials: 3,
-    paritySeconds: 30,
   },
   overnight: {
     description: 'larger corpus for final tuning',
     trials: 40,
     maxSeconds: 180,
-    concurrency: 12,
+    revealScreensAbove: 0.5,
+    maxStableDepth: 4,
+    maxEdgeRollouts: 360,
+    budgetMs: 5,
     valueSet: 'standard',
     paramPoints: 9,
-    parityTrials: 5,
-    paritySeconds: 30,
   },
 };
 
@@ -136,11 +139,11 @@ function parseArgs(argv) {
     seedBase: 4200,
     maxSeconds: null,
     concurrency: null,
-    budgetMs: 5,
+    revealScreensAbove: null,
+    maxStableDepth: null,
+    maxEdgeRollouts: null,
+    budgetMs: null,
     outDir: null,
-    parity: false,
-    parityTrials: null,
-    paritySeconds: null,
     paramPoints: null,
     pastilleSpawnChance: 1.0,
     difficulty: 0.3,
@@ -149,7 +152,6 @@ function parseArgs(argv) {
 
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
-    else if (raw === '--parity') args.parity = true;
     else if (raw.startsWith('--preset=')) args.preset = raw.slice('--preset='.length);
     else if (raw.startsWith('--suite=')) args.suite = raw.slice('--suite='.length);
     else if (raw.startsWith('--metric=')) args.metric = raw.slice('--metric='.length);
@@ -159,11 +161,12 @@ function parseArgs(argv) {
     else if (raw.startsWith('--max-seconds=')) args.maxSeconds = Number(raw.slice('--max-seconds='.length));
     else if (raw.startsWith('--max-ticks=')) args.maxSeconds = Number(raw.slice('--max-ticks='.length)) / GAME_FPS;
     else if (raw.startsWith('--concurrency=')) args.concurrency = Number(raw.slice('--concurrency='.length));
+    else if (raw.startsWith('--lookahead-screens=')) args.revealScreensAbove = Number(raw.slice('--lookahead-screens='.length));
+    else if (raw.startsWith('--search-jumps=')) args.maxStableDepth = Number(raw.slice('--search-jumps='.length));
+    else if (raw.startsWith('--edge-budget=')) args.maxEdgeRollouts = Number(raw.slice('--edge-budget='.length));
     else if (raw.startsWith('--budget-ms=')) args.budgetMs = Number(raw.slice('--budget-ms='.length));
     else if (raw.startsWith('--out=')) args.outDir = raw.slice('--out='.length);
     else if (raw.startsWith('--param-points=')) args.paramPoints = Number(raw.slice('--param-points='.length));
-    else if (raw.startsWith('--parity-trials=')) args.parityTrials = Number(raw.slice('--parity-trials='.length));
-    else if (raw.startsWith('--parity-seconds=')) args.paritySeconds = Number(raw.slice('--parity-seconds='.length));
     else if (raw === '--pastille-spawn=natural') args.pastilleSpawnChance = null;
     else if (raw.startsWith('--pastille-spawn=')) args.pastilleSpawnChance = Number(raw.slice('--pastille-spawn='.length));
     else if (raw === '--difficulty=natural') args.difficulty = null;
@@ -181,20 +184,33 @@ function parseArgs(argv) {
   const preset = PRESETS[args.preset] ?? PRESETS.standard;
   args.trials ??= preset.trials;
   args.maxSeconds ??= preset.maxSeconds;
-  args.concurrency ??= preset.concurrency;
+  args.revealScreensAbove ??= preset.revealScreensAbove;
+  args.maxStableDepth ??= preset.maxStableDepth;
+  args.maxEdgeRollouts ??= preset.maxEdgeRollouts;
+  args.budgetMs ??= preset.budgetMs;
+  args.concurrency ??= defaultConcurrency();
   args.paramPoints ??= preset.paramPoints;
-  args.parityTrials ??= preset.parityTrials;
-  args.paritySeconds ??= preset.paritySeconds;
+  args.concurrency = Math.max(1, Math.round(args.concurrency));
+  args.maxStableDepth = Math.max(1, Math.round(args.maxStableDepth));
+  args.maxEdgeRollouts = Math.max(16, Math.round(args.maxEdgeRollouts));
+  args.budgetMs = Math.max(1, args.budgetMs);
   args.paramPoints = Math.max(2, Math.round(args.paramPoints));
   args.maxTicks = Math.max(1, Math.ceil(args.maxSeconds * GAME_FPS));
-  args.parityTicks = Math.max(1, Math.ceil(args.paritySeconds * GAME_FPS));
   args.valueSet = preset.valueSet;
   return args;
 }
 
+function defaultConcurrency() {
+  return Math.max(1, Math.floor(availableParallelism() * 2 / 3));
+}
+
 function help() {
   const presets = Object.entries(PRESETS)
-    .map(([name, p]) => `  ${name.padEnd(9)} ${p.trials} trials, ${p.maxSeconds}s, ${p.description}`)
+    .map(([name, p]) => (
+      `  ${name.padEnd(9)} ${p.trials} trials, ${p.maxSeconds}s, ` +
+      `lookahead=${p.revealScreensAbove}, jumps=${p.maxStableDepth}, ` +
+      `edges=${p.maxEdgeRollouts}, cpu=${p.budgetMs}ms, params=${p.paramPoints} (${p.description})`
+    ))
     .join('\n');
   const metrics = Object.keys(METRICS).join(', ');
   console.log(`Interwheel study
@@ -203,7 +219,6 @@ USAGE:
   npm run analyze:interwheel:study -- --preset=quick
   npm run analyze:interwheel:study -- --suite=responsiveness --metric=wall
   npm run analyze:interwheel:study -- --suite=params --metric=wall --preset=standard
-  npm run analyze:interwheel:study -- --preset=quick --parity
   npm run analyze:interwheel:study -- --suite=params --metric=wall --param-points=9
 
 Presets:
@@ -217,9 +232,17 @@ Suites:
 Metrics:
   ${metrics}
 
+Useful overrides:
+  --concurrency=N         browser pages; default is roughly 2/3 of CPU cores
+  --lookahead-screens=N   planner reveal lookahead
+  --search-jumps=N        max stable jump depth
+  --edge-budget=N         max edge rollouts per plan
+  --budget-ms=N           per-plan CPU budget
+  --param-points=N        shared linspace density for parameter sweeps
+
 Defaults fix pastille spawn to 1.0 and generation difficulty to 0.3.
 Use --pastille-spawn=natural or --difficulty=natural to disable an override.
-Parity is opt-in with --parity.
+Concurrency defaults to roughly two thirds of available CPU cores.
 
 Outputs raw.json, summary.json, and report.md under .tmp/interwheel-studies/<timestamp>/.
 `);
@@ -263,7 +286,7 @@ function makeConditions(args) {
       axis: 'reference',
       value: 0,
       policy: { ...CLIMB_ONLY },
-      metricParams: { ...DEFAULT_METRIC_PARAMS },
+      metricParams: {},
     },
     {
       group: 'reference',
@@ -272,8 +295,8 @@ function makeConditions(args) {
       name: 'default-current',
       axis: 'reference',
       value: 0.5,
-      policy: { ...DEFAULT_POLICY },
-      metricParams: { ...DEFAULT_METRIC_PARAMS },
+      policy: {},
+      metricParams: {},
     },
   ];
 
@@ -288,7 +311,7 @@ function makeConditions(args) {
           axis: metric.policyKey,
           value,
           policy: { ...CLIMB_ONLY, [metric.policyKey]: value },
-          metricParams: { ...DEFAULT_METRIC_PARAMS },
+          metricParams: {},
         });
       }
     }
@@ -304,7 +327,7 @@ function makeConditions(args) {
             axis: param.key,
             value,
             policy: { ...CLIMB_ONLY, [metric.policyKey]: metric.mixPolicyWeight },
-            metricParams: { ...DEFAULT_METRIC_PARAMS, [param.key]: value },
+            metricParams: { [param.key]: value },
           });
         }
       }
@@ -338,51 +361,13 @@ async function openPage(browser, url) {
   return page;
 }
 
-async function runParity(browser, url, args) {
-  const page = await openPage(browser, url);
-  try {
-    const result = await page.evaluate(async ({ trials, seedBase, maxTicks, policy, pastilleSpawnChance, difficulty }) => {
-      if (pastilleSpawnChance !== null) {
-        window.__interwheelAnalytics__.setPastilleSpawnChanceOverride(pastilleSpawnChance);
-      }
-      if (difficulty !== null) {
-        window.__interwheelAnalytics__.setGenerationDifficultyOverride(difficulty);
-      }
-      return await window.__interwheelAnalytics__.comparePurePlannerCorpus({
-        trials,
-        seedBase,
-        maxTicks,
-        policy,
-      });
-    }, {
-      trials: args.parityTrials,
-      seedBase: args.seedBase,
-      maxTicks: args.parityTicks,
-      policy: DEFAULT_POLICY,
-      pastilleSpawnChance: args.pastilleSpawnChance,
-      difficulty: args.difficulty,
-    });
-    return {
-      enabled: true,
-      kind: 'pure-planner-corpus',
-      trials: args.parityTrials,
-      maxTicks: args.parityTicks,
-      seedBase: args.seedBase,
-      equal: Boolean(result.equal),
-      firstFailure: result.firstFailure ?? null,
-    };
-  } finally {
-    await page.close();
-  }
-}
-
 async function runCondition(browser, url, condition, args) {
   const chunks = makeChunks(args.trials, args.seedBase, Math.min(args.concurrency, args.trials));
   const started = performance.now();
   const partials = await Promise.all(chunks.map(async (chunk) => {
     const page = await openPage(browser, url);
     try {
-      return await page.evaluate(async ({ chunk, condition, maxTicks, budgetMs, pastilleSpawnChance, difficulty }) => {
+      return await page.evaluate(async ({ chunk, condition, maxTicks, plannerSearch, pastilleSpawnChance, difficulty }) => {
         if (pastilleSpawnChance !== null) {
           window.__interwheelAnalytics__.setPastilleSpawnChanceOverride(pastilleSpawnChance);
         }
@@ -390,10 +375,10 @@ async function runCondition(browser, url, condition, args) {
           window.__interwheelAnalytics__.setGenerationDifficultyOverride(difficulty);
         }
         const plannerConfig = {
-          budgetMs,
-          maxEdgeRollouts: 360,
-          maxStableDepth: 4,
-          revealScreensAbove: 0.5,
+          budgetMs: plannerSearch.budgetMs,
+          maxEdgeRollouts: plannerSearch.maxEdgeRollouts,
+          maxStableDepth: plannerSearch.maxStableDepth,
+          revealScreensAbove: plannerSearch.revealScreensAbove,
           collectSegments: false,
           policy: condition.policy,
           metricParams: condition.metricParams,
@@ -469,7 +454,12 @@ async function runCondition(browser, url, condition, args) {
         chunk,
         condition,
         maxTicks: args.maxTicks,
-        budgetMs: args.budgetMs,
+        plannerSearch: {
+          budgetMs: args.budgetMs,
+          maxEdgeRollouts: args.maxEdgeRollouts,
+          maxStableDepth: args.maxStableDepth,
+          revealScreensAbove: args.revealScreensAbove,
+        },
         pastilleSpawnChance: args.pastilleSpawnChance,
         difficulty: args.difficulty,
       });
@@ -596,9 +586,10 @@ function reportMarkdown(summary) {
     `- max seconds: ${fmt(summary.meta.maxTicks / GAME_FPS, 1)}`,
     `- seed base: ${summary.meta.seedBase}`,
     `- parameter points: ${summary.meta.paramPoints}`,
+    `- concurrency: ${summary.meta.concurrency}`,
+    `- planner search: lookahead=${summary.meta.plannerSearch.revealScreensAbove}, jumps=${summary.meta.plannerSearch.maxStableDepth}, edges=${summary.meta.plannerSearch.maxEdgeRollouts}, cpu=${summary.meta.plannerSearch.budgetMs}ms`,
     `- pastille spawn: ${summary.meta.pastilleSpawnChance ?? 'natural'}`,
     `- difficulty: ${summary.meta.difficulty ?? 'natural'}`,
-    `- parity: ${summary.meta.parity.enabled ? (summary.meta.parity.equal ? 'passed' : 'failed') : 'not run'}`,
     `- wall seconds: ${fmt(summary.meta.wallSeconds, 1)}`,
     '',
     '## Headline',
@@ -637,11 +628,13 @@ function reportMarkdown(summary) {
 }
 
 function policyLabel(policy) {
-  return Object.entries(policy).map(([key, value]) => `${key}=${value}`).join(',');
+  const entries = Object.entries(policy);
+  return entries.length > 0 ? entries.map(([key, value]) => `${key}=${value}`).join(',') : 'planner defaults';
 }
 
 function metricLabel(metricParams) {
-  return Object.entries(metricParams).map(([key, value]) => `${key}=${value}`).join(',');
+  const entries = Object.entries(metricParams);
+  return entries.length > 0 ? entries.map(([key, value]) => `${key}=${value}`).join(',') : 'planner defaults';
 }
 
 function printConditionSummary(result) {
@@ -686,16 +679,6 @@ async function main() {
   const started = performance.now();
 
   try {
-    let parity = { enabled: false };
-    if (args.parity) {
-      console.log(`parity: ${args.parityTrials} trials, ${args.paritySeconds}s`);
-      parity = await runParity(browser, url, args);
-      console.log(`  ${parity.equal ? 'passed' : 'failed'}`);
-      if (!parity.equal) {
-        throw new Error('pure planner parity failed; rerun without --parity only if you intentionally want to ignore it');
-      }
-    }
-
     const raw = [];
     for (let i = 0; i < conditions.length; i += 1) {
       const condition = conditions[i];
@@ -714,11 +697,15 @@ async function main() {
       maxTicks: args.maxTicks,
       concurrency: args.concurrency,
       paramPoints: args.paramPoints,
-      budgetMs: args.budgetMs,
+      plannerSearch: {
+        revealScreensAbove: args.revealScreensAbove,
+        maxStableDepth: args.maxStableDepth,
+        maxEdgeRollouts: args.maxEdgeRollouts,
+        budgetMs: args.budgetMs,
+      },
       pastilleSpawnChance: args.pastilleSpawnChance,
       difficulty: args.difficulty,
       conditions: conditions.length,
-      parity,
       wallSeconds: (performance.now() - started) / 1000,
     };
     const summary = summarize(raw, meta);
