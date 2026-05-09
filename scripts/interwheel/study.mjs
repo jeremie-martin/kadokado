@@ -83,6 +83,11 @@ const METRICS = {
         range: [0, 8],
         metricParams: { climbMode: 'wait-cost' },
       },
+      {
+        key: 'climbAboveAimWeight',
+        range: [0, 4],
+        metricParams: { climbMode: 'time-cost', climbTickCost: 3 },
+      },
     ],
   },
   wall: {

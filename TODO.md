@@ -14,15 +14,18 @@
   The current default is `climbMode=time-cost`, `climbTickCost=3`, selected
   from standard and overnight climb-only studies because it improved run speed
   substantially without the low-tail outliers seen at higher time costs.
-- Continue reducing perception discontinuities. Reveal is now frozen while
-  attached so the post-landing camera settle no longer drips new wheels into
-  the search mid-rotation (seed 10, climb=1, wall=0: 13 perception-driven
-  flips → 0). Residual ~20 stable-mode wobbles per 600 ticks remain, all with
-  `perceivedDelta=0`: 1-tick launch-tick wobble from the discrete root wait
-  step plus search-budget timing noise, and rare target-wheel flips when two
-  edges score within rounding (e.g. seed 10 tick 223, w18↔w17). Open ideas:
-  hysteresis on chosen-edge identity, and tightening the reveal trigger from
-  "empty knownWheelIdx" to a discrete FLY→stable transition event.
+- Continue reducing perception discontinuities. The post-landing camera lerp
+  re-ranks the chosen edge mid-rotation as wheels drip into knownWheelIdx and
+  the planning band shifts. The previous attempt that froze reveal entirely
+  while attached (commit 892f29e) regressed lookahead=0 — knownWheelIdx never
+  grew between flights — and was reverted. Residual ~20 stable-mode wobbles
+  per 600 ticks beyond the perception cause: 1-tick launch-tick wobble from
+  the discrete root wait step plus search-budget timing noise, and rare
+  target-wheel flips when two edges score within rounding (e.g. seed 10
+  tick 223, w18↔w17). Open ideas: anchor the planner's effective mapY to a
+  stable reference (FLY→attached transition, or a wheel-anchored focus) so
+  the planning band and reveal range stop shifting during the lerp;
+  hysteresis on chosen-edge identity.
 - Redesign the pastille objective later under a better name than
   `thoroughness`. The target behavior is capture-priority: when a pastille is
   perceived, bias toward not leaving it behind, even if height suffers. Treat

@@ -5,6 +5,7 @@ import {
   BLOB_STATE_WALL,
   InterwheelSim as ScratchInterwheelSim,
   STAGE_HEIGHT,
+  STAGE_WIDTH,
   clamp,
   type InterwheelSim,
   type SimSnapshot,
@@ -97,6 +98,19 @@ const CLIMB_METRIC_MODES = ['legacy', 'time-cost', 'wait-cost'] as const;
 const CLIMB_METRIC_MODE_DEFAULT: ClimbMetricMode = 'time-cost';
 const CLIMB_TICK_COST_DEFAULT = 3;
 const CLIMB_WAIT_COST_DEFAULT = 0;
+// "Aim above what we can see" virtual target. Bonus per pixel of leaf
+// proximity to a heuristic point above the AI's perception cone, in the
+// middle horizontally. Addresses the lookahead=0 wall-loop trap where the
+// planner has no perceived wheel above the viewport to aim at: instead of
+// requiring perception, encode "go up" as a fictitious attractor. Default
+// 0 disables. The attractor sits 0.25 screens above the reveal top so
+// higher lookahead pushes the aim higher (matches: more visible = aim
+// further up).
+const CLIMB_ABOVE_AIM_WEIGHT_DEFAULT = 0;
+// Vertical offset of the virtual aim target above the reveal top, in
+// screen-heights. 0.25 keeps the target close to perception edge so
+// in-flight apex paths can plausibly approach it.
+const ABOVE_AIM_Y_OFFSET_SCREENS = 0.25;
 // Wall signal has two parts:
 //   • WALL_LANDING_BONUS: per-edge categorical bonus for the canonical
 //     wall-jump-and-land event (started off the wall, touched it during the
@@ -271,9 +285,8 @@ export type PlannerConfig = {
   maxDepth?: number;
   maxEdgeRollouts?: number;
   maxStableDepth?: number;
-  /** Reveal lookahead in screen-heights. Applied during FLY only; perception
-   *  is frozen while attached so the post-landing camera settle does not
-   *  flicker the chosen route mid-rotation. */
+  /** Reveal lookahead in screen-heights, evaluated every tick against the
+   *  current camera mapY. */
   revealScreensAbove?: number;
   /** Planning-band depth below the viewport, in screen-heights. Crops the
    *  perceived snapshot every tick regardless of attached/flight state. */
@@ -324,6 +337,15 @@ export type PlannerMetricParams = {
    * with wallLandingBonus to tune the wall metric's smoothness.
    */
   wallTickBonus: number;
+  /**
+   * Study-only knob. Score weight per pixel of leaf proximity to a virtual
+   * "aim point" above the planner's perception cone, in the middle
+   * horizontally. Encodes "go up" as a heuristic that doesn't depend on
+   * actually seeing a wheel above. 0 = unchanged. >0 pulls leaf choice
+   * toward this attractor by the negative Euclidean distance from leaf to
+   * target, scaled by the weight.
+   */
+  climbAboveAimWeight: number;
 };
 
 export type CandidateScoreBreakdown = {
@@ -364,13 +386,9 @@ export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
   climbWaitCost: CLIMB_WAIT_COST_DEFAULT,
   wallLandingBonus: WALL_LANDING_BONUS,
   wallTickBonus: WALL_NORMALIZE,
+  climbAboveAimWeight: CLIMB_ABOVE_AIM_WEIGHT_DEFAULT,
 };
 
-// Reveal extends only during FLY (the planner widens its known wheel/pastille
-// set as the camera scrolls in flight) — once attached, perception is frozen
-// until the next jump so route choice doesn't flicker as mapY settles. The
-// memory band below the viewport keeps cropping the planning snapshot every
-// tick regardless of state.
 export const PLANNER_PERCEPTION_DEFAULTS = {
   revealScreensAbove: 0.5,
   memoryScreensBelow: 2,
@@ -1029,7 +1047,23 @@ export class InterwheelPlanner {
     const wallSignal = pathWallLandings * metricParams.wallLandingBonus
                      + pathWallTicks * metricParams.wallTickBonus;
 
-    const climb        = policy.climb        * climbSignal;
+    // "Aim above what we can see": virtual attractor 0.25 screens above the
+    // reveal top, in the middle horizontally. Encodes "go up" without
+    // depending on perceiving a specific wheel above. Linear penalty for
+    // leaf distance to the target — closer leaves score higher. Off by
+    // default. Uses root.mapY so the target is fixed for the entire search
+    // (the planner aims at one stable point, not a moving one).
+    let aimSignal = 0;
+    if (metricParams.climbAboveAimWeight > 0) {
+      const viewTop = -root.mapY;
+      const targetY = viewTop - STAGE_HEIGHT * (this.cfg.revealScreensAbove + ABOVE_AIM_Y_OFFSET_SCREENS);
+      const targetX = STAGE_WIDTH * 0.5;
+      const dx = end.blob.x - targetX;
+      const dy = end.blob.y - targetY;
+      aimSignal = -Math.sqrt(dx * dx + dy * dy);
+    }
+
+    const climb        = policy.climb        * (climbSignal + metricParams.climbAboveAimWeight * aimSignal);
     const wall         = policy.wall         * wallSignal;
 
     // Frontier physics — leaf state shapes the score independent of policy.
@@ -1313,25 +1347,15 @@ export class InterwheelPlanner {
   private updatePerception(snap: SimSnapshot): void {
     const viewTop = -snap.mapY;
     const viewBottom = viewTop + STAGE_HEIGHT;
-    // Reveal only during FLY, plus a one-shot bootstrap when knownWheelIdx is
-    // empty so the very first plan after spawn/invalidate has the start-wheel
-    // neighborhood. While the blob is attached (GRAB or WALL), the post-landing
-    // camera lerps mapY toward the wheel-anchored focus for ~25 ticks; without
-    // this gate, that settle drips fresh wheels into knownWheelIdx one by one
-    // and re-ranks the chosen edge mid-rotation. Lookahead therefore extends
-    // discretely between rotations: each rotation plans against a stable set.
-    const shouldReveal = snap.blob.state === BLOB_STATE_FLY || this.knownWheelIdx.size === 0;
-    if (shouldReveal) {
-      const revealTop = viewTop - STAGE_HEIGHT * this.cfg.revealScreensAbove;
-      const revealBottom = viewBottom;
-      for (let i = 0; i < snap.wheels.length; i += 1) {
-        const wheel = snap.wheels[i];
-        if (this.intersectsY(wheel.y, wheel.ray, revealTop, revealBottom)) this.knownWheelIdx.add(i);
-      }
-      for (const pastille of snap.pastilles) {
-        if (this.intersectsY(pastille.y, pastille.ray, revealTop, revealBottom)) {
-          this.knownPastilleKeys.add(this.pastilleKey(pastille));
-        }
+    const revealTop = viewTop - STAGE_HEIGHT * this.cfg.revealScreensAbove;
+    const revealBottom = viewBottom;
+    for (let i = 0; i < snap.wheels.length; i += 1) {
+      const wheel = snap.wheels[i];
+      if (this.intersectsY(wheel.y, wheel.ray, revealTop, revealBottom)) this.knownWheelIdx.add(i);
+    }
+    for (const pastille of snap.pastilles) {
+      if (this.intersectsY(pastille.y, pastille.ray, revealTop, revealBottom)) {
+        this.knownPastilleKeys.add(this.pastilleKey(pastille));
       }
     }
     if (snap.blob.cwIdx >= 0) this.knownWheelIdx.add(snap.blob.cwIdx);
