@@ -14,6 +14,11 @@
   The current default is `climbMode=time-cost`, `climbTickCost=3`, selected
   from standard and overnight climb-only studies because it improved run speed
   substantially without the low-tail outliers seen at higher time costs.
+- High priority: reduce perception discontinuities in the planner. Seed 10
+  shows that while rotating on a wheel, a newly revealed wheel can abruptly
+  change the chosen route and predicted launch tick. Study approaches such as
+  freezing the perceived wheel set while attached, revealing farther only on
+  stable landings, or adding explicit hysteresis for newly revealed routes.
 - Redesign the pastille objective later under a better name than
   `thoroughness`. The target behavior is capture-priority: when a pastille is
   perceived, bias toward not leaving it behind, even if height suffers. Treat
