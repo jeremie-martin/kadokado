@@ -112,18 +112,16 @@ export function heightMetersFromY(y: number): number {
   return Math.max(0, Math.floor(-y * 0.2));
 }
 
-// Optional override for benchmark/sweep comparisons: when set to a number,
-// `generationDifficultyAtHeight` and `mineDifficultyAtHeight` both return
-// that constant value instead of the height-ramp curves. Drives wheel size,
-// wheel speed, inter-wheel spacing, and mine density. Production gameplay
-// uses null (the curves). Set to a fixed value (e.g., 0.3) for "uniform
-// difficulty" sweeps so policies aren't confounded by reaching harder
-// terrain at different rates.
-let generationDifficultyOverride: number | null = null;
-export function setGenerationDifficultyOverride(value: number | null): void {
-  generationDifficultyOverride = value === null ? null : clamp(value, 0, 1);
+// Optional override for wheel-geometry difficulty: a constant value (legacy
+// signature) or a {floor, ramp} curve. The curve is evaluated against the
+// agent's altitude each time difficulty is read so a Scene preset can start
+// at a non-trivial floor (not "tutorial easy") and escalate from there.
+// Production gameplay uses null (height ramp from 0 to 1.0 over 1600m).
+let generationDifficultyOverride: DifficultyCurve | null = null;
+export function setGenerationDifficultyOverride(value: DifficultyCurve | number | null): void {
+  generationDifficultyOverride = normalizeCurve(value, 1);
 }
-export function getGenerationDifficultyOverride(): number | null {
+export function getGenerationDifficultyOverride(): DifficultyCurve | null {
   return generationDifficultyOverride;
 }
 
@@ -133,7 +131,9 @@ export function getGenerationDifficultyOverride(): number | null {
 // roof. Clamps at 1.0 so high-altitude wheel geometry stays inside the
 // parameter ranges the original produced.
 export function generationDifficultyAtHeight(heightMeters: number): number {
-  if (generationDifficultyOverride !== null) return generationDifficultyOverride;
+  if (generationDifficultyOverride !== null) {
+    return curveAtHeight(generationDifficultyOverride, heightMeters, 1);
+  }
   return clamp(heightMeters / DIFFICULTY_KNEE_METERS, 0, 1);
 }
 
@@ -147,8 +147,15 @@ export function generationDifficultyAtHeight(heightMeters: number): number {
 // sizes/spacing. When unset, falls back to the generation override (legacy
 // coupled behavior), then to the natural height ramp.
 export function mineDifficultyAtHeight(heightMeters: number): number {
-  if (mineDifficultyOverride !== null) return mineDifficultyOverride;
-  if (generationDifficultyOverride !== null) return generationDifficultyOverride;
+  if (mineDifficultyOverride !== null) {
+    return curveAtHeight(mineDifficultyOverride, heightMeters, MINE_DIFFICULTY_CEILING);
+  }
+  if (generationDifficultyOverride !== null) {
+    // Inherit the wheel-difficulty curve when no mine-specific override is
+    // active, preserving the historical "coupled" behavior that callers may
+    // depend on (e.g., study runner sweeps).
+    return curveAtHeight(generationDifficultyOverride, heightMeters, 1);
+  }
   if (heightMeters <= DIFFICULTY_KNEE_METERS) return Math.max(0, heightMeters / DIFFICULTY_KNEE_METERS);
   const overshoot = clamp((heightMeters - DIFFICULTY_KNEE_METERS) / DIFFICULTY_OVERSHOOT_RANGE_METERS, 0, 1);
   return 1 + DIFFICULTY_OVERSHOOT_MAX * overshoot;
@@ -171,19 +178,42 @@ export function getInitialWaterMarginPxOverride(): number | null {
 }
 export const INITIAL_WATER_Y_DEFAULT = -300;
 
-// Optional multiplier on the per-tick water rise rate, applied to both the
-// base WATER_SPEED and the accumulating waterBoost. `null` keeps the natural
-// 1.0× speed. Higher values (e.g., 3..5) make water catch up to the agent
-// faster — useful for short dramatic videos. Read once at reset() and stored
-// on the sim instance so search clones inherit consistent dynamics.
-let waterSpeedMultiplierOverride: number | null = null;
-export function setWaterSpeedMultiplierOverride(value: number | null): void {
-  waterSpeedMultiplierOverride = value === null ? null : Math.max(0, value);
+// `DifficultyCurve` lets a Scene-panel override be more than a constant: it
+// can specify a floor at altitude=0 and a ramp that grows with height. Used
+// by the wheel-difficulty, mine-density, and water-speed overrides so a video
+// run can start hard and escalate, instead of starting trivially easy and
+// only hitting real difficulty several thousand meters up.
+export type DifficultyCurve = { floor: number; ramp: number };
+function normalizeCurve(value: DifficultyCurve | number | null, ceiling: number): DifficultyCurve | null {
+  if (value === null) return null;
+  if (typeof value === 'number') return { floor: clamp(value, 0, ceiling), ramp: 0 };
+  return {
+    floor: clamp(value.floor, 0, ceiling),
+    ramp: Math.max(0, value.ramp),
+  };
 }
-export function getWaterSpeedMultiplierOverride(): number | null {
+function curveAtHeight(curve: DifficultyCurve, heightMeters: number, ceiling: number): number {
+  return clamp(curve.floor + curve.ramp * (heightMeters / DIFFICULTY_KNEE_METERS), 0, ceiling);
+}
+
+// Optional multiplier on the per-tick water rise rate, applied to both the
+// base WATER_SPEED and the accumulating waterBoost. Accepts either a constant
+// value (legacy callers, study runner) or a {floor, ramp} curve. Curves are
+// evaluated against the agent's current altitude every tick — search clones
+// share the same global, so simulated rollouts agree with live play.
+let waterSpeedMultiplierOverride: DifficultyCurve | null = null;
+export function setWaterSpeedMultiplierOverride(value: DifficultyCurve | number | null): void {
+  waterSpeedMultiplierOverride = normalizeCurve(value, WATER_SPEED_MULTIPLIER_CEILING);
+}
+export function getWaterSpeedMultiplierOverride(): DifficultyCurve | null {
   return waterSpeedMultiplierOverride;
 }
 export const WATER_SPEED_MULTIPLIER_DEFAULT = 1;
+export const WATER_SPEED_MULTIPLIER_CEILING = 10;
+export function waterSpeedMultiplierAtHeight(heightMeters: number): number {
+  if (waterSpeedMultiplierOverride === null) return WATER_SPEED_MULTIPLIER_DEFAULT;
+  return curveAtHeight(waterSpeedMultiplierOverride, heightMeters, WATER_SPEED_MULTIPLIER_CEILING);
+}
 
 // Optional override for mine difficulty, decoupled from generation difficulty.
 // Generation difficulty controls wheel ray, wheel speed, inter-wheel spacing.
@@ -192,11 +222,12 @@ export const WATER_SPEED_MULTIPLIER_DEFAULT = 1;
 // playground / studies dial up mine density without making wheels harder
 // (e.g., for dramatic short videos). When `null`, mine difficulty falls back
 // to the generation override if set, else to the natural height ramp.
-let mineDifficultyOverride: number | null = null;
-export function setMineDifficultyOverride(value: number | null): void {
-  mineDifficultyOverride = value === null ? null : Math.max(0, value);
+const MINE_DIFFICULTY_CEILING = 1 + DIFFICULTY_OVERSHOOT_MAX;
+let mineDifficultyOverride: DifficultyCurve | null = null;
+export function setMineDifficultyOverride(value: DifficultyCurve | number | null): void {
+  mineDifficultyOverride = normalizeCurve(value, MINE_DIFFICULTY_CEILING);
 }
-export function getMineDifficultyOverride(): number | null {
+export function getMineDifficultyOverride(): DifficultyCurve | null {
   return mineDifficultyOverride;
 }
 
@@ -312,7 +343,6 @@ export type SimSnapshot = {
   roof: number;
   waterY: number;
   waterBoost: number;
-  waterSpeedMultiplier: number;
   maxHeight: number;
   score: number;
   ending: boolean;
@@ -355,7 +385,6 @@ export class InterwheelSim {
   roof = 0;
   waterY = INITIAL_WATER_Y_DEFAULT;
   waterBoost = 0;
-  waterSpeedMultiplier = WATER_SPEED_MULTIPLIER_DEFAULT;
   maxHeight = 0;
   score = 0;
   ending = false;
@@ -374,7 +403,6 @@ export class InterwheelSim {
     this.mapY = 0;
     this.svy = 0;
     this.waterBoost = 0;
-    this.waterSpeedMultiplier = waterSpeedMultiplierOverride ?? WATER_SPEED_MULTIPLIER_DEFAULT;
     this.maxHeight = 0;
     this.score = 0;
     this.ending = false;
@@ -458,7 +486,7 @@ export class InterwheelSim {
       sparks: this.sparks.map((s) => ({ ...s })),
       tick: this.tick,
       mapY: this.mapY, svy: this.svy, roof: this.roof,
-      waterY: this.waterY, waterBoost: this.waterBoost, waterSpeedMultiplier: this.waterSpeedMultiplier,
+      waterY: this.waterY, waterBoost: this.waterBoost,
       maxHeight: this.maxHeight, score: this.score,
       ending: this.ending, endTimer: this.endTimer, endFocusY: this.endFocusY,
       ended: this.ended,
@@ -502,7 +530,7 @@ export class InterwheelSim {
 
     this.tick = s.tick;
     this.mapY = s.mapY; this.svy = s.svy; this.roof = s.roof;
-    this.waterY = s.waterY; this.waterBoost = s.waterBoost; this.waterSpeedMultiplier = s.waterSpeedMultiplier;
+    this.waterY = s.waterY; this.waterBoost = s.waterBoost;
     this.maxHeight = s.maxHeight; this.score = s.score;
     this.ending = s.ending; this.endTimer = s.endTimer; this.endFocusY = s.endFocusY;
     this.ended = s.ended;
@@ -976,7 +1004,8 @@ export class InterwheelSim {
   private updateWaterAndScore(): void {
     const blob = this.blob;
     this.waterBoost += WATER_SPEED_INC;
-    this.waterY -= (WATER_SPEED + this.waterBoost) * this.waterSpeedMultiplier;
+    const multiplier = waterSpeedMultiplierAtHeight(heightMetersFromY(this.blob.y));
+    this.waterY -= (WATER_SPEED + this.waterBoost) * multiplier;
     this.updateBlobWaterEffects();
     if (blob.wet > 1) {
       this.startBlobDrowningDeath();
