@@ -27,7 +27,7 @@ export const OVERLAY_DEFAULTS: {
   shareWidthScale: 18,
   alphaMin: 0.07,
   alphaMax: 0.9,
-  alphaGamma: 6,
+  alphaGamma: 2,
   generationWidthWeights: DEFAULT_TRAJECTORY_GENERATION_WIDTH_WEIGHTS,
   color: 0xff3333,
   highlightChosenChain: false,

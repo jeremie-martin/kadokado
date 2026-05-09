@@ -94,7 +94,7 @@ test.describe('AI playground', () => {
     await expect(page.locator('#overlay-generationWeight4')).toHaveCount(0);
     await expect(page.locator('#overlay-alphaMin-value')).toHaveText('0.07');
     await expect(page.locator('#overlay-alphaMax-value')).toHaveText('0.90');
-    await expect(page.locator('#overlay-alphaGamma-value')).toHaveText('6.0');
+    await expect(page.locator('#overlay-alphaGamma-value')).toHaveText('2.0');
     await expect(page.locator('#overlay-color')).toHaveValue('#ff3333');
     await expect(page.locator('#overlay-highlightChosen')).not.toBeChecked();
     await page.waitForFunction(() => {
