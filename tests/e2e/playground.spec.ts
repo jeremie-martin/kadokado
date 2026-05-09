@@ -84,7 +84,7 @@ test.describe('AI playground', () => {
     await expect(page.locator('#overlay-lineageGamma-value')).toHaveText('4.0');
     await expect(page.locator('#overlay-lineageClaimAmp')).toHaveCount(0);
     await expect(page.locator('#objective-asymmetricYGain')).toHaveCount(0);
-    await expect(page.locator('#overlay-minSupportRank-value')).toHaveText('0.70');
+    await expect(page.locator('#overlay-minSupportRank-value')).toHaveText('0.75');
     await expect(page.locator('#overlay-widthMin-value')).toHaveText('0.50');
     await expect(page.locator('#overlay-widthMax-value')).toHaveText('5.0');
     await expect(page.locator('#overlay-shareWidthScale-value')).toHaveText('18.0');

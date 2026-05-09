@@ -21,7 +21,7 @@ export const OVERLAY_DEFAULTS: {
   color: number;
   highlightChosenChain: boolean;
 } = {
-  minSupportRank: 0.7,
+  minSupportRank: 0.75,
   widthMin: 0.5,
   widthMax: 5,
   shareWidthScale: 18,
