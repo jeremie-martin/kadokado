@@ -5,6 +5,7 @@ import {
   setInitialWaterMarginPxOverride,
   setMineDifficultyOverride,
   setPastilleSpawnChanceOverride,
+  setWaterSpeedMultiplierOverride,
 } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
 import { makeSeededRng } from './interwheel-edge-validator';
@@ -109,6 +110,7 @@ let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
 //     stacks multiple per row); useful for visually dense starts.
 const SCENE_DEFAULTS = {
   waterMarginMeters: 60,
+  waterSpeed: 1.00,
   difficulty: 0.30,
   mineDensity: 0.30,
   pastilleSpawn: 1.00,
@@ -116,6 +118,8 @@ const SCENE_DEFAULTS = {
 const PX_PER_METER = 5;
 let sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
 let sceneWaterMarginNatural = true;
+let sceneWaterSpeed = SCENE_DEFAULTS.waterSpeed;
+let sceneWaterSpeedNatural = true;
 let sceneDifficulty = SCENE_DEFAULTS.difficulty;
 let sceneDifficultyNatural = true;
 let sceneMineDensity = SCENE_DEFAULTS.mineDensity;
@@ -216,6 +220,9 @@ function setupPolicyControls(): void {
 const sceneWaterMarginInput = document.getElementById('scene-waterMargin') as HTMLInputElement | null;
 const sceneWaterMarginOutput = document.getElementById('scene-waterMargin-value') as HTMLOutputElement | null;
 const sceneWaterMarginNaturalInput = document.getElementById('scene-waterMargin-natural') as HTMLInputElement | null;
+const sceneWaterSpeedInput = document.getElementById('scene-waterSpeed') as HTMLInputElement | null;
+const sceneWaterSpeedOutput = document.getElementById('scene-waterSpeed-value') as HTMLOutputElement | null;
+const sceneWaterSpeedNaturalInput = document.getElementById('scene-waterSpeed-natural') as HTMLInputElement | null;
 const sceneDifficultyInput = document.getElementById('scene-difficulty') as HTMLInputElement | null;
 const sceneDifficultyOutput = document.getElementById('scene-difficulty-value') as HTMLOutputElement | null;
 const sceneDifficultyNaturalInput = document.getElementById('scene-difficulty-natural') as HTMLInputElement | null;
@@ -234,6 +241,12 @@ function syncSceneControls(): void {
   }
   if (sceneWaterMarginOutput) sceneWaterMarginOutput.value = String(sceneWaterMarginMeters);
   if (sceneWaterMarginNaturalInput) sceneWaterMarginNaturalInput.checked = sceneWaterMarginNatural;
+  if (sceneWaterSpeedInput) {
+    sceneWaterSpeedInput.value = String(sceneWaterSpeed);
+    sceneWaterSpeedInput.disabled = sceneWaterSpeedNatural;
+  }
+  if (sceneWaterSpeedOutput) sceneWaterSpeedOutput.value = sceneWaterSpeed.toFixed(2);
+  if (sceneWaterSpeedNaturalInput) sceneWaterSpeedNaturalInput.checked = sceneWaterSpeedNatural;
   if (sceneDifficultyInput) {
     sceneDifficultyInput.value = String(sceneDifficulty);
     sceneDifficultyInput.disabled = sceneDifficultyNatural;
@@ -258,6 +271,7 @@ function syncSceneControls(): void {
 // reseed picks them up; also called on initial mount.
 function applySceneOverridesToSim(): void {
   setInitialWaterMarginPxOverride(sceneWaterMarginNatural ? null : sceneWaterMarginMeters * PX_PER_METER);
+  setWaterSpeedMultiplierOverride(sceneWaterSpeedNatural ? null : sceneWaterSpeed);
   setGenerationDifficultyOverride(sceneDifficultyNatural ? null : sceneDifficulty);
   setMineDifficultyOverride(sceneMineDensityNatural ? null : sceneMineDensity);
   setPastilleSpawnChanceOverride(scenePastilleSpawnNatural ? null : scenePastilleSpawn);
@@ -272,6 +286,16 @@ function setupSceneControls(): void {
   });
   sceneWaterMarginNaturalInput?.addEventListener('change', () => {
     sceneWaterMarginNatural = !!sceneWaterMarginNaturalInput.checked;
+    syncSceneControls();
+  });
+  sceneWaterSpeedInput?.addEventListener('input', () => {
+    const v = Number(sceneWaterSpeedInput.value);
+    if (!Number.isFinite(v)) return;
+    sceneWaterSpeed = clamp(v, 0, 10);
+    syncSceneControls();
+  });
+  sceneWaterSpeedNaturalInput?.addEventListener('change', () => {
+    sceneWaterSpeedNatural = !!sceneWaterSpeedNaturalInput.checked;
     syncSceneControls();
   });
   sceneDifficultyInput?.addEventListener('input', () => {
@@ -307,6 +331,8 @@ function setupSceneControls(): void {
   sceneReset?.addEventListener('click', () => {
     sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
     sceneWaterMarginNatural = true;
+    sceneWaterSpeed = SCENE_DEFAULTS.waterSpeed;
+    sceneWaterSpeedNatural = true;
     sceneDifficulty = SCENE_DEFAULTS.difficulty;
     sceneDifficultyNatural = true;
     sceneMineDensity = SCENE_DEFAULTS.mineDensity;

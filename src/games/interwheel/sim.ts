@@ -171,6 +171,20 @@ export function getInitialWaterMarginPxOverride(): number | null {
 }
 export const INITIAL_WATER_Y_DEFAULT = -300;
 
+// Optional multiplier on the per-tick water rise rate, applied to both the
+// base WATER_SPEED and the accumulating waterBoost. `null` keeps the natural
+// 1.0× speed. Higher values (e.g., 3..5) make water catch up to the agent
+// faster — useful for short dramatic videos. Read once at reset() and stored
+// on the sim instance so search clones inherit consistent dynamics.
+let waterSpeedMultiplierOverride: number | null = null;
+export function setWaterSpeedMultiplierOverride(value: number | null): void {
+  waterSpeedMultiplierOverride = value === null ? null : Math.max(0, value);
+}
+export function getWaterSpeedMultiplierOverride(): number | null {
+  return waterSpeedMultiplierOverride;
+}
+export const WATER_SPEED_MULTIPLIER_DEFAULT = 1;
+
 // Optional override for mine difficulty, decoupled from generation difficulty.
 // Generation difficulty controls wheel ray, wheel speed, inter-wheel spacing.
 // Mine difficulty controls how dense mines are on each wheel. Production
@@ -298,6 +312,7 @@ export type SimSnapshot = {
   roof: number;
   waterY: number;
   waterBoost: number;
+  waterSpeedMultiplier: number;
   maxHeight: number;
   score: number;
   ending: boolean;
@@ -340,6 +355,7 @@ export class InterwheelSim {
   roof = 0;
   waterY = INITIAL_WATER_Y_DEFAULT;
   waterBoost = 0;
+  waterSpeedMultiplier = WATER_SPEED_MULTIPLIER_DEFAULT;
   maxHeight = 0;
   score = 0;
   ending = false;
@@ -358,6 +374,7 @@ export class InterwheelSim {
     this.mapY = 0;
     this.svy = 0;
     this.waterBoost = 0;
+    this.waterSpeedMultiplier = waterSpeedMultiplierOverride ?? WATER_SPEED_MULTIPLIER_DEFAULT;
     this.maxHeight = 0;
     this.score = 0;
     this.ending = false;
@@ -441,7 +458,7 @@ export class InterwheelSim {
       sparks: this.sparks.map((s) => ({ ...s })),
       tick: this.tick,
       mapY: this.mapY, svy: this.svy, roof: this.roof,
-      waterY: this.waterY, waterBoost: this.waterBoost,
+      waterY: this.waterY, waterBoost: this.waterBoost, waterSpeedMultiplier: this.waterSpeedMultiplier,
       maxHeight: this.maxHeight, score: this.score,
       ending: this.ending, endTimer: this.endTimer, endFocusY: this.endFocusY,
       ended: this.ended,
@@ -485,7 +502,7 @@ export class InterwheelSim {
 
     this.tick = s.tick;
     this.mapY = s.mapY; this.svy = s.svy; this.roof = s.roof;
-    this.waterY = s.waterY; this.waterBoost = s.waterBoost;
+    this.waterY = s.waterY; this.waterBoost = s.waterBoost; this.waterSpeedMultiplier = s.waterSpeedMultiplier;
     this.maxHeight = s.maxHeight; this.score = s.score;
     this.ending = s.ending; this.endTimer = s.endTimer; this.endFocusY = s.endFocusY;
     this.ended = s.ended;
@@ -959,7 +976,7 @@ export class InterwheelSim {
   private updateWaterAndScore(): void {
     const blob = this.blob;
     this.waterBoost += WATER_SPEED_INC;
-    this.waterY -= WATER_SPEED + this.waterBoost;
+    this.waterY -= (WATER_SPEED + this.waterBoost) * this.waterSpeedMultiplier;
     this.updateBlobWaterEffects();
     if (blob.wet > 1) {
       this.startBlobDrowningDeath();
