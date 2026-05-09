@@ -122,6 +122,14 @@ Low-support culling removes visual clutter only; it does not affect planning.
 The chosen chain is not highlighted by default. The playground checkbox draws it
 over the support view for debugging.
 
+When the blob is already flying, the overlay should not collapse to only the
+current airborne arc. It first simulates the current no-input flight to its
+predicted stable landing, then runs the normal stable-root search from that
+predicted landing and prepends the airborne prefix to those future segments.
+This is still a live forecast from the current tick, not a planner commitment:
+the forecast may change on the next tick if perception or simulator state
+changes.
+
 ## Playground Surface
 
 Policy controls affect planner score:

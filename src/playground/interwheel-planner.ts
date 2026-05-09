@@ -655,7 +655,7 @@ export class InterwheelPlanner {
   private planPassiveFlight(perceived: PerceivedSnapshot): PlanResult {
     const sim = this.scratch;
     const plan: boolean[] = [];
-    const segments: Segment[] = [];
+    const prefixSegments: Segment[] = [];
     sim.restore(perceived.snap);
 
     let ticks = 0;
@@ -671,7 +671,7 @@ export class InterwheelPlanner {
       plan.push(false);
       ticks += 1;
       if (this.cfg.collectSegments && ((ticks % TRAJECTORY_SAMPLE_TICKS) === 0 || sim.blob.state !== BLOB_STATE_FLY)) {
-        segments.push({
+        prefixSegments.push({
           edgeId: 0,
           x0: sx,
           y0: sy,
@@ -689,9 +689,41 @@ export class InterwheelPlanner {
       }
     }
 
+    const landingState = sim.clone();
+    const isStableLanding =
+      landingState.blob.state === BLOB_STATE_GRAB ||
+      landingState.blob.state === BLOB_STATE_WALL;
+
+    // Rendering needs the same future context while airborne that a stable root
+    // has, but action selection must still remain passive until landing.
+    if (this.cfg.collectSegments && isStableLanding) {
+      const future = this.planStable({
+        snap: landingState,
+        perceivedWheels: perceived.perceivedWheels,
+        perceivedPastilles: perceived.perceivedPastilles,
+      });
+      const prefixSupport = this.flightPrefixSupport(future.segments);
+      const segments = [
+        ...this.withFlightPrefixSupport(prefixSegments, prefixSupport, future.segments.length === 0),
+        ...this.offsetFutureSegments(future.segments, 1, ticks),
+      ];
+      return {
+        plan: [...plan, ...future.plan],
+        segments,
+        startBlobY: perceived.snap.blob.y,
+        stats: {
+          ...future.stats,
+          mode: 'flight',
+          perceivedWheels: perceived.perceivedWheels,
+          perceivedPastilles: perceived.perceivedPastilles,
+          segments: segments.length,
+        },
+      };
+    }
+
     return {
       plan: plan.length > 0 ? plan : [false],
-      segments,
+      segments: prefixSegments,
       startBlobY: perceived.snap.blob.y,
       stats: {
         mode: 'flight',
@@ -700,12 +732,50 @@ export class InterwheelPlanner {
         stableNodesExpanded: 0,
         perceivedWheels: perceived.perceivedWheels,
         perceivedPastilles: perceived.perceivedPastilles,
-        segments: segments.length,
+        segments: prefixSegments.length,
         bestScore: 0,
         bestScoreBreakdown: emptyScoreBreakdown(),
         diagnostics: emptyDiagnostics(),
       },
     };
+  }
+
+  private flightPrefixSupport(futureSegments: Segment[]): number {
+    const rootSupportByEdge = new Map<number, number>();
+    let maxSupport = 0;
+    for (const segment of futureSegments) {
+      if (segment.generation === 1) rootSupportByEdge.set(segment.edgeId, segment.support);
+      if (segment.support > maxSupport) maxSupport = segment.support;
+    }
+    let totalRootSupport = 0;
+    for (const support of rootSupportByEdge.values()) totalRootSupport += support;
+    return Math.max(totalRootSupport * this.lineageDecay, maxSupport, 1);
+  }
+
+  private withFlightPrefixSupport(
+    segments: Segment[],
+    support: number,
+    isLeaf: boolean,
+  ): Segment[] {
+    return segments.map((segment) => ({
+      ...segment,
+      support,
+      onChosenChain: true,
+      isLeaf,
+      generation: 1,
+    }));
+  }
+
+  private offsetFutureSegments(
+    segments: Segment[],
+    edgeOffset: number,
+    depthOffset: number,
+  ): Segment[] {
+    return segments.map((segment) => ({
+      ...segment,
+      edgeId: segment.edgeId + edgeOffset,
+      depth: segment.depth + depthOffset,
+    }));
   }
 
   private evaluateEdge(rootState: SimSnapshot, parent: SearchNode, waitTicks: number, edgeId: number): SearchEdge {

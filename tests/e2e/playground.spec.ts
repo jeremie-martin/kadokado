@@ -225,4 +225,102 @@ test.describe('AI playground', () => {
     expect(pageErrors, `pageerror events: ${pageErrors.join('\n')}`).toEqual([]);
     expect(consoleErrors, `console.error events: ${consoleErrors.join('\n')}`).toEqual([]);
   });
+
+  test('keeps future trajectory forecast visible while Interwheel blob is flying', async ({ page }) => {
+    const consoleErrors: string[] = [];
+    const pageErrors: string[] = [];
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
+    page.on('pageerror', (err) => {
+      pageErrors.push(err.message);
+    });
+
+    await page.goto('/playground.html?seed=10');
+    await page.waitForFunction(() => Boolean((window as { __game__?: unknown; __planner__?: unknown; __overlay__?: unknown }).__game__ && (window as { __planner__?: unknown }).__planner__ && (window as { __overlay__?: unknown }).__overlay__), null, {
+      timeout: 15000,
+    });
+
+    const probe = await page.evaluate(() => {
+      const w = window as unknown as {
+        __game__: {
+          app: { ticker: { stop: () => void } };
+          blob: { state: number };
+          tick: number;
+          update: () => void;
+        };
+        __overlay__: { lastDrawnStats: () => { edges: number; segments: number; maxGeneration: number } };
+        __planner__: {
+          lastSegments: () => Array<{ edgeId: number; generation: number; onChosenChain: boolean }>;
+          lastStats: () => {
+            mode: string;
+            edgesEvaluated: number;
+            stableNodesExpanded: number;
+            segments: number;
+          } | null;
+        };
+      };
+      w.__game__.app.ticker.stop();
+
+      let last = {
+        tick: w.__game__.tick,
+        state: w.__game__.blob.state,
+        stats: w.__planner__.lastStats(),
+        segmentCount: w.__planner__.lastSegments().length,
+        uniqueEdges: new Set(w.__planner__.lastSegments().map((segment) => segment.edgeId)).size,
+        overlay: w.__overlay__.lastDrawnStats(),
+      };
+
+      for (let i = 0; i < 300; i += 1) {
+        w.__game__.update();
+        const stats = w.__planner__.lastStats();
+        const segments = w.__planner__.lastSegments();
+        const overlay = w.__overlay__.lastDrawnStats();
+        const uniqueEdges = new Set(segments.map((segment) => segment.edgeId)).size;
+        last = {
+          tick: w.__game__.tick,
+          state: w.__game__.blob.state,
+          stats,
+          segmentCount: segments.length,
+          uniqueEdges,
+          overlay,
+        };
+
+        if (
+          w.__game__.blob.state === 1 &&
+          stats?.mode === 'flight' &&
+          stats.edgesEvaluated > 0 &&
+          stats.stableNodesExpanded > 0 &&
+          uniqueEdges > 1 &&
+          segments.some((segment) => segment.generation > 1) &&
+          overlay.edges > 1 &&
+          overlay.maxGeneration > 1
+        ) {
+          return {
+            found: true,
+            tick: w.__game__.tick,
+            stats,
+            segmentCount: segments.length,
+            uniqueEdges,
+            chosenSegments: segments.filter((segment) => segment.onChosenChain).length,
+            overlay,
+          };
+        }
+      }
+
+      return { found: false, last };
+    });
+
+    expect(probe.found, `last airborne overlay probe: ${JSON.stringify(probe)}`).toBe(true);
+    if (probe.found) {
+      expect(probe.stats.edgesEvaluated).toBeGreaterThan(0);
+      expect(probe.stats.stableNodesExpanded).toBeGreaterThan(0);
+      expect(probe.uniqueEdges).toBeGreaterThan(1);
+      expect(probe.overlay.edges).toBeGreaterThan(1);
+      expect(probe.overlay.maxGeneration).toBeGreaterThan(1);
+    }
+
+    expect(pageErrors, `pageerror events: ${pageErrors.join('\n')}`).toEqual([]);
+    expect(consoleErrors, `console.error events: ${consoleErrors.join('\n')}`).toEqual([]);
+  });
 });
