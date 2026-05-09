@@ -13,6 +13,7 @@ import { availableParallelism } from 'node:os';
 
 const GAME_FPS = 40;
 const CLIMB_ONLY = { climb: 1, wall: 0 };
+const CLIMB_METRIC_MODES = ['legacy', 'time-cost', 'wait-cost'];
 
 const PRESETS = {
   smoke: {
@@ -62,6 +63,28 @@ const PRESETS = {
 };
 
 const METRICS = {
+  climb: {
+    label: 'Climb',
+    policyKey: 'climb',
+    mixPolicyWeight: 1,
+    coefficientValues: {
+      smoke: [0.5, 1, 1.5],
+      quick: [0.5, 0.8, 1, 1.2, 1.6],
+      standard: [0.25, 0.5, 0.8, 1, 1.2, 1.6, 2.0, 2.5, 3.0],
+    },
+    params: [
+      {
+        key: 'climbTickCost',
+        range: [0, 4],
+        metricParams: { climbMode: 'time-cost' },
+      },
+      {
+        key: 'climbWaitCost',
+        range: [0, 8],
+        metricParams: { climbMode: 'wait-cost' },
+      },
+    ],
+  },
   wall: {
     label: 'Wall',
     policyKey: 'wall',
@@ -84,15 +107,19 @@ const METRICS = {
   },
 };
 
-const POLICY_KEYS = ['climb', ...new Set(Object.values(METRICS).map((metric) => metric.policyKey))];
-const METRIC_PARAM_KEYS = [
+const POLICY_KEYS = [...new Set(['climb', ...Object.values(METRICS).map((metric) => metric.policyKey)])];
+const SWEEP_METRIC_PARAM_KEYS = [
   ...new Set(Object.values(METRICS).flatMap((metric) => metric.params.map((param) => param.key))),
 ];
+const METRIC_PARAM_KEYS = [...new Set([
+  'climbMode',
+  ...SWEEP_METRIC_PARAM_KEYS,
+])];
 
-// Response curves are intentionally shared across metric studies. A wall study
-// should focus on wallJ/min, wall%, and wall steer, but side effects such as
-// climb speed or capture rate stay visible in the same report. The metric
-// registry decides how to sweep; people decide which analytics matter.
+// Response curves are intentionally shared across metric studies. A metric
+// study should focus on its target behavior, but side effects such as climb
+// speed, capture rate, wall use, and deaths stay visible in the same report.
+// The metric registry decides how to sweep; people decide which analytics matter.
 // Derived analytics use generic formulas (`perMinute`, `percentTicks`,
 // `ratio`) from raw trial facts, but the useful output list stays explicit so
 // the report does not invent meaningless fields like seed/minute.
@@ -140,6 +167,8 @@ function parseArgs(argv) {
     preset: 'standard',
     suite: 'all',
     metric: 'all',
+    param: 'all',
+    references: 'both',
     trials: null,
     seedBase: 4200,
     maxSeconds: null,
@@ -150,6 +179,8 @@ function parseArgs(argv) {
     budgetMs: null,
     policy: {},
     metricParams: {},
+    paramRanges: {},
+    configs: [],
     configName: null,
     outDir: null,
     paramPoints: null,
@@ -163,6 +194,8 @@ function parseArgs(argv) {
     else if (raw.startsWith('--preset=')) args.preset = raw.slice('--preset='.length);
     else if (raw.startsWith('--suite=')) args.suite = raw.slice('--suite='.length);
     else if (raw.startsWith('--metric=')) args.metric = raw.slice('--metric='.length);
+    else if (raw.startsWith('--param=')) args.param = raw.slice('--param='.length);
+    else if (raw.startsWith('--references=')) args.references = raw.slice('--references='.length);
     else if (raw.startsWith('--trials=')) args.trials = Number(raw.slice('--trials='.length));
     else if (raw.startsWith('--seed=')) args.seedBase = Number(raw.slice('--seed='.length));
     else if (raw.startsWith('--seconds=')) args.maxSeconds = Number(raw.slice('--seconds='.length));
@@ -187,12 +220,31 @@ function parseArgs(argv) {
     else if (raw.startsWith('--metric-param.')) {
       const eq = raw.indexOf('=');
       const key = raw.slice('--metric-param.'.length, eq);
-      const value = Number(raw.slice(eq + 1));
-      if (eq < 0 || !METRIC_PARAM_KEYS.includes(key) || !Number.isFinite(value)) {
+      const value = eq >= 0 ? parseMetricParamValue(key, raw.slice(eq + 1)) : undefined;
+      if (eq < 0 || !METRIC_PARAM_KEYS.includes(key) || value === undefined) {
         console.error(`Invalid metric parameter override: ${raw}`);
         args.help = true;
       } else {
         args.metricParams[key] = value;
+      }
+    }
+    else if (raw.startsWith('--param-range.')) {
+      const eq = raw.indexOf('=');
+      const key = raw.slice('--param-range.'.length, eq);
+      const range = eq >= 0 ? parseParamRange(raw.slice(eq + 1)) : null;
+      if (eq < 0 || !SWEEP_METRIC_PARAM_KEYS.includes(key) || range === null) {
+        console.error(`Invalid parameter range override: ${raw}`);
+        args.help = true;
+      } else {
+        args.paramRanges[key] = range;
+      }
+    }
+    else if (raw.startsWith('--config=')) {
+      try {
+        args.configs.push(parseConfigSpec(raw.slice('--config='.length)));
+      } catch (err) {
+        console.error(err instanceof Error ? err.message : String(err));
+        args.help = true;
       }
     }
     else if (raw.startsWith('--name=')) args.configName = raw.slice('--name='.length);
@@ -211,12 +263,28 @@ function parseArgs(argv) {
   if (!PRESETS[args.preset]) args.help = true;
   if (!['all', 'responsiveness', 'params', 'config'].includes(args.suite)) args.help = true;
   if (args.metric !== 'all' && !METRICS[args.metric]) args.help = true;
+  if (args.param !== 'all' && !SWEEP_METRIC_PARAM_KEYS.includes(args.param)) args.help = true;
+  if (!['both', 'climb-only', 'none'].includes(args.references)) args.help = true;
   if (args.suite !== 'config' && (
     Object.keys(args.policy).length > 0 ||
     Object.keys(args.metricParams).length > 0 ||
+    args.configName !== null ||
+    args.configs.length > 0
+  )) {
+    console.error('--policy.*, --metric-param.*, --config, and --name are only valid with --suite=config');
+    args.help = true;
+  }
+  if (args.configs.length > 0 && (
+    Object.keys(args.policy).length > 0 ||
+    Object.keys(args.metricParams).length > 0 ||
+    Object.keys(args.paramRanges).length > 0 ||
     args.configName !== null
   )) {
-    console.error('--policy.*, --metric-param.*, and --name are only valid with --suite=config');
+    console.error('--config cannot be combined with --policy.*, --metric-param.*, --param-range.*, or --name');
+    args.help = true;
+  }
+  if (args.suite === 'config' && Object.keys(args.paramRanges).length > 0) {
+    console.error('--param-range.* is only valid with sweep suites');
     args.help = true;
   }
 
@@ -239,6 +307,71 @@ function parseArgs(argv) {
   return args;
 }
 
+function parseMetricParamValue(key, rawValue) {
+  if (key === 'climbMode') {
+    return CLIMB_METRIC_MODES.includes(rawValue) ? rawValue : undefined;
+  }
+  const value = Number(rawValue);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+function parseParamRange(rawValue) {
+  const separator = rawValue.includes(':') ? ':' : ',';
+  const parts = rawValue.split(separator);
+  if (parts.length !== 2) return null;
+  const min = Number(parts[0]);
+  const max = Number(parts[1]);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min === max) return null;
+  return [Math.min(min, max), Math.max(min, max)];
+}
+
+function parseConfigValue(rawValue) {
+  const numeric = Number(rawValue);
+  if (rawValue.trim() !== '' && Number.isFinite(numeric)) return numeric;
+  return rawValue;
+}
+
+function parseConfigSpec(spec) {
+  const out = { name: null, policy: {}, metricParams: {} };
+  for (const part of spec.split(',')) {
+    const eq = part.indexOf('=');
+    if (eq < 0) throw new Error(`Invalid --config segment: ${part}`);
+    const key = part.slice(0, eq).trim();
+    const rawValue = part.slice(eq + 1).trim();
+    if (key === 'name') {
+      out.name = rawValue;
+    } else if (key.startsWith('policy.')) {
+      const policyKey = key.slice('policy.'.length);
+      const value = Number(rawValue);
+      if (!POLICY_KEYS.includes(policyKey) || !Number.isFinite(value)) {
+        throw new Error(`Invalid --config policy segment: ${part}`);
+      }
+      out.policy[policyKey] = value;
+    } else if (key.startsWith('metric.')) {
+      const metricKey = key.slice('metric.'.length);
+      const value = parseConfigValue(rawValue);
+      if (!METRIC_PARAM_KEYS.includes(metricKey)) {
+        throw new Error(`Invalid --config metric segment: ${part}`);
+      }
+      if (metricKey === 'climbMode' && !CLIMB_METRIC_MODES.includes(value)) {
+        throw new Error(`Invalid climbMode in --config: ${rawValue}`);
+      }
+      if (metricKey !== 'climbMode' && typeof value !== 'number') {
+        throw new Error(`Invalid numeric metric parameter in --config: ${part}`);
+      }
+      out.metricParams[metricKey] = value;
+    } else {
+      throw new Error(`Invalid --config key: ${key}`);
+    }
+  }
+  if (!out.name) {
+    const policyText = policyLabel(out.policy);
+    const metricText = metricLabel(out.metricParams);
+    out.name = metricText === 'planner defaults' ? policyText : `${policyText}; ${metricText}`;
+  }
+  return out;
+}
+
 function defaultConcurrency() {
   return Math.max(1, Math.floor(availableParallelism() * 2 / 3));
 }
@@ -257,6 +390,7 @@ function help() {
 USAGE:
   npm run analyze:interwheel:study -- --preset=quick
   npm run analyze:interwheel:study -- --suite=config --policy.climb=1 --policy.wall=0
+  npm run analyze:interwheel:study -- --suite=config --config=name=legacy,policy.climb=1,policy.wall=0,metric.climbMode=legacy --config=name=wait4,policy.climb=1,policy.wall=0,metric.climbMode=wait-cost,metric.climbWaitCost=4
   npm run analyze:interwheel:study -- --suite=responsiveness --metric=wall
   npm run analyze:interwheel:study -- --suite=params --metric=wall --preset=standard
   npm run analyze:interwheel:study -- --suite=params --metric=wall --param-points=9
@@ -265,7 +399,7 @@ Presets:
 ${presets}
 
 Suites:
-  config          run exactly one fixed planner configuration, no sweep
+  config          run fixed planner configuration(s), no sweep
   responsiveness  sweep policy weights, always mixed with climb
   params          sweep constants inside a metric with the policy mix fixed
   all             both suites
@@ -275,7 +409,11 @@ Metrics:
 
 Useful overrides:
   --policy.KEY=N          fixed-config policy knob (${POLICY_KEYS.join(', ')})
-  --metric-param.KEY=N    fixed-config metric parameter (${METRIC_PARAM_KEYS.join(', ')})
+  --metric-param.KEY=V    fixed-config metric parameter (${METRIC_PARAM_KEYS.join(', ')})
+  --param-range.KEY=A:B   sweep range override for a metric parameter
+  --param=KEY             sweep only one metric parameter
+  --references=MODE       both, climb-only, or none
+  --config=SPEC           repeated fixed configs: name=LABEL,policy.KEY=N,metric.KEY=V
   --name=LABEL            fixed-config condition label
   --concurrency=N         browser pages; default is roughly 2/3 of CPU cores
   --lookahead-screens=N   planner reveal lookahead
@@ -301,6 +439,11 @@ function selectedMetrics(args) {
   return [[args.metric, METRICS[args.metric]]];
 }
 
+function selectedParams(metric, args) {
+  if (args.param === 'all') return metric.params;
+  return metric.params.filter((param) => param.key === args.param);
+}
+
 function valuesFor(valueSets, args) {
   return valueSets[args.valueSet] ?? valueSets.standard;
 }
@@ -315,11 +458,24 @@ function linspace(min, max, points) {
 }
 
 function paramValuesFor(param, args) {
-  return linspace(param.range[0], param.range[1], args.paramPoints);
+  const range = args.paramRanges[param.key] ?? param.range;
+  return linspace(range[0], range[1], args.paramPoints);
 }
 
 function makeConditions(args) {
   if (args.suite === 'config') {
+    if (args.configs.length > 0) {
+      return args.configs.map((config, index) => ({
+        group: 'config',
+        suite: 'config',
+        metric: null,
+        name: config.name,
+        axis: 'config',
+        value: index,
+        policy: { ...config.policy },
+        metricParams: { ...config.metricParams },
+      }));
+    }
     const policyText = policyLabel(args.policy);
     const metricText = metricLabel(args.metricParams);
     const defaultName = metricText === 'planner defaults' ? policyText : `${policyText}; ${metricText}`;
@@ -337,8 +493,9 @@ function makeConditions(args) {
 
   const includeResponsiveness = args.suite === 'all' || args.suite === 'responsiveness';
   const includeParams = args.suite === 'all' || args.suite === 'params';
-  const conditions = [
-    {
+  const conditions = [];
+  if (args.references === 'both' || args.references === 'climb-only') {
+    conditions.push({
       group: 'reference',
       suite: 'reference',
       metric: null,
@@ -347,8 +504,10 @@ function makeConditions(args) {
       value: 0,
       policy: { ...CLIMB_ONLY },
       metricParams: {},
-    },
-    {
+    });
+  }
+  if (args.references === 'both') {
+    conditions.push({
       group: 'reference',
       suite: 'reference',
       metric: null,
@@ -357,8 +516,8 @@ function makeConditions(args) {
       value: 0.5,
       policy: {},
       metricParams: {},
-    },
-  ];
+    });
+  }
 
   for (const [metricName, metric] of selectedMetrics(args)) {
     if (includeResponsiveness) {
@@ -377,7 +536,7 @@ function makeConditions(args) {
     }
 
     if (includeParams) {
-      for (const param of metric.params) {
+      for (const param of selectedParams(metric, args)) {
         for (const value of paramValuesFor(param, args)) {
           conditions.push({
             group: `param:${metricName}:${param.key}`,
@@ -387,7 +546,7 @@ function makeConditions(args) {
             axis: param.key,
             value,
             policy: { ...CLIMB_ONLY, [metric.policyKey]: metric.mixPolicyWeight },
-            metricParams: { [param.key]: value },
+            metricParams: { ...(param.metricParams ?? {}), [param.key]: value },
           });
         }
       }

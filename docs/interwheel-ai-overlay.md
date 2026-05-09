@@ -71,8 +71,12 @@ only the currently evaluated edge.
 
 Height is path-level too:
 
-- `pathHeight = max(0, root.blob.y - pathApexY)` rewards the highest point
+- `pathHeight = max(0, root.blob.y - pathApexY)` records the highest point
   reached anywhere on the path.
+- The default climb score is height-efficient:
+  `pathHeight * waterClimbBoost - pathTicks * climbTickCost`, with
+  `climbTickCost=3`. The time cost gives urgency to otherwise similar high
+  routes while preserving height as the dominant path outcome.
 - backtrack cost, loop behavior, water safety, and unresolved-flight penalty
   remain local/frontier planner-physics terms.
 

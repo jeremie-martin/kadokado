@@ -49,10 +49,24 @@ const ANALYTICS_PLANNER_CONFIG = {
   maxStableDepth: 4,
   collectSegments: false,
 } satisfies PlannerConfig;
+const DETERMINISTIC_PLANNER_CONFIG = {
+  ...ANALYTICS_PLANNER_CONFIG,
+  // Pure-planner equivalence compares two independently planned transcripts.
+  // The live wall-clock cutoff can legitimately stop the mounted and pure
+  // runs after different edge counts, so this verifier uses only the edge cap.
+  budgetMs: Number.POSITIVE_INFINITY,
+} satisfies PlannerConfig;
 
 function plannerConfigForPolicy(policy: Partial<PlannerPolicy> = {}): PlannerConfig {
   return {
     ...ANALYTICS_PLANNER_CONFIG,
+    policy: resolvePlannerPolicy(policy),
+  };
+}
+
+function deterministicPlannerConfigForPolicy(policy: Partial<PlannerPolicy> = {}): PlannerConfig {
+  return {
+    ...DETERMINISTIC_PLANNER_CONFIG,
     policy: resolvePlannerPolicy(policy),
   };
 }
@@ -1396,7 +1410,7 @@ async function comparePureReplay(
 async function comparePurePlanner(
   seed = 42,
   maxTicks = 1_200,
-  plannerCfg: PlannerConfig = plannerConfigForPolicy(),
+  plannerCfg: PlannerConfig = deterministicPlannerConfigForPolicy(),
 ): Promise<PurePlannerEquivalenceResult> {
   const mounted = await runMountedTranscript(seed, maxTicks, plannerCfg);
   const pure = runPurePlannedTranscript(seed, maxTicks, plannerCfg);
@@ -1429,7 +1443,7 @@ async function comparePurePlannerCorpus(opts: AnalyzeInterwheelOpts = {}): Promi
   const trials = Math.max(1, opts.trials ?? 5);
   const seedBase = opts.seedBase ?? 42;
   const maxTicks = opts.maxTicks ?? 1_200;
-  const plannerCfg = plannerConfigForPolicy(opts.policy);
+  const plannerCfg = deterministicPlannerConfigForPolicy(opts.policy);
   const results: PurePlannerEquivalenceResult[] = [];
   for (let i = 0; i < trials; i += 1) {
     const result = await comparePurePlanner(seedBase + i, maxTicks, plannerCfg);

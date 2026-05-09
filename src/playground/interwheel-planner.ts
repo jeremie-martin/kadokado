@@ -91,6 +91,12 @@ const LOOP_GAIN_THRESH_PX = 20;
 // forms did not produce controllable behavior. Reintroduce future metrics only
 // as independent signals with first-class responsiveness studies.
 const CLIMB_NORMALIZE   = 1;            // reference: pathHeight is the gauge
+// Climb efficiency uses the validated time-cost metric by default. The legacy
+// and wait-cost modes remain available for study comparisons.
+const CLIMB_METRIC_MODES = ['legacy', 'time-cost', 'wait-cost'] as const;
+const CLIMB_METRIC_MODE_DEFAULT: ClimbMetricMode = 'time-cost';
+const CLIMB_TICK_COST_DEFAULT = 3;
+const CLIMB_WAIT_COST_DEFAULT = 0;
 // Wall signal has two parts:
 //   • WALL_LANDING_BONUS: per-edge categorical bonus for the canonical
 //     wall-jump-and-land event (started off the wall, touched it during the
@@ -130,6 +136,8 @@ type SearchNode = {
   pathReward: CollectReward;
   /** Highest y reached anywhere on this root-to-node path (min in screen coords). */
   pathApexY: number;
+  /** Cumulative waiting-on-stable-surface ticks along the path. */
+  pathWaitTicks: number;
   /** Sum-of-edge-integrals of perpendicular distance from each path sample to its edge's start→end chord. */
   pathOffAxis: number;
   /** Cumulative tick count where blob.state was BLOB_STATE_WALL across path edges. */
@@ -154,6 +162,7 @@ type SearchEdge = {
   scoreBreakdown: CandidateScoreBreakdown;
   segments: SegmentBody[];
   pathApexY: number;
+  pathWaitTicks: number;
   pathOffAxis: number;
   pathWallTicks: number;
   pathWallLandings: number;
@@ -281,7 +290,24 @@ export type PlannerPolicy = {
   wall: number;
 };
 
+export type ClimbMetricMode = typeof CLIMB_METRIC_MODES[number];
+
 export type PlannerMetricParams = {
+  /**
+   * Study-only climb metric shape. `legacy` is the old apex-height signal.
+   * The other modes test urgency without adding another live policy knob.
+   */
+  climbMode: ClimbMetricMode;
+  /**
+   * Score cost per path tick charged inside the climb metric. This makes
+   * equally high routes prefer the one that reaches its stable leaf sooner.
+   */
+  climbTickCost: number;
+  /**
+   * Score cost per stable waiting tick. This targets slow wheel timing without
+   * penalizing necessary flight/landing time.
+   */
+  climbWaitCost: number;
   /**
    * Score added for each canonical wall-jump-and-land event. Study-only
    * parameter: changing it alters the wall metric's response curve without
@@ -328,6 +354,9 @@ export const DEFAULT_PLANNER_POLICY: PlannerPolicy = {
 };
 
 export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
+  climbMode: CLIMB_METRIC_MODE_DEFAULT,
+  climbTickCost: CLIMB_TICK_COST_DEFAULT,
+  climbWaitCost: CLIMB_WAIT_COST_DEFAULT,
   wallLandingBonus: WALL_LANDING_BONUS,
   wallTickBonus: WALL_NORMALIZE,
 };
@@ -353,10 +382,14 @@ export function resolvePlannerPolicy(policy: Partial<PlannerPolicy> = {}): Plann
 export function resolvePlannerMetricParams(
   metricParams: Partial<PlannerMetricParams> = {},
 ): PlannerMetricParams {
-  return {
+  const resolved = {
     ...DEFAULT_PLANNER_METRIC_PARAMS,
     ...metricParams,
   };
+  if (!(CLIMB_METRIC_MODES as readonly string[]).includes(resolved.climbMode)) {
+    resolved.climbMode = CLIMB_METRIC_MODE_DEFAULT;
+  }
+  return resolved;
 }
 
 export function emptyScoreBreakdown(total = 0): CandidateScoreBreakdown {
@@ -529,6 +562,8 @@ export class InterwheelPlanner {
       rootState.blob.y,
       0,
       0,
+      0,
+      0,
       false,
     );
     const root: SearchNode = {
@@ -541,6 +576,7 @@ export class InterwheelPlanner {
       value: rootScore.total,
       pathReward: rootReward,
       pathApexY: rootState.blob.y,
+      pathWaitTicks: 0,
       pathOffAxis: 0,
       pathWallTicks: 0,
       pathWallLandings: 0,
@@ -574,6 +610,7 @@ export class InterwheelPlanner {
           value: edge.value,
           pathReward: edge.pathReward,
           pathApexY: edge.pathApexY,
+          pathWaitTicks: edge.pathWaitTicks,
           pathOffAxis: edge.pathOffAxis,
           pathWallTicks: edge.pathWallTicks,
           pathWallLandings: edge.pathWallLandings,
@@ -687,6 +724,7 @@ export class InterwheelPlanner {
     let edgeApexY = sim.blob.y;
     const edgeStartsOnWall = sim.blob.state === BLOB_STATE_WALL;
     let edgeWallTicks = edgeStartsOnWall ? 1 : 0;
+    let edgeWaitTicks = 0;
     const samplesX: number[] = [edgeStartX];
     const samplesY: number[] = [edgeStartY];
     const recordStep = (press: boolean): void => {
@@ -722,6 +760,7 @@ export class InterwheelPlanner {
 
     for (let i = 0; i < waitTicks; i += 1) {
       recordStep(false);
+      edgeWaitTicks += 1;
       if (this.isTerminal(sim)) break;
     }
 
@@ -766,6 +805,8 @@ export class InterwheelPlanner {
       ? 0
       : this.edgeOffAxisIntegral(samplesX, samplesY, edgeStartX, edgeStartY, endState.blob.x, endState.blob.y);
     const pathApexY = Math.min(parent.pathApexY, edgeApexY);
+    const pathTicks = parent.totalTicks + plan.length;
+    const pathWaitTicks = parent.pathWaitTicks + edgeWaitTicks;
     const pathOffAxis = parent.pathOffAxis + edgeOffAxis;
     const pathWallTicks = parent.pathWallTicks + edgeWallTicks;
     // Wall-jump-and-land event: started off the wall, touched it during the
@@ -780,6 +821,8 @@ export class InterwheelPlanner {
       endState,
       effectiveReward,
       pathApexY,
+      pathTicks,
+      pathWaitTicks,
       pathWallTicks,
       pathWallLandings,
       sameStableTarget,
@@ -800,6 +843,7 @@ export class InterwheelPlanner {
       scoreBreakdown,
       segments,
       pathApexY,
+      pathWaitTicks,
       pathOffAxis,
       pathWallTicks,
       pathWallLandings,
@@ -855,12 +899,18 @@ export class InterwheelPlanner {
   // backtrack/loop/safety) live as named constants distinct from policy.
   //
   //   total =
-  //     + climb × pathHeight × CLIMB_NORMALIZE × waterClimbBoost
+  //     + climb × (
+  //         pathApexHeight × CLIMB_NORMALIZE × waterClimbBoost
+  //         +/− climbMode-specific urgency shaping
+  //       )
   //     + wall  × (pathWallLandings × WALL_LANDING_BONUS + pathWallTicks × WALL_NORMALIZE)
   //     + endStableBonus
   //     − endSafetyCost − endBacktrackCost − endLoopCost
   //
-  // pathHeight = max(0, root.y - pathApexY) is the single height signal.
+  // pathApexHeight = max(0, root.y - pathApexY) is the historical height
+  // signal. Climb metric modes are study-only shapes for adding urgency
+  // without adding another policy knob: total path-time cost, stable wait-time
+  // cost.
   // Wall is a hybrid event+continuous signal: pathWallLandings counts the
   // canonical "started off the wall, touched it, ended on it" event per
   // edge along the path; pathWallTicks is the continuous wall-time
@@ -873,6 +923,8 @@ export class InterwheelPlanner {
     end: SimSnapshot,
     edgeReward: CollectReward,
     pathApexY: number,
+    pathTicks: number,
+    pathWaitTicks: number,
     pathWallTicks: number,
     pathWallLandings: number,
     sameStableTarget: boolean,
@@ -883,14 +935,21 @@ export class InterwheelPlanner {
     const waterUrgency = this.waterUrgency(waterMargin);
     const waterClimbBoost = 1 + waterUrgency * WATER_CLIMB_BOOST;
 
-    const pathHeight = Math.max(0, root.blob.y - pathApexY);
+    const pathApexHeight = Math.max(0, root.blob.y - pathApexY);
+    const baseClimbSignal = pathApexHeight * CLIMB_NORMALIZE * waterClimbBoost;
+    let climbSignal = baseClimbSignal;
+    if (metricParams.climbMode === 'time-cost') {
+      climbSignal = baseClimbSignal - pathTicks * metricParams.climbTickCost;
+    } else if (metricParams.climbMode === 'wait-cost') {
+      climbSignal = baseClimbSignal - pathWaitTicks * metricParams.climbWaitCost;
+    }
     // Wall: per-edge wall-jump-and-land event bonus + continuous wall-time
     // weight. The event term anchors "this is a wall-jump-class route";
     // the tick term provides a soft gradient on wall contact duration.
     const wallSignal = pathWallLandings * metricParams.wallLandingBonus
                      + pathWallTicks * metricParams.wallTickBonus;
 
-    const climb        = policy.climb        * pathHeight  * CLIMB_NORMALIZE * waterClimbBoost;
+    const climb        = policy.climb        * climbSignal;
     const wall         = policy.wall         * wallSignal;
 
     // Frontier physics — leaf state shapes the score independent of policy.

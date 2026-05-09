@@ -15,6 +15,7 @@
 //   npm run analyze:interwheel -- --verify-pure     # compare pure sim replay against mounted headless
 //   npm run analyze:interwheel -- --verify-pure-planner
 //                                                   # compare independently planned pure sim
+//                                                   # with deterministic edge-budget planning
 //   npm run analyze:interwheel -- --json            # machine-readable JSON output
 //   npm run analyze:interwheel -- --help            # show this help text
 //
@@ -118,6 +119,7 @@ USAGE:
   npm run analyze:interwheel -- --verify-pure      compare mounted headless to pure sim replay
   npm run analyze:interwheel -- --verify-pure-planner
                                                     compare mounted headless to independently planned pure sim
+                                                    with deterministic edge-budget planning
   npm run analyze:interwheel -- --json             emit machine-readable JSON
   npm run analyze:interwheel -- --help             this help
 

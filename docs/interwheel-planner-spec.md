@@ -42,8 +42,8 @@ Removed from live policy for now:
 - `patience`: only modified `thoroughness`, so it had no independent role.
 - `focus`: it was only a climb/thoroughness lerp and was not a smooth capture
   control.
-- `pace` and `detour`: they duplicated work that should belong to a future
-  "climb high efficiently" objective.
+- `pace` and `detour`: they duplicated work that now belongs to the climb
+  efficiency metric and internal route-shaping penalties.
 
 Pastille telemetry is still recorded. It is not part of the current score until
 the capture objective is redesigned.
@@ -54,7 +54,7 @@ the capture objective is redesigned.
 
 ```text
 total =
-  climb * pathHeight * waterClimbBoost
+  climb * (pathHeight * waterClimbBoost - pathTicks * climbTickCost)
   + wall * wallSignal
   + stability
   - safety
@@ -64,17 +64,55 @@ total =
 
 `pathHeight = max(0, root.blob.y - pathApexY)`.
 
-`wallSignal = pathWallLandings * wallLandingBonus + pathWallTicks * wallTickBonus`.
-
-`wallLandingBonus` and `wallTickBonus` are metric parameters, not policy knobs.
-They default to the historical constants:
+`pathTicks` is the cumulative simulated duration from the root stable state to
+the candidate leaf, including waits and flights. The default climb metric mode
+is `time-cost`, with:
 
 ```ts
-{ wallLandingBonus: 300, wallTickBonus: 5 }
+{ climbMode: 'time-cost', climbTickCost: 3 }
+```
+
+This keeps height as the primary signal while adding urgency: equal or similar
+height routes prefer the path that gets there sooner. The historical apex-only
+shape remains available to studies as `climbMode: 'legacy'`; `wait-cost` is a
+study alternative that charges only stable waiting ticks.
+
+`wallSignal = pathWallLandings * wallLandingBonus + pathWallTicks * wallTickBonus`.
+
+Metric parameters are not policy knobs. The current defaults are:
+
+```ts
+{
+  climbMode: 'time-cost',
+  climbTickCost: 3,
+  climbWaitCost: 0,
+  wallLandingBonus: 300,
+  wallTickBonus: 5,
+}
 ```
 
 The study tooling can sweep these metric parameters separately from policy
 coefficients.
+
+## Climb Efficiency Validation
+
+The selected climb default was chosen from climb-only studies (`policy.climb=1`,
+`policy.wall=0`) using the trusted pure simulator. A standard sweep over
+`climbTickCost=2.5..4.0` showed the useful region and the failure boundary:
+`3.0..3.5` gave large speed gains, while `3.75+` introduced low-tail outliers.
+
+The overnight validation on seeds `4200..4239`, 180 seconds per seed, reported:
+
+| config | mean h/min | p10 h/min | min h/min | died | wall% |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| legacy climb-only | 2150.8 | 2085.0 | 1995.7 | 0% | 0.0 |
+| time-cost, climbTickCost=3 | 2429.2 | 2372.7 | 2330.0 | 0% | 0.0 |
+| time-cost, climbTickCost=3.25 | 2428.5 | 2385.7 | 1161.0 | 0% | 0.0 |
+| time-cost, climbTickCost=3.5 | 2382.3 | 2365.0 | 1233.0 | 0% | 0.7 |
+| wait-cost, climbWaitCost=6 | 2372.3 | 2309.0 | 2251.3 | 0% | 0.1 |
+
+`climbTickCost=3` was selected because it preserved the large gain without the
+severe low-tail outliers seen at higher values.
 
 ## Internal Physics Terms
 
@@ -115,6 +153,9 @@ Interwheel studies must make responsiveness first-class:
   studies.
 - Metric parameters, such as `wallLandingBonus` and `wallTickBonus`, must be
   sweepable separately from policy coefficients.
+- Focused parameter sweeps can use `--param=KEY` and
+  `--param-range.KEY=A:B` for dense floating-point reads around a candidate
+  range.
 - New metrics should be registered in the study runner rather than adding a new
   one-off script.
 - Reports should include run speed (`height / elapsed trial time`), height,
@@ -141,6 +182,7 @@ The current entrypoint is:
 ```sh
 npm run analyze:interwheel:study
 npm run analyze:interwheel:study -- --suite=config --policy.climb=1 --policy.wall=0
+npm run analyze:interwheel:study -- --suite=params --metric=climb --param=climbTickCost --param-range.climbTickCost=2.5:4 --param-points=7 --preset=standard
 ```
 
 It writes `raw.json`, `summary.json`, and `report.md` under
