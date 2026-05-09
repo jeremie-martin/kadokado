@@ -38,6 +38,7 @@ npm run analyze:interwheel -- --runner=pure --policy.wall=0.5 --trials=10 --seed
 npm run analyze:interwheel -- --runner=pure --policy.climb=1.2 --policy.wall=0.8 --trials=10 --seed=42 --max-seconds=30
 npm run analyze:interwheel -- --verify-pure-planner --trials=3 --seed=42 --max-seconds=30
 npm run analyze:interwheel:study -- --preset=quick
+npm run analyze:interwheel:study -- --suite=config --policy.climb=1 --policy.wall=0 --preset=standard
 npm run analyze:interwheel:study -- --suite=params --metric=wall --preset=standard
 npm run analyze:interwheel:climb -- --seed=42 --max-seconds=300
 npm run analyze:interwheel:climb -- --seed=42 --max-seconds=300 --no-water --min-height=5000
@@ -52,7 +53,7 @@ Interwheel analytics has two trusted execution modes. The default `mounted` runn
 
 Interwheel planner behavior is controlled through a small numeric policy object instead of scattered scoring constants. The current live knobs are `--policy.climb=N` and `--policy.wall=N`. The analytics output includes the chosen policy and average score components for selected plans, so policy changes can be compared against movement stats such as height, run speed, bonus pickups, wall jumps, waits, and phase time.
 
-For broader Interwheel planner characterization, run `npm run analyze:interwheel:study`. It runs reproducible studies over a fixed seed population and writes `raw.json`, `summary.json`, and `report.md` under `.tmp/interwheel-studies/<timestamp>/`. Use presets such as `--preset=quick`, `--preset=standard`, and `--preset=overnight`; concurrency defaults to roughly two thirds of available CPU cores. The study runner treats responsiveness as first-class: it can sweep policy coefficients such as `wall`, and metric parameters such as `wallLandingBonus` / `wallTickBonus`, then reports response-curve shape, linearity, and largest adjacent behavior jumps. For pure-vs-mounted parity checks, use `npm run analyze:interwheel -- --verify-pure-planner`.
+For broader Interwheel planner characterization, run `npm run analyze:interwheel:study`. It runs reproducible studies over a fixed seed population and writes `raw.json`, `summary.json`, and `report.md` under `.tmp/interwheel-studies/<timestamp>/`. Use presets such as `--preset=quick`, `--preset=standard`, and `--preset=overnight`; concurrency defaults to roughly two thirds of available CPU cores. Use `--suite=config --policy.climb=1 --policy.wall=0` to measure one fixed planner configuration without a sweep. The study runner treats responsiveness as first-class: it can sweep policy coefficients such as `wall`, and metric parameters such as `wallLandingBonus` / `wallTickBonus`, then reports response-curve shape, linearity, and largest adjacent behavior jumps. For pure-vs-mounted parity checks, use `npm run analyze:interwheel -- --verify-pure-planner`.
 
 For an experimental single-seed Interwheel climb check, run `npm run analyze:interwheel:climb`. This offline validator runs the trusted pure simulator with a climb-biased agent and reports whether the agent survived to the time cap with recent upward progress. Add `--no-water --min-height=N` to temporarily disable drowning and use a target-height criterion for route-only calibration against the analytical edge validator. It is analysis tooling only; live level generation does not call it.
 

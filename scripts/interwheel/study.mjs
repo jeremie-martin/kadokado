@@ -84,6 +84,11 @@ const METRICS = {
   },
 };
 
+const POLICY_KEYS = ['climb', ...new Set(Object.values(METRICS).map((metric) => metric.policyKey))];
+const METRIC_PARAM_KEYS = [
+  ...new Set(Object.values(METRICS).flatMap((metric) => metric.params.map((param) => param.key))),
+];
+
 // Response curves are intentionally shared across metric studies. A wall study
 // should focus on wallJ/min, wall%, and wall steer, but side effects such as
 // climb speed or capture rate stay visible in the same report. The metric
@@ -143,6 +148,9 @@ function parseArgs(argv) {
     maxStableDepth: null,
     maxEdgeRollouts: null,
     budgetMs: null,
+    policy: {},
+    metricParams: {},
+    configName: null,
     outDir: null,
     paramPoints: null,
     pastilleSpawnChance: 1.0,
@@ -165,6 +173,29 @@ function parseArgs(argv) {
     else if (raw.startsWith('--search-jumps=')) args.maxStableDepth = Number(raw.slice('--search-jumps='.length));
     else if (raw.startsWith('--edge-budget=')) args.maxEdgeRollouts = Number(raw.slice('--edge-budget='.length));
     else if (raw.startsWith('--budget-ms=')) args.budgetMs = Number(raw.slice('--budget-ms='.length));
+    else if (raw.startsWith('--policy.')) {
+      const eq = raw.indexOf('=');
+      const key = raw.slice('--policy.'.length, eq);
+      const value = Number(raw.slice(eq + 1));
+      if (eq < 0 || !POLICY_KEYS.includes(key) || !Number.isFinite(value)) {
+        console.error(`Invalid policy override: ${raw}`);
+        args.help = true;
+      } else {
+        args.policy[key] = value;
+      }
+    }
+    else if (raw.startsWith('--metric-param.')) {
+      const eq = raw.indexOf('=');
+      const key = raw.slice('--metric-param.'.length, eq);
+      const value = Number(raw.slice(eq + 1));
+      if (eq < 0 || !METRIC_PARAM_KEYS.includes(key) || !Number.isFinite(value)) {
+        console.error(`Invalid metric parameter override: ${raw}`);
+        args.help = true;
+      } else {
+        args.metricParams[key] = value;
+      }
+    }
+    else if (raw.startsWith('--name=')) args.configName = raw.slice('--name='.length);
     else if (raw.startsWith('--out=')) args.outDir = raw.slice('--out='.length);
     else if (raw.startsWith('--param-points=')) args.paramPoints = Number(raw.slice('--param-points='.length));
     else if (raw === '--pastille-spawn=natural') args.pastilleSpawnChance = null;
@@ -178,8 +209,16 @@ function parseArgs(argv) {
   }
 
   if (!PRESETS[args.preset]) args.help = true;
-  if (!['all', 'responsiveness', 'params'].includes(args.suite)) args.help = true;
+  if (!['all', 'responsiveness', 'params', 'config'].includes(args.suite)) args.help = true;
   if (args.metric !== 'all' && !METRICS[args.metric]) args.help = true;
+  if (args.suite !== 'config' && (
+    Object.keys(args.policy).length > 0 ||
+    Object.keys(args.metricParams).length > 0 ||
+    args.configName !== null
+  )) {
+    console.error('--policy.*, --metric-param.*, and --name are only valid with --suite=config');
+    args.help = true;
+  }
 
   const preset = PRESETS[args.preset] ?? PRESETS.standard;
   args.trials ??= preset.trials;
@@ -217,6 +256,7 @@ function help() {
 
 USAGE:
   npm run analyze:interwheel:study -- --preset=quick
+  npm run analyze:interwheel:study -- --suite=config --policy.climb=1 --policy.wall=0
   npm run analyze:interwheel:study -- --suite=responsiveness --metric=wall
   npm run analyze:interwheel:study -- --suite=params --metric=wall --preset=standard
   npm run analyze:interwheel:study -- --suite=params --metric=wall --param-points=9
@@ -225,6 +265,7 @@ Presets:
 ${presets}
 
 Suites:
+  config          run exactly one fixed planner configuration, no sweep
   responsiveness  sweep policy weights, always mixed with climb
   params          sweep constants inside a metric with the policy mix fixed
   all             both suites
@@ -233,6 +274,9 @@ Metrics:
   ${metrics}
 
 Useful overrides:
+  --policy.KEY=N          fixed-config policy knob (${POLICY_KEYS.join(', ')})
+  --metric-param.KEY=N    fixed-config metric parameter (${METRIC_PARAM_KEYS.join(', ')})
+  --name=LABEL            fixed-config condition label
   --concurrency=N         browser pages; default is roughly 2/3 of CPU cores
   --lookahead-screens=N   planner reveal lookahead
   --search-jumps=N        max stable jump depth
@@ -275,6 +319,22 @@ function paramValuesFor(param, args) {
 }
 
 function makeConditions(args) {
+  if (args.suite === 'config') {
+    const policyText = policyLabel(args.policy);
+    const metricText = metricLabel(args.metricParams);
+    const defaultName = metricText === 'planner defaults' ? policyText : `${policyText}; ${metricText}`;
+    return [{
+      group: 'config',
+      suite: 'config',
+      metric: null,
+      name: args.configName ?? defaultName,
+      axis: 'config',
+      value: 0,
+      policy: { ...args.policy },
+      metricParams: { ...args.metricParams },
+    }];
+  }
+
   const includeResponsiveness = args.suite === 'all' || args.suite === 'responsiveness';
   const includeParams = args.suite === 'all' || args.suite === 'params';
   const conditions = [
@@ -581,11 +641,10 @@ function reportMarkdown(summary) {
     '',
     `- preset: ${summary.meta.preset}`,
     `- suite: ${summary.meta.suite}`,
-    `- metrics: ${summary.meta.metrics.join(', ')}`,
+    `- metrics: ${summary.meta.metrics.join(', ') || 'none'}`,
     `- trials per condition: ${summary.meta.trials}`,
     `- max seconds: ${fmt(summary.meta.maxTicks / GAME_FPS, 1)}`,
     `- seed base: ${summary.meta.seedBase}`,
-    `- parameter points: ${summary.meta.paramPoints}`,
     `- concurrency: ${summary.meta.concurrency}`,
     `- planner search: lookahead=${summary.meta.plannerSearch.revealScreensAbove}, jumps=${summary.meta.plannerSearch.maxStableDepth}, edges=${summary.meta.plannerSearch.maxEdgeRollouts}, cpu=${summary.meta.plannerSearch.budgetMs}ms`,
     `- pastille spawn: ${summary.meta.pastilleSpawnChance ?? 'natural'}`,
@@ -597,6 +656,10 @@ function reportMarkdown(summary) {
     '| condition | policy | metric params | h(m) | h/min | score/min | wallJ/min | wall% | died | capture% | perceived | past/min | wall steer |',
     '| --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |',
   ];
+
+  if (summary.meta.suite !== 'config') {
+    lines.splice(8, 0, `- parameter points: ${summary.meta.paramPoints}`);
+  }
 
   for (const s of summary.summaries) {
     const m = s.metrics;
@@ -610,11 +673,14 @@ function reportMarkdown(summary) {
     );
   }
 
-  lines.push('', '## Response Curves', '');
-  lines.push('Each row is one tracked analytic plotted against the swept value. Not every row is the target behavior of the metric; some rows are tradeoffs or side effects.', '');
-  lines.push('Shape is a compact warning label for the response curve: flat, dead-zone, jumpy, nonlinear, or near-linear.', '');
+  const responseEntries = Object.entries(summary.responseCurves);
+  if (responseEntries.length > 0) {
+    lines.push('', '## Response Curves', '');
+    lines.push('Each row is one tracked analytic plotted against the swept value. Not every row is the target behavior of the metric; some rows are tradeoffs or side effects.', '');
+    lines.push('Shape is a compact warning label for the response curve: flat, dead-zone, jumpy, nonlinear, or near-linear.', '');
+  }
 
-  for (const [group, metrics] of Object.entries(summary.responseCurves)) {
+  for (const [group, metrics] of responseEntries) {
     lines.push(`### ${group}`, '');
     lines.push('| analytic | shape | slope | r2 | maxStep | range |');
     lines.push('| --- | --- | ---: | ---: | ---: | ---: |');
@@ -691,7 +757,7 @@ async function main() {
     const meta = {
       preset: args.preset,
       suite: args.suite,
-      metrics: selectedMetrics(args).map(([name]) => name),
+      metrics: args.suite === 'config' ? [] : selectedMetrics(args).map(([name]) => name),
       trials: args.trials,
       seedBase: args.seedBase,
       maxTicks: args.maxTicks,

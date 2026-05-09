@@ -110,6 +110,9 @@ Interwheel studies must make responsiveness first-class:
 - Parameter value -> behavior response should be reported directly.
 - The response should be smooth and ideally close to linear over the useful
   range.
+- A fixed planner configuration should be measurable without running a sweep,
+  using the same raw facts, derived analytics, presets, and reports as larger
+  studies.
 - Metric parameters, such as `wallLandingBonus` and `wallTickBonus`, must be
   sweepable separately from policy coefficients.
 - New metrics should be registered in the study runner rather than adding a new
@@ -137,6 +140,7 @@ The current entrypoint is:
 
 ```sh
 npm run analyze:interwheel:study
+npm run analyze:interwheel:study -- --suite=config --policy.climb=1 --policy.wall=0
 ```
 
 It writes `raw.json`, `summary.json`, and `report.md` under
