@@ -2,7 +2,8 @@ import { mount, type InterwheelGame } from '../games/interwheel/index';
 import {
   clamp,
   setGenerationDifficultyOverride,
-  setInitialWaterYOverride,
+  setInitialWaterMarginPxOverride,
+  setMineDifficultyOverride,
   setPastilleSpawnChanceOverride,
 } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
@@ -96,18 +97,29 @@ let overlayColor: number = OVERLAY_DEFAULTS.color;
 let lookaheadScreens = PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove;
 let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
 
-// Scene knobs (apply on reset). Default values match the production sim:
-//  - waterMarginMeters=60 maps to waterY=-300 (5 px = 1 m)
-//  - difficulty/pastilleSpawn use natural=true → height-ramp curves
+// Scene knobs (apply on reset). Each "natural" toggle delegates to the
+// production curves; turning the toggle off applies the slider value.
+//   - waterMargin is meters BELOW the blob at spawn. 0 = water at the blob
+//     (max stress). Without override, the sim uses the legacy absolute
+//     waterY=-300 (~240m of margin for typical seeds).
+//   - difficulty (0..1) controls wheel ray/speed/spacing.
+//   - mineDensity (0..2) controls mines per wheel; decoupled from difficulty
+//     so dramatic videos can have mine-heavy levels without changing wheels.
+//   - pastilleSpawn (0..3) attempts that many pastilles per y-step (>1
+//     stacks multiple per row); useful for visually dense starts.
 const SCENE_DEFAULTS = {
   waterMarginMeters: 60,
   difficulty: 0.30,
+  mineDensity: 0.30,
   pastilleSpawn: 1.00,
 };
 const PX_PER_METER = 5;
 let sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
+let sceneWaterMarginNatural = true;
 let sceneDifficulty = SCENE_DEFAULTS.difficulty;
 let sceneDifficultyNatural = true;
+let sceneMineDensity = SCENE_DEFAULTS.mineDensity;
+let sceneMineDensityNatural = true;
 let scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
 let scenePastilleSpawnNatural = true;
 
@@ -203,23 +215,37 @@ function setupPolicyControls(): void {
 
 const sceneWaterMarginInput = document.getElementById('scene-waterMargin') as HTMLInputElement | null;
 const sceneWaterMarginOutput = document.getElementById('scene-waterMargin-value') as HTMLOutputElement | null;
+const sceneWaterMarginNaturalInput = document.getElementById('scene-waterMargin-natural') as HTMLInputElement | null;
 const sceneDifficultyInput = document.getElementById('scene-difficulty') as HTMLInputElement | null;
 const sceneDifficultyOutput = document.getElementById('scene-difficulty-value') as HTMLOutputElement | null;
 const sceneDifficultyNaturalInput = document.getElementById('scene-difficulty-natural') as HTMLInputElement | null;
+const sceneMineDensityInput = document.getElementById('scene-mineDensity') as HTMLInputElement | null;
+const sceneMineDensityOutput = document.getElementById('scene-mineDensity-value') as HTMLOutputElement | null;
+const sceneMineDensityNaturalInput = document.getElementById('scene-mineDensity-natural') as HTMLInputElement | null;
 const scenePastilleSpawnInput = document.getElementById('scene-pastilleSpawn') as HTMLInputElement | null;
 const scenePastilleSpawnOutput = document.getElementById('scene-pastilleSpawn-value') as HTMLOutputElement | null;
 const scenePastilleSpawnNaturalInput = document.getElementById('scene-pastilleSpawn-natural') as HTMLInputElement | null;
 const sceneReset = document.getElementById('scene-reset') as HTMLButtonElement | null;
 
 function syncSceneControls(): void {
-  if (sceneWaterMarginInput) sceneWaterMarginInput.value = String(sceneWaterMarginMeters);
+  if (sceneWaterMarginInput) {
+    sceneWaterMarginInput.value = String(sceneWaterMarginMeters);
+    sceneWaterMarginInput.disabled = sceneWaterMarginNatural;
+  }
   if (sceneWaterMarginOutput) sceneWaterMarginOutput.value = String(sceneWaterMarginMeters);
+  if (sceneWaterMarginNaturalInput) sceneWaterMarginNaturalInput.checked = sceneWaterMarginNatural;
   if (sceneDifficultyInput) {
     sceneDifficultyInput.value = String(sceneDifficulty);
     sceneDifficultyInput.disabled = sceneDifficultyNatural;
   }
   if (sceneDifficultyOutput) sceneDifficultyOutput.value = sceneDifficulty.toFixed(2);
   if (sceneDifficultyNaturalInput) sceneDifficultyNaturalInput.checked = sceneDifficultyNatural;
+  if (sceneMineDensityInput) {
+    sceneMineDensityInput.value = String(sceneMineDensity);
+    sceneMineDensityInput.disabled = sceneMineDensityNatural;
+  }
+  if (sceneMineDensityOutput) sceneMineDensityOutput.value = sceneMineDensity.toFixed(2);
+  if (sceneMineDensityNaturalInput) sceneMineDensityNaturalInput.checked = sceneMineDensityNatural;
   if (scenePastilleSpawnInput) {
     scenePastilleSpawnInput.value = String(scenePastilleSpawn);
     scenePastilleSpawnInput.disabled = scenePastilleSpawnNatural;
@@ -231,8 +257,9 @@ function syncSceneControls(): void {
 // Push the current scene knobs into the sim. Called before each reset so a
 // reseed picks them up; also called on initial mount.
 function applySceneOverridesToSim(): void {
-  setInitialWaterYOverride(-sceneWaterMarginMeters * PX_PER_METER);
+  setInitialWaterMarginPxOverride(sceneWaterMarginNatural ? null : sceneWaterMarginMeters * PX_PER_METER);
   setGenerationDifficultyOverride(sceneDifficultyNatural ? null : sceneDifficulty);
+  setMineDifficultyOverride(sceneMineDensityNatural ? null : sceneMineDensity);
   setPastilleSpawnChanceOverride(scenePastilleSpawnNatural ? null : scenePastilleSpawn);
 }
 
@@ -241,6 +268,10 @@ function setupSceneControls(): void {
     const v = Number(sceneWaterMarginInput.value);
     if (!Number.isFinite(v)) return;
     sceneWaterMarginMeters = clamp(Math.round(v), 0, 1000);
+    syncSceneControls();
+  });
+  sceneWaterMarginNaturalInput?.addEventListener('change', () => {
+    sceneWaterMarginNatural = !!sceneWaterMarginNaturalInput.checked;
     syncSceneControls();
   });
   sceneDifficultyInput?.addEventListener('input', () => {
@@ -253,10 +284,20 @@ function setupSceneControls(): void {
     sceneDifficultyNatural = !!sceneDifficultyNaturalInput.checked;
     syncSceneControls();
   });
+  sceneMineDensityInput?.addEventListener('input', () => {
+    const v = Number(sceneMineDensityInput.value);
+    if (!Number.isFinite(v)) return;
+    sceneMineDensity = clamp(v, 0, 2);
+    syncSceneControls();
+  });
+  sceneMineDensityNaturalInput?.addEventListener('change', () => {
+    sceneMineDensityNatural = !!sceneMineDensityNaturalInput.checked;
+    syncSceneControls();
+  });
   scenePastilleSpawnInput?.addEventListener('input', () => {
     const v = Number(scenePastilleSpawnInput.value);
     if (!Number.isFinite(v)) return;
-    scenePastilleSpawn = clamp(v, 0, 1);
+    scenePastilleSpawn = clamp(v, 0, 3);
     syncSceneControls();
   });
   scenePastilleSpawnNaturalInput?.addEventListener('change', () => {
@@ -265,8 +306,11 @@ function setupSceneControls(): void {
   });
   sceneReset?.addEventListener('click', () => {
     sceneWaterMarginMeters = SCENE_DEFAULTS.waterMarginMeters;
+    sceneWaterMarginNatural = true;
     sceneDifficulty = SCENE_DEFAULTS.difficulty;
     sceneDifficultyNatural = true;
+    sceneMineDensity = SCENE_DEFAULTS.mineDensity;
+    sceneMineDensityNatural = true;
     scenePastilleSpawn = SCENE_DEFAULTS.pastilleSpawn;
     scenePastilleSpawnNatural = true;
     syncSceneControls();

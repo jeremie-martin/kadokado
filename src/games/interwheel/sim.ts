@@ -141,37 +141,60 @@ export function generationDifficultyAtHeight(heightMeters: number): number {
 // keeps drifting upward past 1.0 to DIFFICULTY_OVERSHOOT_MAX over the next
 // DIFFICULTY_OVERSHOOT_RANGE_METERS, so very high sections feel harder than
 // the original's peak via mine density alone (geometry stays bounded).
+//
+// `mineDifficultyOverride` decouples mine density from wheel geometry —
+// useful for video stress runs where you want mines without changing wheel
+// sizes/spacing. When unset, falls back to the generation override (legacy
+// coupled behavior), then to the natural height ramp.
 export function mineDifficultyAtHeight(heightMeters: number): number {
+  if (mineDifficultyOverride !== null) return mineDifficultyOverride;
   if (generationDifficultyOverride !== null) return generationDifficultyOverride;
   if (heightMeters <= DIFFICULTY_KNEE_METERS) return Math.max(0, heightMeters / DIFFICULTY_KNEE_METERS);
   const overshoot = clamp((heightMeters - DIFFICULTY_KNEE_METERS) / DIFFICULTY_OVERSHOOT_RANGE_METERS, 0, 1);
   return 1 + DIFFICULTY_OVERSHOOT_MAX * overshoot;
 }
 
-// Optional override for the initial water Y at game reset, in world-px.
-// `null` uses the production default of -300 (≈60m of margin below the
-// blob). Set to a value closer to 0 for "stress" starts where water is
-// already near the blob — useful for short demo videos where the run
-// needs to feel urgent from the first second. Conventional reading:
-// `initialWaterY` is the world-y position of the water surface at t=0.
-let initialWaterYOverride: number | null = null;
-export function setInitialWaterYOverride(value: number | null): void {
-  initialWaterYOverride = value;
+// Optional override for the initial water margin at game reset, in world-px,
+// measured from the blob's y after it grabs the start wheel. Positive values
+// place water BELOW the blob (safer); 0 puts the water surface at the blob.
+// The blob spawns ~10 wheels up (varies per seed), so an absolute waterY is
+// not seed-stable — using a margin from the blob normalizes the stress level.
+// `null` keeps the legacy absolute default of waterY=-300, which evaluates to
+// ~240m of margin for typical seeds. For "stress" video starts, set this to a
+// small value (e.g., 0..50m) so water is already near the blob from frame 1.
+let initialWaterMarginPxOverride: number | null = null;
+export function setInitialWaterMarginPxOverride(value: number | null): void {
+  initialWaterMarginPxOverride = value;
 }
-export function getInitialWaterYOverride(): number | null {
-  return initialWaterYOverride;
+export function getInitialWaterMarginPxOverride(): number | null {
+  return initialWaterMarginPxOverride;
 }
 export const INITIAL_WATER_Y_DEFAULT = -300;
+
+// Optional override for mine difficulty, decoupled from generation difficulty.
+// Generation difficulty controls wheel ray, wheel speed, inter-wheel spacing.
+// Mine difficulty controls how dense mines are on each wheel. Production
+// gameplay couples them via the same height ramp; this override lets the
+// playground / studies dial up mine density without making wheels harder
+// (e.g., for dramatic short videos). When `null`, mine difficulty falls back
+// to the generation override if set, else to the natural height ramp.
+let mineDifficultyOverride: number | null = null;
+export function setMineDifficultyOverride(value: number | null): void {
+  mineDifficultyOverride = value === null ? null : Math.max(0, value);
+}
+export function getMineDifficultyOverride(): number | null {
+  return mineDifficultyOverride;
+}
 
 // Optional override for benchmark/sweep comparisons: when set to a number,
 // `pastilleSpawnChanceAtY` returns that constant value instead of the
 // height-ramp curve. Production gameplay uses null (the curve). Set to 1.0
-// for "uniform max density" sweeps so policies aren't confounded by
-// height-correlated pastille density. Reset to null to restore production
-// behavior.
+// for "uniform max density" sweeps; values > 1 attempt multiple pastilles
+// per y-step so density can exceed the natural cap (useful for short
+// dramatic videos). Reset to null to restore production behavior.
 let pastilleSpawnChanceOverride: number | null = null;
 export function setPastilleSpawnChanceOverride(value: number | null): void {
-  pastilleSpawnChanceOverride = value === null ? null : clamp(value, 0, 1);
+  pastilleSpawnChanceOverride = value === null ? null : Math.max(0, value);
 }
 export function getPastilleSpawnChanceOverride(): number | null {
   return pastilleSpawnChanceOverride;
@@ -334,7 +357,6 @@ export class InterwheelSim {
     this.tick = 0;
     this.mapY = 0;
     this.svy = 0;
-    this.waterY = initialWaterYOverride ?? INITIAL_WATER_Y_DEFAULT;
     this.waterBoost = 0;
     this.maxHeight = 0;
     this.score = 0;
@@ -352,6 +374,13 @@ export class InterwheelSim {
     this.initPastilles(rng);
     this.blob = freshBlob();
     this.grabWheel(this.wheels[START_WHEEL_ID]);
+    // Set initial water level AFTER the blob has grabbed the start wheel.
+    // The override is interpreted as a px-margin from the blob's actual y at
+    // spawn (positive = water below blob = safer); without it, fall back to
+    // the legacy absolute waterY so existing trials are unaffected.
+    this.waterY = initialWaterMarginPxOverride !== null
+      ? this.blob.y + initialWaterMarginPxOverride
+      : INITIAL_WATER_Y_DEFAULT;
     this.scrollMap(true);
   }
 
@@ -616,21 +645,32 @@ export class InterwheelSim {
 
   private initPastilles(rng: RNG): void {
     for (let y = -100; y > this.roof; y -= 20) {
-      if (rng() >= pastilleSpawnChanceAtY(y)) continue;
-      let type = 0;
-      if (randomInt(rng, 30) === 0) type = 1;
-      if (randomInt(rng, 200) === 0) type = 2;
-      const ray = 20;
-      const m = SIDE + ray;
-      const pastille: Pastille = {
-        x: m + rng() * (STAGE_WIDTH - 2 * m),
-        y, ray, type,
-        phase: rng() * Math.PI * 2,
-        active: false,
-      };
-      const overlapsWheel = this.wheels.some((wheel) => distance(pastille, wheel) < wheel.ray + ray);
-      if (overlapsWheel) continue;
-      this.pastilles.push(pastille);
+      // Per-y-step density: floor(chance) guaranteed attempts plus one more
+      // with probability `chance - floor(chance)`. At chance ≤ 1 this matches
+      // the original "0 or 1 attempt" rule. At chance > 1 multiple pastilles
+      // can spawn at the same y-step (different x positions) — useful for
+      // dramatic short-video starts.
+      const chance = pastilleSpawnChanceAtY(y);
+      if (chance <= 0) continue;
+      const guaranteed = Math.floor(chance);
+      const fractional = chance - guaranteed;
+      const attempts = guaranteed + (rng() < fractional ? 1 : 0);
+      for (let i = 0; i < attempts; i += 1) {
+        let type = 0;
+        if (randomInt(rng, 30) === 0) type = 1;
+        if (randomInt(rng, 200) === 0) type = 2;
+        const ray = 20;
+        const m = SIDE + ray;
+        const pastille: Pastille = {
+          x: m + rng() * (STAGE_WIDTH - 2 * m),
+          y, ray, type,
+          phase: rng() * Math.PI * 2,
+          active: false,
+        };
+        const overlapsWheel = this.wheels.some((wheel) => distance(pastille, wheel) < wheel.ray + ray);
+        if (overlapsWheel) continue;
+        this.pastilles.push(pastille);
+      }
     }
   }
 

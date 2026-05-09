@@ -89,18 +89,31 @@
         <h2>Scene</h2>
         <div class="controls" id="scene-controls">
           <div class="control">
-            <label for="scene-waterMargin">Water margin (m)</label>
+            <label for="scene-waterMargin">
+              Water margin (m below blob)
+              <input id="scene-waterMargin-natural" type="checkbox" checked>
+              <span class="hint">natural</span>
+            </label>
             <output id="scene-waterMargin-value">60</output>
-            <input id="scene-waterMargin" type="range" min="0" max="120" step="5" value="60">
+            <input id="scene-waterMargin" type="range" min="0" max="240" step="5" value="60" disabled>
           </div>
           <div class="control">
             <label for="scene-difficulty">
-              Difficulty
+              Difficulty (wheels)
               <input id="scene-difficulty-natural" type="checkbox" checked>
               <span class="hint">natural</span>
             </label>
             <output id="scene-difficulty-value">0.30</output>
             <input id="scene-difficulty" type="range" min="0" max="1" step="0.05" value="0.30" disabled>
+          </div>
+          <div class="control">
+            <label for="scene-mineDensity">
+              Mine density
+              <input id="scene-mineDensity-natural" type="checkbox" checked>
+              <span class="hint">natural</span>
+            </label>
+            <output id="scene-mineDensity-value">0.30</output>
+            <input id="scene-mineDensity" type="range" min="0" max="2" step="0.05" value="0.30" disabled>
           </div>
           <div class="control">
             <label for="scene-pastilleSpawn">
@@ -109,7 +122,7 @@
               <span class="hint">natural</span>
             </label>
             <output id="scene-pastilleSpawn-value">1.00</output>
-            <input id="scene-pastilleSpawn" type="range" min="0" max="1" step="0.05" value="1.00" disabled>
+            <input id="scene-pastilleSpawn" type="range" min="0" max="3" step="0.05" value="1.00" disabled>
           </div>
         </div>
         <div class="actions">
