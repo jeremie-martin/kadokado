@@ -36,6 +36,14 @@ Current default:
 { climb: 1.0, wall: 0.5, pastille: 0.5 }
 ```
 
+The `wall` knob multiplies a path-level wall-use signal. The default mode
+is `productive` (`metricParams.wallMode='productive'`), which rewards the
+height earned on wall-touching edges and gives a smooth, non-oscillating
+dose-response on wall-jumps-per-minute. The alternate `event` mode is the
+legacy landings + ticks signal and is retained for ablation only — it
+exhibits a wall-jumps cliff and a passive wall-hugging pathology under
+high mix. `wall=0` is the no-wall baseline by construction.
+
 The `pastille` knob multiplies a path-level capture-obligation signal that
 rewards securing pastilles the planner currently perceives. `pastille=0`
 collapses to the climb-only baseline by construction. The default mode is
@@ -92,7 +100,20 @@ height routes prefer the path that gets there sooner. The historical apex-only
 shape remains available to studies as `climbMode: 'legacy'`; `wait-cost` is a
 study alternative that charges only stable waiting ticks.
 
-`wallSignal = pathWallLandings * wallLandingBonus + pathWallTicks * wallTickBonus`.
+`wallSignal` depends on `wallMode`:
+- `event` (legacy): `pathWallLandings × wallLandingBonus + pathWallTicks ×
+  wallTickBonus`. Counts wall-jump-and-land events flat plus wall-contact
+  ticks. The standard sweep showed this produces a cliff in wallJ/min around
+  mix≈0.7–0.9 (1 → 27 over a 0.2 mix change), variance explosion at
+  mix≈1.3–1.6 (std=31, p90=132 — flip-decision regime), and a passive
+  wall-hugging pathology at high mix (wall%=21 with wallJ/min collapsing).
+- `productive` (default): `pathWallProductiveLift × wallProductiveBonus`,
+  where `pathWallProductiveLift` accumulates `max(0, edgeStartY − edgeEndY)`
+  over edges that touched the wall (excluding same-stable-target wall scoops
+  to mirror the loop guard). Oscillation cycles net out to ~0 net height per
+  cycle so the signal stays near zero — the agent can't trade climb for raw
+  wall-event count, and passive wall-hugging earns nothing because it gains
+  no height.
 
 `pastilleSignal` depends on `pastilleMode`:
 - `count`: `pastilleSecureBonus × |obligation ∩ pathReward.collectedKeys|`
@@ -116,6 +137,8 @@ Metric parameters are not policy knobs. The current defaults are:
   climbWaitCost: 0,
   wallLandingBonus: 300,
   wallTickBonus: 5,
+  wallMode: 'productive',
+  wallProductiveBonus: 3,
   climbPhantomWheelEnabled: true,
   pastilleMode: 'count',
   pastilleSecureBonus: 200,

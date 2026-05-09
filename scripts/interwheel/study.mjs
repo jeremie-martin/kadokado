@@ -15,6 +15,7 @@ const GAME_FPS = 40;
 const CLIMB_ONLY = { climb: 1, wall: 0, pastille: 0 };
 const CLIMB_METRIC_MODES = ['legacy', 'time-cost', 'wait-cost'];
 const PASTILLE_MODES = ['count', 'graded'];
+const WALL_MODES = ['event', 'productive'];
 
 const PRESETS = {
   smoke: {
@@ -92,17 +93,30 @@ const METRICS = {
     mixPolicyWeight: 1,
     coefficientValues: {
       smoke: [0, 0.5, 1],
-      quick: [0, 0.5, 0.9, 1.3, 2],
-      standard: [0, 0.1, 0.2, 0.35, 0.5, 0.7, 0.9, 1.1, 1.3, 1.6, 2.0],
+      quick: [0, 0.5, 1, 2, 4],
+      // Productive mode is roughly half the magnitude per mix unit of event
+      // mode (productiveBonus=1×lift vs landingBonus=300×count) so the
+      // useful range extends further. Saturation is around mix=4 in
+      // productive mode; values up to 8 are kept to confirm asymptote.
+      standard: [0, 0.1, 0.25, 0.5, 0.8, 1.2, 1.6, 2, 3, 4, 6, 8],
     },
     params: [
       {
         key: 'wallLandingBonus',
         range: [0, 600],
+        // wallLandingBonus only affects event mode; pin it so productive
+        // sweeps don't shadow the read with default-mode runs.
+        metricParams: { wallMode: 'event' },
       },
       {
         key: 'wallTickBonus',
         range: [0, 12],
+        metricParams: { wallMode: 'event' },
+      },
+      {
+        key: 'wallProductiveBonus',
+        range: [0.25, 4],
+        metricParams: { wallMode: 'productive' },
       },
     ],
   },
@@ -146,6 +160,7 @@ const BOOL_METRIC_PARAM_KEYS = new Set([
 ]);
 const METRIC_PARAM_KEYS = [...new Set([
   'climbMode',
+  'wallMode',
   'pastilleMode',
   ...SWEEP_METRIC_PARAM_KEYS,
   ...BOOL_METRIC_PARAM_KEYS,
@@ -348,6 +363,9 @@ function parseMetricParamValue(key, rawValue) {
   if (key === 'climbMode') {
     return CLIMB_METRIC_MODES.includes(rawValue) ? rawValue : undefined;
   }
+  if (key === 'wallMode') {
+    return WALL_MODES.includes(rawValue) ? rawValue : undefined;
+  }
   if (key === 'pastilleMode') {
     return PASTILLE_MODES.includes(rawValue) ? rawValue : undefined;
   }
@@ -402,13 +420,16 @@ function parseConfigSpec(spec) {
       if (metricKey === 'climbMode' && !CLIMB_METRIC_MODES.includes(value)) {
         throw new Error(`Invalid climbMode in --config: ${rawValue}`);
       }
+      if (metricKey === 'wallMode' && !WALL_MODES.includes(value)) {
+        throw new Error(`Invalid wallMode in --config: ${rawValue}`);
+      }
       if (metricKey === 'pastilleMode' && !PASTILLE_MODES.includes(value)) {
         throw new Error(`Invalid pastilleMode in --config: ${rawValue}`);
       }
       if (isBool && typeof value !== 'boolean') {
         throw new Error(`Invalid boolean metric parameter in --config: ${part}`);
       }
-      if (!isBool && metricKey !== 'climbMode' && metricKey !== 'pastilleMode' && typeof value !== 'number') {
+      if (!isBool && metricKey !== 'climbMode' && metricKey !== 'wallMode' && metricKey !== 'pastilleMode' && typeof value !== 'number') {
         throw new Error(`Invalid numeric metric parameter in --config: ${part}`);
       }
       out.metricParams[metricKey] = value;

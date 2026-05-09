@@ -130,6 +130,27 @@ const PHANTOM_WHEEL_FR = 2;
 // vs a same-height grab→grab path getting 0 from the wall term.
 const WALL_LANDING_BONUS = 300;
 const WALL_NORMALIZE     = 5;
+// Wall scoring modes:
+//   • `event` (legacy): pathWallLandings × landingBonus + pathWallTicks ×
+//     tickBonus. The standard sweep showed this produces a cliff in
+//     wallJumps-per-minute around mix≈0.7–0.9 (1 → 20+ jumps for a 0.2 mix
+//     change) and a passive-wall-hug pathology at high mix (wall%=35 with
+//     wallJ/min collapsing because tick-bonus rewards sitting on walls).
+//   • `productive` (new default): pathWallProductiveLift × productiveBonus,
+//     where productiveLift accumulates max(0, edgeStartY − edgeEndY) over
+//     edges that touched the wall. Oscillation (wall→wheel→wall→wheel) gains
+//     no net height per cycle so the signal stays near zero — the agent
+//     can't trade climb for raw wall-event count. Same-stable-target wall
+//     scoops are zeroed out to mirror the existing loop guard.
+const WALL_MODES = ['event', 'productive'] as const;
+const WALL_MODE_DEFAULT: WallMode = 'productive';
+// Per-pixel of productive wall-lift score in productive mode. Calibration
+// chosen so the existing wall slider range 0..2 covers the useful response
+// curve: at wall=0.5, ~3 wallJ/min (light); at wall=1, ~22 (moderate); at
+// wall=2, ~41 (heavy). Lower bonus shifts the curve right (need higher mix
+// to see walls); higher bonus saturates faster. Multiplicative with the
+// `wall` knob, so bonus=N + wall=M behaves identically to bonus=1 + wall=N×M.
+const WALL_PRODUCTIVE_BONUS_DEFAULT = 3.0;
 // Pastille capture: rewards path-level "obligation satisfaction" for pastilles
 // the planner currently perceives. A perceived pastille that the path
 // physically grabs contributes 1.0 × bonus; in graded mode, an unsecured one
@@ -204,6 +225,12 @@ type SearchNode = {
   /** Cumulative count of canonical wall-jump-and-land events along this path
    *  (edge started off the wall, touched it mid-edge, ended on it). */
   pathWallLandings: number;
+  /** Cumulative height (px) gained on root-to-node edges that touched the wall.
+   *  Wall-touching edges contribute `max(0, edgeStartY − edgeEndY)`. Same
+   *  stable-target wall scoops are excluded (mirrors loop guard). Used by the
+   *  productive wall mode to reward only wall use that actually lifts the
+   *  agent — oscillation cycles net out to ~0 height gained. */
+  pathWallProductiveLift: number;
   /** Min squared distance from any flight sample on the root-to-this-node path
    *  to each perceived pastille (keyed by obligation index). Used by the
    *  graded pastille mode for bounded approach credit. Squared for cheaper
@@ -231,6 +258,7 @@ type SearchEdge = {
   pathOffAxis: number;
   pathWallTicks: number;
   pathWallLandings: number;
+  pathWallProductiveLift: number;
   pathPastilleMinDistSq: Float64Array;
 };
 
@@ -352,10 +380,16 @@ export type PlannerPolicy = {
   /** How much to value path height (px climbed from root to leaf apex). */
   climb: number;
   /**
-   * How much to value wall use, scoring `pathWallLandings × WALL_LANDING_BONUS
-   * + pathWallTicks × WALL_NORMALIZE`. The landings term anchors a discrete
-   * preference for canonical wall-jump-and-land routes (started off the wall,
-   * touched it, ended on it); the ticks term softly rewards contact duration.
+   * How much to value wall use. The signal shape is selected by
+   * `metricParams.wallMode`:
+   *   - `event` (legacy): pathWallLandings × wallLandingBonus + pathWallTicks
+   *     × wallTickBonus. Discrete-tier "this is a wall-jump-class route"
+   *     preference + soft contact-duration bonus.
+   *   - `productive` (default): pathWallProductiveLift × wallProductiveBonus,
+   *     where productiveLift accumulates the height gained on wall-touching
+   *     edges. Avoids the wallJumps-per-min cliff and the passive-wall-hug
+   *     pathology of event mode.
+   * `wall=0` is the no-wall baseline by construction.
    */
   wall: number;
   /**
@@ -376,6 +410,7 @@ export type PlannerPolicy = {
 export type PastilleMode = typeof PASTILLE_MODES[number];
 
 export type ClimbMetricMode = typeof CLIMB_METRIC_MODES[number];
+export type WallMode = typeof WALL_MODES[number];
 
 export type PlannerMetricParams = {
   /**
@@ -401,9 +436,22 @@ export type PlannerMetricParams = {
   wallLandingBonus: number;
   /**
    * Score added per path tick spent on a wall. Study-only parameter paired
-   * with wallLandingBonus to tune the wall metric's smoothness.
+   * with wallLandingBonus to tune the wall metric's smoothness. Only used
+   * by `wallMode='event'` — productive mode drops the per-tick term entirely
+   * to avoid the passive-wall-hug pathology.
    */
   wallTickBonus: number;
+  /**
+   * Wall scoring shape — see `PlannerPolicy.wall` for what each mode does.
+   */
+  wallMode: WallMode;
+  /**
+   * Productive-mode score per pixel of path-cumulative wall-lift. Only used
+   * by `wallMode='productive'`. Default 1.0 keeps the productive wall signal
+   * dimensionally aligned with the climb signal: a wall-route that lifts
+   * 200 px contributes 200 score per unit of `wall` knob.
+   */
+  wallProductiveBonus: number;
   /**
    * Inject a phantom wheel into the perceived snapshot above the
    * planner's reveal cone, in the middle horizontally. The search's
@@ -476,6 +524,8 @@ export const DEFAULT_PLANNER_METRIC_PARAMS: PlannerMetricParams = {
   climbWaitCost: CLIMB_WAIT_COST_DEFAULT,
   wallLandingBonus: WALL_LANDING_BONUS,
   wallTickBonus: WALL_NORMALIZE,
+  wallMode: WALL_MODE_DEFAULT,
+  wallProductiveBonus: WALL_PRODUCTIVE_BONUS_DEFAULT,
   climbPhantomWheelEnabled: CLIMB_PHANTOM_WHEEL_ENABLED_DEFAULT,
   pastilleMode: PASTILLE_MODE_DEFAULT,
   pastilleSecureBonus: PASTILLE_SECURE_BONUS_DEFAULT,
@@ -516,6 +566,9 @@ export function resolvePlannerMetricParams(
   };
   if (!(CLIMB_METRIC_MODES as readonly string[]).includes(resolved.climbMode)) {
     resolved.climbMode = CLIMB_METRIC_MODE_DEFAULT;
+  }
+  if (!(WALL_MODES as readonly string[]).includes(resolved.wallMode)) {
+    resolved.wallMode = WALL_MODE_DEFAULT;
   }
   if (!(PASTILLE_MODES as readonly string[]).includes(resolved.pastilleMode)) {
     resolved.pastilleMode = PASTILLE_MODE_DEFAULT;
@@ -699,6 +752,7 @@ export class InterwheelPlanner {
       0,
       0,
       0,
+      0,
       false,
       rootPastilleDist,
       obligations,
@@ -718,6 +772,7 @@ export class InterwheelPlanner {
       pathOffAxis: 0,
       pathWallTicks: 0,
       pathWallLandings: 0,
+      pathWallProductiveLift: 0,
       pathPastilleMinDistSq: rootPastilleDist,
     };
 
@@ -753,6 +808,7 @@ export class InterwheelPlanner {
           pathOffAxis: edge.pathOffAxis,
           pathWallTicks: edge.pathWallTicks,
           pathWallLandings: edge.pathWallLandings,
+          pathWallProductiveLift: edge.pathWallProductiveLift,
           pathPastilleMinDistSq: edge.pathPastilleMinDistSq,
         };
         edge.childId = child.id;
@@ -1057,6 +1113,15 @@ export class InterwheelPlanner {
     const edgeEndsOnWall = endState.blob.state === BLOB_STATE_WALL;
     const edgeWallLandings = !edgeStartsOnWall && edgeWallTicks > 0 && edgeEndsOnWall ? 1 : 0;
     const pathWallLandings = parent.pathWallLandings + edgeWallLandings;
+    // Productive wall lift: height (px) gained on edges that touched the wall.
+    // Same-target wall scoops are excluded so wall→wall→wall oscillation that
+    // ends back on the same side gets no credit. The signal sums genuine
+    // wall-mediated upward motion; oscillation cycles cancel out by nature.
+    const edgeTouchedWall = edgeWallTicks > 0 || edgeStartsOnWall;
+    const edgeWallProductiveLift = edgeTouchedWall && !sameStableTarget
+      ? Math.max(0, parent.state.blob.y - endState.blob.y)
+      : 0;
+    const pathWallProductiveLift = parent.pathWallProductiveLift + edgeWallProductiveLift;
     const scoreBreakdown = this.scoreCandidate(
       rootState,
       parent.state,
@@ -1067,6 +1132,7 @@ export class InterwheelPlanner {
       pathWaitTicks,
       pathWallTicks,
       pathWallLandings,
+      pathWallProductiveLift,
       sameStableTarget,
       pathPastilleMinDistSq,
       obligations,
@@ -1092,6 +1158,7 @@ export class InterwheelPlanner {
       pathOffAxis,
       pathWallTicks,
       pathWallLandings,
+      pathWallProductiveLift,
       pathPastilleMinDistSq,
     };
   }
@@ -1206,6 +1273,7 @@ export class InterwheelPlanner {
     pathWaitTicks: number,
     pathWallTicks: number,
     pathWallLandings: number,
+    pathWallProductiveLift: number,
     sameStableTarget: boolean,
     pathPastilleMinDistSq: Float64Array,
     obligations: PastilleObligation[],
@@ -1225,11 +1293,15 @@ export class InterwheelPlanner {
     } else if (metricParams.climbMode === 'wait-cost') {
       climbSignal = baseClimbSignal - pathWaitTicks * metricParams.climbWaitCost;
     }
-    // Wall: per-edge wall-jump-and-land event bonus + continuous wall-time
-    // weight. The event term anchors "this is a wall-jump-class route";
-    // the tick term provides a soft gradient on wall contact duration.
-    const wallSignal = pathWallLandings * metricParams.wallLandingBonus
-                     + pathWallTicks * metricParams.wallTickBonus;
+    // Wall: dispatched on `wallMode`. `event` is the legacy
+    // landings + ticks signal, retained for ablation. `productive` rewards
+    // path-cumulative height earned on wall-touching edges, which lets the
+    // mix coefficient scale wall preference smoothly without rewarding
+    // wall→wheel→wall oscillation or passive wall-hugging.
+    const wallSignal = metricParams.wallMode === 'productive'
+      ? pathWallProductiveLift * metricParams.wallProductiveBonus
+      : pathWallLandings * metricParams.wallLandingBonus
+      + pathWallTicks * metricParams.wallTickBonus;
 
     // Pastille capture: path-level obligation satisfaction. Skipped entirely
     // when the policy weight is zero so the live (climb+wall) planner pays no
