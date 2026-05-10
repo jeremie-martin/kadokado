@@ -72,12 +72,19 @@ export const ScoreLine: React.FC<{
     `brightness(${brightness.toFixed(3)}) ` +
     'drop-shadow(0 4px 14px rgba(0, 0, 0, 0.6))';
 
+  // alignSelf:baseline is correct in horizontal/grid layouts but conflicts
+  // with parent alignItems:center in column flex (browsers fall back to
+  // start-aligned). Override per `centered` so the post-crossing centered
+  // layout actually centers both label and value horizontally.
+  const alignSelfValue = centered ? 'center' : 'baseline';
+
   return (
     <Fragment>
-      <span style={labelStyle}>{label}</span>
+      <span style={{ ...labelStyle, alignSelf: alignSelfValue }}>{label}</span>
       <span
         style={{
           ...baseValueStyle,
+          alignSelf: alignSelfValue,
           color: warmthColor(warmth),
           filter,
           transform: `scale(${scale.toFixed(4)})`,

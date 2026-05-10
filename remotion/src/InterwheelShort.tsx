@@ -315,21 +315,36 @@ const LayoutFrame: React.FC<{
               position: 'absolute',
               inset: 0,
               display: 'flex',
-              flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
-              rowGap: 16,
               padding: '0 44px',
               opacity: 1 - highScoreOpacity,
             }}
           >
-            <ScoreLine
-              score={row?.score ?? 0}
-              warmth={warmth}
-              kickEnv={kickEnv}
-              label="New Best"
-              centered
-            />
+            {/*
+             * Inner wrapper handles the column stacking + the appear-scale.
+             * scale = 1.10 → 1.00 across the 0.25s transition; combined
+             * with the synthetic kick on the value, the score bursts in
+             * larger than its final size and settles as it fades up.
+             */}
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                rowGap: 16,
+                transform: `scale(${(1.10 - 0.10 * (1 - highScoreOpacity)).toFixed(4)})`,
+                transformOrigin: 'center center',
+              }}
+            >
+              <ScoreLine
+                score={row?.score ?? 0}
+                warmth={warmth}
+                kickEnv={kickEnv}
+                label="New Best"
+                centered
+              />
+            </div>
           </div>
         )}
       </div>
