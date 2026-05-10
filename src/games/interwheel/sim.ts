@@ -217,11 +217,15 @@ export function getRampSpeedOverride(): number | null {
 }
 export const RAMP_SPEED_DEFAULT = 1;
 
-// Optional multiplier on the per-tick water rise rate, applied to both the
-// base WATER_SPEED and the accumulating waterBoost. Accepts either a constant
-// value (legacy callers, study runner) or a {floor, ramp} curve. Curves are
-// evaluated against the agent's current altitude every tick — search clones
-// share the same global, so simulated rollouts agree with live play.
+// Optional override for the per-tick water rise rate, in world-px/tick.
+// When set, it FULLY REPLACES the natural water mechanics: WATER_SPEED and
+// the accumulating waterBoost are bypassed, and `waterY -= rate` is used
+// directly. This keeps short-clip presets predictable — the rate stays on
+// the {min,max} ramp and does not creep up tick-by-tick as it does in the
+// natural game. Accepts either a constant value (legacy callers, study
+// runner) or a {min, max} curve evaluated against the agent's current
+// altitude every tick — search clones share the same global, so simulated
+// rollouts agree with live play.
 let waterSpeedMultiplierOverride: DifficultyCurve | null = null;
 export function setWaterSpeedMultiplierOverride(value: DifficultyCurve | number | null): void {
   waterSpeedMultiplierOverride = normalizeCurve(value, WATER_SPEED_MULTIPLIER_CEILING);
@@ -1027,9 +1031,15 @@ export class InterwheelSim {
 
   private updateWaterAndScore(): void {
     const blob = this.blob;
-    this.waterBoost += WATER_SPEED_INC;
-    const multiplier = waterSpeedMultiplierAtHeight(heightMetersFromY(this.blob.y));
-    this.waterY -= (WATER_SPEED + this.waterBoost) * multiplier;
+    if (waterSpeedMultiplierOverride !== null) {
+      // Override is active: treat the curve value as the absolute rate
+      // (world-px/tick) and skip the per-tick WATER_SPEED_INC accumulation
+      // so the rate stays on the {min,max} ramp instead of creeping forever.
+      this.waterY -= waterSpeedMultiplierAtHeight(heightMetersFromY(this.blob.y));
+    } else {
+      this.waterBoost += WATER_SPEED_INC;
+      this.waterY -= WATER_SPEED + this.waterBoost;
+    }
     this.updateBlobWaterEffects();
     if (blob.wet > 1) {
       this.startBlobDrowningDeath();

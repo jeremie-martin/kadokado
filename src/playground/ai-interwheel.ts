@@ -124,6 +124,13 @@ type ScenePreset = {
   mineDensity: { min: number; max: number; natural: boolean };
   pastilleSpawn: { min: number; max: number; natural: boolean };
   rampSpeed: number;
+  // Optional planner-policy / overlay knobs. When present, applyScenePreset
+  // also writes these so a one-click preset configures the AI's intent and
+  // the candidate-line look together with the world parameters.
+  focus?: number;       // 0..1; drives climb/pastille via policyFromFocus
+  widthMin?: number;    // overlay base line width
+  alphaMin?: number;    // overlay alpha floor
+  alphaGamma?: number;  // overlay alpha curve exponent
 };
 
 // Preset shape recipes the user can flip between with one click. "natural"
@@ -142,12 +149,16 @@ const SCENE_PRESETS: Record<string, ScenePreset> = {
     rampSpeed: 1.0,
   },
   video: {
-    waterMargin: { meters: 0, natural: false },
-    waterSpeed: { min: 3.0, max: 4.0, natural: false },
+    waterMargin: { meters: 20, natural: false },
+    waterSpeed: { min: 3.8, max: 4.6, natural: false },
     difficulty: { min: 0.2, max: 0.4, natural: false },
     mineDensity: { min: 0.3, max: 0.6, natural: false },
     pastilleSpawn: { min: 0.5, max: 0.8, natural: false },
     rampSpeed: 1.0,
+    focus: 0.6,        // climb=0.90, pastille=0.60
+    widthMin: 0.45,
+    alphaMin: 0.06,
+    alphaGamma: 3.0,
   },
 };
 const PX_PER_METER = 5;
@@ -471,6 +482,10 @@ function applyScenePreset(name: keyof typeof SCENE_PRESETS): void {
   scenePastilleSpawnNatural = preset.pastilleSpawn.natural;
   sceneRampSpeed = preset.rampSpeed;
   syncSceneControls();
+  if (preset.focus !== undefined) applyPolicy(policyFromFocus(preset.focus, policy));
+  if (preset.widthMin !== undefined) applyOverlayParam('widthMin', preset.widthMin);
+  if (preset.alphaMin !== undefined) applyOverlayParam('alphaMin', preset.alphaMin);
+  if (preset.alphaGamma !== undefined) applyOverlayParam('alphaGamma', preset.alphaGamma);
 }
 
 function syncPlannerExperimentControls(): void {
