@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   AbsoluteFill,
   Audio,
+  Easing,
   OffthreadVideo,
   Sequence,
   continueRender,
@@ -42,6 +43,19 @@ const MUSIC_FADE_LEAD_AFTER_TEXT_SEC = 0.5;
 // mid-file via Audio's startFrom so the chord still lands on the text impact.
 const WASTED_AUDIO_STING_OFFSET_SEC = 2.43;
 
+// Pre-WASTED "tell": a silent visual lead-in during the regular phase, in
+// the last PRE_WASTED_TELL_SEC seconds before wastedStartFrame. Saturation
+// and brightness ease from identity (1.0/1.0) to (END_SAT/END_BRI) using a
+// late-loaded curve, so the dread builds quietly under regular gameplay
+// audio with no music change. At wastedStartFrame the slow-mo + audio sting
+// take over and the WASTED drain pulls grade from identity down to its full
+// peak — a small "snap to full color" at the seam is intentional, masked by
+// the slow-mo cut + audio impact, and reads as the world's last gasp before
+// the WASTED takeover.
+const PRE_WASTED_TELL_SEC = 2.0;
+const PRE_WASTED_TELL_END_SAT = 0.7;
+const PRE_WASTED_TELL_END_BRI = 0.92;
+
 export type InterwheelShortProps = {
   gameVideoSrc: string;
   sidecarSrc: string;
@@ -79,7 +93,11 @@ const LayoutFrame: React.FC<{
   game: React.ReactNode;
   wasted?: WastedTimeline | null;
   textNode?: React.ReactNode;
-}> = ({ row, backdrop, game, wasted, textNode }) => {
+  // Pre-WASTED tell: a CSS filter string applied to the central gameplay
+  // box only (HUD bands and backdrop unaffected) during the regular phase's
+  // lead-in window. Ignored when `wasted` is set — WASTED's grade takes over.
+  preTellGrade?: string | null;
+}> = ({ row, backdrop, game, wasted, textNode, preTellGrade }) => {
   const drain = wasted?.drainEased ?? 0;
   // Soft grade applied to the HUD bands and the blurred backdrop during
   // WASTED. Peak (drain=1) lands at saturate(0.55) brightness(0.82) — strong
@@ -138,7 +156,9 @@ const LayoutFrame: React.FC<{
           overflow: 'hidden',
         }}
       >
-        <AbsoluteFill style={{ filter: wasted?.grade.filter }}>{game}</AbsoluteFill>
+        <AbsoluteFill style={{ filter: wasted?.grade.filter ?? preTellGrade ?? undefined }}>
+          {game}
+        </AbsoluteFill>
         {wasted && (
           <>
             <WastedTintLayer opacity={wasted.tint.opacity} color={wasted.tint.color} />
@@ -190,14 +210,34 @@ const centerGameStyle: React.CSSProperties = {
 const RegularPhase: React.FC<{
   videoUrl: string;
   sidecar: SidecarRow[] | null;
-}> = ({ videoUrl, sidecar }) => {
+  wastedStartFrame: number | null;
+}> = ({ videoUrl, sidecar, wastedStartFrame }) => {
   const frame = useCurrentFrame();
+  const { fps } = useVideoConfig();
   const row = sidecar ? sidecar[Math.min(frame, sidecar.length - 1)] ?? null : null;
+
+  let preTellGrade: string | null = null;
+  if (wastedStartFrame != null) {
+    const tellWindowFrames = PRE_WASTED_TELL_SEC * fps;
+    const tellStartFrame = wastedStartFrame - tellWindowFrames;
+    if (frame >= tellStartFrame) {
+      const t = Math.max(0, Math.min(1, (frame - tellStartFrame) / tellWindowFrames));
+      // Ease-in cubic — drain accelerates as you near the death frame, so
+      // the last ~0.5s feels like a sharper tightening rather than a flat
+      // ramp.
+      const eased = Easing.in(Easing.cubic)(t);
+      const sat = 1 - (1 - PRE_WASTED_TELL_END_SAT) * eased;
+      const bri = 1 - (1 - PRE_WASTED_TELL_END_BRI) * eased;
+      preTellGrade = `saturate(${sat.toFixed(3)}) brightness(${bri.toFixed(3)})`;
+    }
+  }
+
   return (
     <LayoutFrame
       row={row}
       backdrop={<OffthreadVideo src={videoUrl} muted style={blurredBackdropStyle} />}
       game={<OffthreadVideo src={videoUrl} muted style={centerGameStyle} />}
+      preTellGrade={preTellGrade}
     />
   );
 };
@@ -331,7 +371,11 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
       <Sequence durationInFrames={preWastedDuration}>
-        <RegularPhase videoUrl={videoUrl} sidecar={sidecar} />
+        <RegularPhase
+          videoUrl={videoUrl}
+          sidecar={sidecar}
+          wastedStartFrame={wastedStartFrame}
+        />
       </Sequence>
 
       {wastedStartFrame != null && (
