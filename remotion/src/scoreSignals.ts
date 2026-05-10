@@ -1,12 +1,7 @@
-// Score "warmth" + "kick" signal computation for HUD pulse animations.
+// Score "warmth" + "kick" signal computation for HUD pulse animations,
+// plus the water "danger" signal that drives band tinting.
 //
-// Two-channel model picked after analyzing the seed4200 sidecar:
-//   - Score increments are nearly continuous (72% of frames; p50 gap = 1
-//     frame), so per-event pulses average to nothing visually.
-//   - Δscore distribution is bimodal: 0–20 (climbing micro-ticks) and
-//     ≥100 (pastilles / finale spikes), with a clean empty band in
-//     between.
-//
+// Score model — two-channel, picked after analyzing the seed4200 sidecar:
 //   warmth — leaky integrator over Δscore. Smooth "is something happening"
 //            level that decays back to 0 with time-constant τ_WARMTH_SEC.
 //            Drives glow + color + tiny scale on the score readout.
@@ -14,8 +9,13 @@
 //            tail). Quadratic decay over KICK_DECAY_SEC. Drives an extra
 //            glow + scale + brightness pop on real "events".
 //
-// Constants picked from the L5 lab variant (validated as "pretty much
-// perfect" on the dashboard).
+// Water model — single-channel, blob-relative:
+//   danger — 1st-order low-pass over dangerRaw, where
+//              dangerRaw = clamp(1 − max(0, dist_m) / DANGER_FAR_M, 0, 1)
+//              dist_m   = (waterY − blob.y) / PX_PER_METER
+//            (positive dist_m = blob above water; ≤0 = drowning).
+//            Smoothed with τ_WATER_DANGER_SEC to absorb the fast oscillation
+//            during big falls. Drives a red tint on the top + bottom bands.
 
 import { useMemo } from 'react';
 import { SidecarRow } from './sidecar';
@@ -24,6 +24,10 @@ export const TAU_WARMTH_SEC = 0.3;
 export const WARMTH_NORM = 100;
 export const KICK_THRESHOLD = 100;
 export const KICK_DECAY_SEC = 0.25;
+
+export const PX_PER_METER = 5;
+export const DANGER_FAR_M = 20;
+export const TAU_WATER_DANGER_SEC = 0.3;
 
 export type ScoreSignals = {
   warmth: number[];        // raw integrator value, frame-indexed
@@ -95,4 +99,31 @@ export function useScorePulseState(
     warmth: clamp01(signals.warmth[idx] / WARMTH_NORM),
     kickEnv: pulseDecay(signals.kickElapsed[idx], KICK_DECAY_SEC),
   };
+}
+
+// Water danger: precompute the LP-filtered danger curve once per sidecar.
+// Same leaky-integrator math as score warmth, but the input is already a
+// continuous [0,1] signal (dangerRaw), so the filter just smooths it.
+export function buildWaterDanger(sidecar: SidecarRow[], fps: number): number[] {
+  const n = sidecar.length;
+  const raw = new Array<number>(n);
+  for (let i = 0; i < n; i++) {
+    const distM = (sidecar[i].waterY - sidecar[i].blob.y) / PX_PER_METER;
+    raw[i] = clamp01(1 - Math.max(0, distM) / DANGER_FAR_M);
+  }
+  return computeLeaky(raw, TAU_WATER_DANGER_SEC, fps);
+}
+
+export function useWaterDanger(
+  sidecar: SidecarRow[] | null,
+  frame: number,
+  fps: number,
+): number {
+  const arr = useMemo(
+    () => (sidecar ? buildWaterDanger(sidecar, fps) : null),
+    [sidecar, fps],
+  );
+  if (!arr || !sidecar || sidecar.length === 0) return 0;
+  const idx = Math.min(Math.max(0, frame), sidecar.length - 1);
+  return clamp01(arr[idx]);
 }

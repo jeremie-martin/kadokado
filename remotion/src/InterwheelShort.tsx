@@ -12,9 +12,8 @@ import {
   useVideoConfig,
 } from 'remotion';
 import { ScoreLine } from './components/ScoreLine';
-import { WaterGauge } from './components/WaterGauge';
 import { loadSidecar, SidecarRow } from './sidecar';
-import { useScorePulseState } from './scoreSignals';
+import { useScorePulseState, useWaterDanger } from './scoreSignals';
 import {
   WastedEffectKnobs,
   WastedTextLayer,
@@ -101,7 +100,21 @@ const LayoutFrame: React.FC<{
   // in [0,1]). Passed through to ScoreLine.
   warmth: number;
   kickEnv: number;
-}> = ({ row, backdrop, game, wasted, textNode, preTellGrade, warmth, kickEnv }) => {
+  // Water danger ∈ [0, 1], LP-filtered (see useWaterDanger). Drives a red
+  // tint overlay on both top and bottom bands — replaces the numeric
+  // WaterGauge readout. 0 = calm, 1 = blob touching/below water.
+  waterDanger: number;
+}> = ({
+  row,
+  backdrop,
+  game,
+  wasted,
+  textNode,
+  preTellGrade,
+  warmth,
+  kickEnv,
+  waterDanger,
+}) => {
   const drain = wasted?.drainEased ?? 0;
   // Soft grade applied to the HUD bands and the blurred backdrop during
   // WASTED. Peak (drain=1) lands at saturate(0.55) brightness(0.82) — strong
@@ -141,8 +154,11 @@ const LayoutFrame: React.FC<{
           gridTemplateColumns: 'auto 1fr',
           alignContent: 'center',
           columnGap: 40,
-          padding: '0 80px',
+          padding: '0 44px',
           filter: supportFilter,
+          backgroundColor: waterDanger > 0
+            ? `rgba(255, 60, 50, ${(waterDanger * 0.55).toFixed(3)})`
+            : undefined,
         }}
       >
         <ScoreLine score={row?.score ?? 0} warmth={warmth} kickEnv={kickEnv} />
@@ -179,16 +195,12 @@ const LayoutFrame: React.FC<{
           top: TOP_BAND_HEIGHT + GAME_SIZE,
           width: SHORT_WIDTH,
           height: BOTTOM_BAND_HEIGHT,
-          display: 'grid',
-          gridTemplateColumns: 'auto 1fr',
-          alignContent: 'center',
-          columnGap: 40,
-          padding: '0 80px',
           filter: supportFilter,
+          backgroundColor: waterDanger > 0
+            ? `rgba(255, 60, 50, ${(waterDanger * 0.55).toFixed(3)})`
+            : undefined,
         }}
-      >
-        <WaterGauge waterY={row?.waterY ?? 0} blobY={row?.blob.y ?? 0} />
-      </div>
+      />
 
       {textNode}
     </AbsoluteFill>
@@ -218,6 +230,7 @@ const RegularPhase: React.FC<{
   const { fps } = useVideoConfig();
   const row = sidecar ? sidecar[Math.min(frame, sidecar.length - 1)] ?? null : null;
   const pulse = useScorePulseState(sidecar, frame, fps);
+  const waterDanger = useWaterDanger(sidecar, frame, fps);
 
   let preTellGrade: string | null = null;
   if (wastedStartFrame != null) {
@@ -243,6 +256,7 @@ const RegularPhase: React.FC<{
       preTellGrade={preTellGrade}
       warmth={pulse.warmth}
       kickEnv={pulse.kickEnv}
+      waterDanger={waterDanger}
     />
   );
 };
@@ -286,6 +300,7 @@ const WastedPhase: React.FC<{
   const absFrame = wastedStartFrame + frame;
   const row = sidecar ? sidecar[Math.min(absFrame, sidecar.length - 1)] ?? null : null;
   const pulse = useScorePulseState(sidecar, absFrame, fps);
+  const waterDanger = useWaterDanger(sidecar, absFrame, fps);
 
   const slowMoBackdrop = (
     <OffthreadVideo
@@ -330,6 +345,7 @@ const WastedPhase: React.FC<{
         }
         warmth={pulse.warmth}
         kickEnv={pulse.kickEnv}
+        waterDanger={waterDanger}
       />
 
       <Audio src={audioUrl} startFrom={audioStartFromFrames} />

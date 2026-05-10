@@ -13,7 +13,7 @@
 import { Fragment } from 'react';
 
 const FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-const FONT_SIZE = 92;
+const FONT_SIZE = 104;
 
 // Lerp white(255,255,255) → gold(255, 209, 102) by warmth ∈ [0, 1].
 function warmthColor(warmth: number): string {
