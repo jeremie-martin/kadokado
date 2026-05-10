@@ -61,21 +61,26 @@ const PRE_WASTED_TELL_END_BRI = 0.92;
 //     it stays silent at low danger and rises with the threat. Phased on
 //     absolute frame to keep rhythm continuous across the regular→WASTED
 //     cut.
-//   * Color shift — during WASTED, lerp from the calm-phase orange-red
-//     (R0,G0,B0) to a more saturated pure red (R1,G1,B1) over
-//     [0, DANGER_WASTED_COLOR_END_SEC] of the WASTED phase.
-//   * Tint fade-out — also during WASTED, multiplicatively fade the tint's
-//     visibility from 1 → 0 between DANGER_WASTED_FADE_START_SEC and the
-//     WASTED text impact (textAppearSec). The danger signal has done its
-//     job by the time the WASTED text lands; let the cinematic grade
-//     own the death moment uncontested.
+//   * Color shift — lerp from the calm-phase orange-red (R0,G0,B0) to a
+//     more saturated pure red (R1,G1,B1) over [-2s, 0s] of WASTED time
+//     (i.e. during the pre-WASTED tell window). By the moment the WASTED
+//     audio starts the tint is already pure red.
+//   * Two-segment fade-out — once the audio starts, multiplicatively
+//     fade the tint's visibility piecewise:
+//       wastedT ∈ [0, KNEE_SEC]: 1.0 → (1 - KNEE_PCT)  (gentle slope)
+//       wastedT ∈ [KNEE_SEC, END_SEC]: → 0.0           (faster cleanup)
+//     The shape lets the alarm dim slowly through most of the slow-mo
+//     replay, then snaps the rest off as the cinematic grade takes over.
 const DANGER_HEARTBEAT_HZ = 0.8;
 const DANGER_HEARTBEAT_AMP = 0.15;
 const DANGER_HEARTBEAT_GATE = 0.4;
 const DANGER_TINT_RGB_CALM: [number, number, number] = [255, 100, 60];
 const DANGER_TINT_RGB_WASTED: [number, number, number] = [255, 60, 50];
-const DANGER_WASTED_COLOR_END_SEC = 1.0;
-const DANGER_WASTED_FADE_START_SEC = 1.0;
+const DANGER_WASTED_COLOR_START_SEC = -2.0;
+const DANGER_WASTED_COLOR_END_SEC = 0.0;
+const DANGER_WASTED_FADE_KNEE_SEC = 2.0;
+const DANGER_WASTED_FADE_KNEE_PCT = 0.65;
+const DANGER_WASTED_FADE_END_SEC = 2.43;
 
 type DangerTintParams = { rgb: string; visibility: number };
 
@@ -83,26 +88,52 @@ function computeDangerTint(args: {
   waterDanger: number;
   frameAbs: number;
   fps: number;
-  wastedT: number | null; // seconds since WASTED start, or null in regular phase
-  wastedTextAppearSec: number;
+  // Seconds relative to wastedStartFrame. Negative during the pre-WASTED
+  // window of the regular phase. null when the run has no death event,
+  // in which case the calm color stays and there's no fade-out.
+  wastedRelativeT: number | null;
 }): DangerTintParams {
-  const { waterDanger, frameAbs, fps, wastedT, wastedTextAppearSec } = args;
-  const inWasted = wastedT != null;
-  const wT = wastedT ?? 0;
+  const { waterDanger, frameAbs, fps, wastedRelativeT } = args;
 
-  const colorT = inWasted ? clamp01(wT / DANGER_WASTED_COLOR_END_SEC) : 0;
-  const r = DANGER_TINT_RGB_CALM[0]; // both calm and wasted reds use 255
-  const g = Math.round(DANGER_TINT_RGB_CALM[1] + (DANGER_TINT_RGB_WASTED[1] - DANGER_TINT_RGB_CALM[1]) * colorT);
-  const b = Math.round(DANGER_TINT_RGB_CALM[2] + (DANGER_TINT_RGB_WASTED[2] - DANGER_TINT_RGB_CALM[2]) * colorT);
-  const rgb = `${r}, ${g}, ${b}`;
+  // Color shift: orange-red → pure red over [START, END] in wasted-time.
+  let colorT = 0;
+  if (wastedRelativeT != null) {
+    colorT = clamp01(
+      (wastedRelativeT - DANGER_WASTED_COLOR_START_SEC) /
+        (DANGER_WASTED_COLOR_END_SEC - DANGER_WASTED_COLOR_START_SEC),
+    );
+  }
+  const g = Math.round(
+    DANGER_TINT_RGB_CALM[1] + (DANGER_TINT_RGB_WASTED[1] - DANGER_TINT_RGB_CALM[1]) * colorT,
+  );
+  const b = Math.round(
+    DANGER_TINT_RGB_CALM[2] + (DANGER_TINT_RGB_WASTED[2] - DANGER_TINT_RGB_CALM[2]) * colorT,
+  );
+  const rgb = `${DANGER_TINT_RGB_CALM[0]}, ${g}, ${b}`;
 
-  const fadeWindow = Math.max(0.01, wastedTextAppearSec - DANGER_WASTED_FADE_START_SEC);
-  const fadeT = inWasted ? clamp01((wT - DANGER_WASTED_FADE_START_SEC) / fadeWindow) : 0;
-  const fadeVisibility = 1 - fadeT;
+  // Two-segment piecewise-linear fade-out. Visibility is 1 below 0s,
+  // reaches (1 − KNEE_PCT) at KNEE_SEC, then 0 at END_SEC.
+  let fadeAmount = 0;
+  if (wastedRelativeT != null && wastedRelativeT > 0) {
+    if (wastedRelativeT <= DANGER_WASTED_FADE_KNEE_SEC) {
+      fadeAmount =
+        (wastedRelativeT / DANGER_WASTED_FADE_KNEE_SEC) * DANGER_WASTED_FADE_KNEE_PCT;
+    } else if (wastedRelativeT < DANGER_WASTED_FADE_END_SEC) {
+      fadeAmount =
+        DANGER_WASTED_FADE_KNEE_PCT +
+        ((wastedRelativeT - DANGER_WASTED_FADE_KNEE_SEC) /
+          (DANGER_WASTED_FADE_END_SEC - DANGER_WASTED_FADE_KNEE_SEC)) *
+          (1 - DANGER_WASTED_FADE_KNEE_PCT);
+    } else {
+      fadeAmount = 1;
+    }
+  }
+  const fadeVisibility = 1 - fadeAmount;
 
   const heartbeatGate = clamp01((waterDanger - DANGER_HEARTBEAT_GATE) / (1 - DANGER_HEARTBEAT_GATE));
   const heartbeat =
-    1 + DANGER_HEARTBEAT_AMP * heartbeatGate * Math.sin(2 * Math.PI * DANGER_HEARTBEAT_HZ * (frameAbs / fps));
+    1 +
+    DANGER_HEARTBEAT_AMP * heartbeatGate * Math.sin(2 * Math.PI * DANGER_HEARTBEAT_HZ * (frameAbs / fps));
 
   return { rgb, visibility: heartbeat * fadeVisibility };
 }
@@ -304,8 +335,8 @@ const RegularPhase: React.FC<{
     waterDanger,
     frameAbs: frame,
     fps,
-    wastedT: null,
-    wastedTextAppearSec: 0,
+    wastedRelativeT:
+      wastedStartFrame != null ? (frame - wastedStartFrame) / fps : null,
   });
 
   let preTellGrade: string | null = null;
@@ -383,8 +414,7 @@ const WastedPhase: React.FC<{
     waterDanger,
     frameAbs: absFrame,
     fps,
-    wastedT: frame / fps,
-    wastedTextAppearSec: effectProps.textAppearSec,
+    wastedRelativeT: frame / fps,
   });
 
   const slowMoBackdrop = (

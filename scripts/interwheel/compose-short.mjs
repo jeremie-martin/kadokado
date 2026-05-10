@@ -69,7 +69,7 @@ const CINEMATIC_WASTED_PROPS = {
   // the existing desat-then-sepia path that WASTED already does, just more
   // strongly. Lower endSaturation → near-grayscale before tint; higher
   // tintStrength → richer warm sepia overlay.
-  endSaturation: 0.20,
+  endSaturation: 0.10,
   endBrightness: 0.62,
   endContrast: 1.12,
   tintStrength: 0.32,
