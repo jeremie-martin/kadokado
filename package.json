@@ -19,6 +19,7 @@
     "capture:interwheel": "node scripts/capture-interwheel.mjs",
     "video:interwheel": "node scripts/interwheel/make-video.mjs",
     "compose:interwheel": "node scripts/interwheel/compose-short.mjs",
+    "compose:wasted": "node scripts/interwheel/compose-wasted.mjs",
     "dashboard:interwheel": "node scripts/interwheel/dashboard.mjs"
   },
   "dependencies": {

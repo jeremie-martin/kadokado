@@ -25,3 +25,9 @@ remotion/node_modules/
 # compose-short.mjs. Ignore everything except the .gitkeep placeholder.
 remotion/public/latest/*
 !remotion/public/latest/.gitkeep
+# User-supplied source video for compose-wasted.mjs experiments. Big and
+# per-machine — wasted.png/wasted.mp3 are tracked as canonical assets, the
+# base video is whatever the user drops in.
+/base.mp4
+# Claude Code internal state (scheduled tasks, etc).
+.claude/
