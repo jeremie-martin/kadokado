@@ -36,8 +36,24 @@ export async function loadSidecar(src: string): Promise<SidecarRow[]> {
     if (!r.ok) throw new Error(`Failed to load sidecar ${src}: ${r.status}`);
     return r.text();
   });
-  return text
+  const rows = text
     .split('\n')
     .filter((line) => line.length > 0)
     .map((line) => JSON.parse(line) as SidecarRow);
+
+  // Some captures start at non-zero score/heightM for legacy reasons. Anchor
+  // the HUD readout at 0/0 by subtracting the first row's values from every
+  // row. Already-zeroed runs are a no-op. Other fields (maxHeight, waterY,
+  // blob coords) are coordinate-space and stay raw.
+  if (rows.length > 0) {
+    const scoreOffset = rows[0].score ?? 0;
+    const heightOffset = rows[0].heightM ?? 0;
+    if (scoreOffset !== 0 || heightOffset !== 0) {
+      for (const row of rows) {
+        row.score -= scoreOffset;
+        row.heightM -= heightOffset;
+      }
+    }
+  }
+  return rows;
 }

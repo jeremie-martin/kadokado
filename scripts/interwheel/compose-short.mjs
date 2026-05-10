@@ -98,11 +98,13 @@ function parseArgs(argv) {
     noMusic: false,
     wastedTextFile: DEFAULT_WASTED_TEXT,
     wastedAudioFile: DEFAULT_WASTED_AUDIO,
+    studio: false,
     help: false,
   };
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
     else if (raw === '--no-music') args.noMusic = true;
+    else if (raw === '--studio') args.studio = true;
     else if (raw.startsWith('--seed=')) args.seed = Number(raw.slice('--seed='.length));
     else if (raw.startsWith('--preset=')) args.preset = raw.slice('--preset='.length);
     else if (raw.startsWith('--in=')) args.inMp4 = raw.slice('--in='.length);
@@ -134,6 +136,7 @@ USAGE:
   npm run compose:interwheel -- --seed=4200 --preset=x4
   npm run compose:interwheel -- --seed=4200 --music-mode=start
   npm run compose:interwheel -- --seed=4200 --no-music
+  npm run compose:interwheel -- --seed=4200 --studio
   npm run compose:interwheel -- --in=PATH --in-data=PATH
 
 OPTIONS:
@@ -147,6 +150,9 @@ OPTIONS:
   --music-mode=start|end   Where in the music to start. Default 'end' — anchored to the music tail.
   --music-tail-offset=N    In end-mode, leave N seconds of music tail unused. Default ${DEFAULT_MUSIC_TAIL_OFFSET_SEC}.
   --no-music               Do not add background music.
+  --studio                 Stage assets into remotion/public/latest/ and exit
+                           (skip render). Use with 'cd remotion && npm run studio'
+                           for a live-reload preview loop.
   --wasted-text=PATH       WASTED text PNG. Default ./${DEFAULT_WASTED_TEXT}.
   --wasted-audio=PATH      WASTED audio sting. Default ./${DEFAULT_WASTED_AUDIO}.
 
@@ -400,6 +406,16 @@ async function main() {
     } else {
       console.warn(`Music not found at ${musicAbs} — rendering without music.`);
     }
+  }
+
+  if (args.studio) {
+    console.log(`\nFiles staged in ${path.relative(repoRoot, linkDir)}/. Launch Remotion Studio with:`);
+    console.log(`  cd remotion && npm run studio`);
+    console.log(`Then open the InterwheelShort composition. Useful inputProps overrides:`);
+    console.log(`  wastedStartFrame: ${wastedStartFrame ?? 'null'}`);
+    console.log(`  musicStartSec:    ${musicStartSec.toFixed(3)}`);
+    console.log(`(defaultProps already point at latest/game.mp4 / game.ndjson / wasted.* / music.*)`);
+    return;
   }
 
   // Per-render folder + archive copy.
