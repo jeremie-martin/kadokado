@@ -99,12 +99,14 @@ function parseArgs(argv) {
     wastedTextFile: DEFAULT_WASTED_TEXT,
     wastedAudioFile: DEFAULT_WASTED_AUDIO,
     studio: false,
+    scoreLab: false,
     help: false,
   };
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
     else if (raw === '--no-music') args.noMusic = true;
     else if (raw === '--studio') args.studio = true;
+    else if (raw === '--score-lab') args.scoreLab = true;
     else if (raw.startsWith('--seed=')) args.seed = Number(raw.slice('--seed='.length));
     else if (raw.startsWith('--preset=')) args.preset = raw.slice('--preset='.length);
     else if (raw.startsWith('--in=')) args.inMp4 = raw.slice('--in='.length);
@@ -153,6 +155,9 @@ OPTIONS:
   --studio                 Stage assets into remotion/public/latest/ and exit
                            (skip render). Use with 'cd remotion && npm run studio'
                            for a live-reload preview loop.
+  --score-lab              Render the temporary five-variant score-pulse lab
+                           in the bottom band's empty column. For comparing
+                           pulse treatments side-by-side. Off by default.
   --wasted-text=PATH       WASTED text PNG. Default ./${DEFAULT_WASTED_TEXT}.
   --wasted-audio=PATH      WASTED audio sting. Default ./${DEFAULT_WASTED_AUDIO}.
 
@@ -445,6 +450,7 @@ async function main() {
     wastedTextSrc: 'latest/wasted.png',
     wastedAudioSrc: 'latest/wasted.mp3',
     wastedEffectProps: wastedProps,
+    showScoreLab: args.scoreLab,
   };
   await spawnLogged('npx', [
     'remotion', 'render',

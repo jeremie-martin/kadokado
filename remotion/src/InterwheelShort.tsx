@@ -14,6 +14,7 @@ import {
 import { ScoreLine } from './components/ScoreLine';
 import { HeightLine } from './components/HeightLine';
 import { WaterGauge } from './components/WaterGauge';
+import { ScoreVariantsLab } from './components/ScoreVariantsLab';
 import { loadSidecar, SidecarRow } from './sidecar';
 import {
   WastedEffectKnobs,
@@ -71,6 +72,11 @@ export type InterwheelShortProps = {
   // the WASTED phase derives it from wastedStartFrame so the slow-mo replay
   // begins exactly where the regular gameplay leaves off.
   wastedEffectProps: WastedEffectKnobs;
+
+  // TEMP iteration scaffold: render five score-pulse candidate treatments
+  // in the bottom band's empty column so all variants are visible in a
+  // single render. Default off — only set by --score-lab on the composer.
+  showScoreLab?: boolean;
 };
 
 function resolveUrl(src: string): string {
@@ -97,7 +103,11 @@ const LayoutFrame: React.FC<{
   // box only (HUD bands and backdrop unaffected) during the regular phase's
   // lead-in window. Ignored when `wasted` is set — WASTED's grade takes over.
   preTellGrade?: string | null;
-}> = ({ row, backdrop, game, wasted, textNode, preTellGrade }) => {
+  // TEMP iteration scaffold (see ScoreVariantsLab). Rendered in the empty
+  // 1fr column of the bottom band, alongside WaterGauge. null/undefined
+  // hides it entirely — bottom band stays as it shipped.
+  scoreLabNode?: React.ReactNode;
+}> = ({ row, backdrop, game, wasted, textNode, preTellGrade, scoreLabNode }) => {
   const drain = wasted?.drainEased ?? 0;
   // Soft grade applied to the HUD bands and the blurred backdrop during
   // WASTED. Peak (drain=1) lands at saturate(0.55) brightness(0.82) — strong
@@ -186,6 +196,7 @@ const LayoutFrame: React.FC<{
         }}
       >
         <WaterGauge waterY={row?.waterY ?? 0} blobY={row?.blob.y ?? 0} />
+        {scoreLabNode}
       </div>
 
       {textNode}
@@ -211,7 +222,8 @@ const RegularPhase: React.FC<{
   videoUrl: string;
   sidecar: SidecarRow[] | null;
   wastedStartFrame: number | null;
-}> = ({ videoUrl, sidecar, wastedStartFrame }) => {
+  showScoreLab: boolean;
+}> = ({ videoUrl, sidecar, wastedStartFrame, showScoreLab }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const row = sidecar ? sidecar[Math.min(frame, sidecar.length - 1)] ?? null : null;
@@ -238,6 +250,11 @@ const RegularPhase: React.FC<{
       backdrop={<OffthreadVideo src={videoUrl} muted style={blurredBackdropStyle} />}
       game={<OffthreadVideo src={videoUrl} muted style={centerGameStyle} />}
       preTellGrade={preTellGrade}
+      scoreLabNode={
+        showScoreLab ? (
+          <ScoreVariantsLab sidecar={sidecar} frame={frame} fps={fps} />
+        ) : null
+      }
     />
   );
 };
@@ -263,7 +280,16 @@ const WastedPhase: React.FC<{
   sidecar: SidecarRow[] | null;
   wastedStartFrame: number;
   effectProps: WastedEffectKnobs;
-}> = ({ videoUrl, textUrl, audioUrl, sidecar, wastedStartFrame, effectProps }) => {
+  showScoreLab: boolean;
+}> = ({
+  videoUrl,
+  textUrl,
+  audioUrl,
+  sidecar,
+  wastedStartFrame,
+  effectProps,
+  showScoreLab,
+}) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const timeline = useWastedTimeline(
@@ -315,6 +341,11 @@ const WastedPhase: React.FC<{
             />
           ) : null
         }
+        scoreLabNode={
+          showScoreLab ? (
+            <ScoreVariantsLab sidecar={sidecar} frame={absFrame} fps={fps} />
+          ) : null
+        }
       />
 
       <Audio src={audioUrl} startFrom={audioStartFromFrames} />
@@ -331,6 +362,7 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
   wastedTextSrc,
   wastedAudioSrc,
   wastedEffectProps,
+  showScoreLab = false,
 }) => {
   const [sidecar, setSidecar] = useState<SidecarRow[] | null>(null);
   const [handle] = useState(() => delayRender('Loading sidecar'));
@@ -375,6 +407,7 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
           videoUrl={videoUrl}
           sidecar={sidecar}
           wastedStartFrame={wastedStartFrame}
+          showScoreLab={showScoreLab}
         />
       </Sequence>
 
@@ -387,6 +420,7 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
             sidecar={sidecar}
             wastedStartFrame={wastedStartFrame}
             effectProps={wastedEffectProps}
+            showScoreLab={showScoreLab}
           />
         </Sequence>
       )}
