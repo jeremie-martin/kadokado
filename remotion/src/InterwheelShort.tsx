@@ -18,6 +18,7 @@ import {
   useScorePulseState,
   useWaterDanger,
   useHighScoreState,
+  HighScoreState,
   clamp01,
 } from './scoreSignals';
 import {
@@ -198,20 +199,14 @@ const LayoutFrame: React.FC<{
   warmth: number;
   kickEnv: number;
   previousHighScore: number | null | undefined;
-  highScoreOpacity: number;
-  highScoreSettleT: number;
-  highScoreApproach: number;
+  highScore: HighScoreState;
   // Water danger ∈ [0, 1], LP-filtered (see useWaterDanger). Drives a red
   // tint overlay on both top and bottom bands — replaces the numeric
   // WaterGauge readout. 0 = calm, 1 = blob touching/below water.
   waterDanger: number;
-  // RGB string ("r, g, b") for the danger tint. Phase-dependent — see
-  // computeDangerTint. Caller composes; LayoutFrame just inserts.
-  dangerTintRGB: string;
-  // Multiplier on the tint alpha (heartbeat × fade). 1 = full tint, 0 =
-  // hidden. Caller computes; LayoutFrame multiplies into both band and
-  // gameplay alphas.
-  dangerVisibility: number;
+  // Phase-dependent danger tint composition (rgb string + heartbeat×fade
+  // visibility). See computeDangerTint.
+  dangerTint: DangerTintParams;
 }> = ({
   row,
   backdrop,
@@ -222,13 +217,11 @@ const LayoutFrame: React.FC<{
   warmth,
   kickEnv,
   previousHighScore,
-  highScoreOpacity,
-  highScoreSettleT,
-  highScoreApproach,
+  highScore,
   waterDanger,
-  dangerTintRGB,
-  dangerVisibility,
+  dangerTint,
 }) => {
+  const { highScoreOpacity, settleT: highScoreSettleT, approachLevel: highScoreApproach } = highScore;
   const drain = wasted?.drainEased ?? 0;
   // Soft grade applied to the HUD bands and the blurred backdrop during
   // WASTED. Peak (drain=1) lands at saturate(0.55) brightness(0.82) — strong
@@ -242,6 +235,16 @@ const LayoutFrame: React.FC<{
   // during WASTED — gives the bands a subtle additional darken without
   // touching the HUD text on top.
   const backdropExtraDimAlpha = drain * 0.18;
+
+  const hasHighScore = previousHighScore != null && previousHighScore > 0;
+  // Compose `rgba(r,g,b, danger * baseAlpha * visibility)` for the danger
+  // tint, or undefined when there's nothing to show.
+  const tintRgba = (baseAlpha: number): string | undefined =>
+    waterDanger > 0 && dangerTint.visibility > 0
+      ? `rgba(${dangerTint.rgb}, ${(waterDanger * baseAlpha * dangerTint.visibility).toFixed(3)})`
+      : undefined;
+  const bandTintBg = tintRgba(0.55);
+  const gameTintBg = tintRgba(0.25);
 
   return (
     <AbsoluteFill>
@@ -265,88 +268,76 @@ const LayoutFrame: React.FC<{
           width: SHORT_WIDTH,
           height: TOP_BAND_HEIGHT,
           filter: supportFilter,
-          backgroundColor: waterDanger > 0 && dangerVisibility > 0
-            ? `rgba(${dangerTintRGB}, ${(waterDanger * 0.55 * dangerVisibility).toFixed(3)})`
-            : undefined,
+          backgroundColor: bandTintBg,
         }}
       >
         {/*
          * Pre-crossing layout — score over high, both left-aligned in a
-         * 2-row grid. Fades out as transitionT (= 1 − highScoreOpacity)
-         * goes 0 → 1 over the 0.4 s window after the crossing fires.
+         * 2-row grid. Hidden in one frame at the crossing (highScoreOpacity
+         * is a hard step 1→0); the synthetic kick on the score masks the
+         * swap. See useHighScoreState (Option B / hard cut).
          */}
-        <div
-          style={{
-            position: 'absolute',
-            inset: 0,
-            display: 'grid',
-            gridTemplateColumns: 'auto auto',
-            alignContent: 'center',
-            justifyContent: 'start',
-            columnGap: 40,
-            rowGap: 12,
-            padding: '0 44px',
-            opacity: highScoreOpacity,
-          }}
-        >
-          <ScoreLine
-            score={row?.score ?? 0}
-            warmth={warmth}
-            kickEnv={kickEnv}
-            label="Score"
-          />
-          {previousHighScore != null && previousHighScore > 0 && (
-            <HighScoreLine
-              highScore={previousHighScore}
-              opacity={1}
-              approachLevel={highScoreApproach}
+        {highScoreOpacity > 0 && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'grid',
+              gridTemplateColumns: 'auto auto',
+              alignContent: 'center',
+              justifyContent: 'start',
+              columnGap: 40,
+              rowGap: 12,
+              padding: '0 44px',
+            }}
+          >
+            <ScoreLine
+              score={row?.score ?? 0}
+              warmth={warmth}
+              kickEnv={kickEnv}
+              label="Score"
             />
-          )}
-        </div>
+            {hasHighScore && (
+              <HighScoreLine
+                highScore={previousHighScore!}
+                approachLevel={highScoreApproach}
+              />
+            )}
+          </div>
+        )}
 
         {/*
          * Post-crossing layout — "NEW BEST" centered above the score, both
-         * horizontally and vertically centered in the top band. Fades in
-         * synchronously with the pre-layout fade-out. ScoreLine's centered
-         * prop redirects its kick transform-origin to center-center so the
-         * scale grows symmetrically.
+         * horizontally and vertically centered in the top band. Activates
+         * in the same frame the pre-layout disappears. The whole stack
+         * scales 1.15 → 1.00 over HIGH_SCORE_SETTLE_DURATION_SEC (0.5s);
+         * combined with the synthetic kick on the value, the score bursts
+         * in larger than its final size and settles. ScoreLine's centered
+         * prop re-anchors its kick transform-origin so its scale grows
+         * symmetrically inside the centered column.
          */}
-        {previousHighScore != null && previousHighScore > 0 && highScoreOpacity < 1 && (
+        {hasHighScore && highScoreOpacity < 1 && (
           <div
             style={{
               position: 'absolute',
               inset: 0,
               display: 'flex',
+              flexDirection: 'column',
               alignItems: 'center',
               justifyContent: 'center',
+              rowGap: 16,
               padding: '0 44px',
-              opacity: 1 - highScoreOpacity,
+              transform: `scale(${(1.15 - 0.15 * highScoreSettleT).toFixed(4)})`,
+              transformOrigin: 'center center',
             }}
           >
-            {/*
-             * Inner wrapper handles the column stacking + the appear-scale.
-             * scale = 1.10 → 1.00 across the 0.25s transition; combined
-             * with the synthetic kick on the value, the score bursts in
-             * larger than its final size and settles as it fades up.
-             */}
-            <div
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                alignItems: 'center',
-                rowGap: 16,
-                transform: `scale(${(1.15 - 0.15 * highScoreSettleT).toFixed(4)})`,
-                transformOrigin: 'center center',
-              }}
-            >
-              <ScoreLine
-                score={row?.score ?? 0}
-                warmth={warmth}
-                kickEnv={kickEnv}
-                label="New Best"
-                centered
-              />
-            </div>
+            <ScoreLine
+              score={row?.score ?? 0}
+              warmth={warmth}
+              kickEnv={kickEnv}
+              label="New Best"
+              centered
+            />
           </div>
         )}
       </div>
@@ -363,10 +354,10 @@ const LayoutFrame: React.FC<{
       >
         <AbsoluteFill style={{ filter: wasted?.grade.filter ?? preTellGrade ?? undefined }}>
           {game}
-          {waterDanger > 0 && dangerVisibility > 0 && (
+          {gameTintBg && (
             <AbsoluteFill
               style={{
-                backgroundColor: `rgba(${dangerTintRGB}, ${(waterDanger * 0.25 * dangerVisibility).toFixed(3)})`,
+                backgroundColor: gameTintBg,
                 pointerEvents: 'none',
               }}
             />
@@ -391,9 +382,7 @@ const LayoutFrame: React.FC<{
           width: SHORT_WIDTH,
           height: BOTTOM_BAND_HEIGHT,
           filter: supportFilter,
-          backgroundColor: waterDanger > 0 && dangerVisibility > 0
-            ? `rgba(${dangerTintRGB}, ${(waterDanger * 0.55 * dangerVisibility).toFixed(3)})`
-            : undefined,
+          backgroundColor: bandTintBg,
         }}
       />
 
@@ -461,12 +450,9 @@ const RegularPhase: React.FC<{
       warmth={pulse.warmth}
       kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
       previousHighScore={previousHighScore}
-      highScoreOpacity={highScore.highScoreOpacity}
-      highScoreSettleT={highScore.settleT}
-      highScoreApproach={highScore.approachLevel}
+      highScore={highScore}
       waterDanger={waterDanger}
-      dangerTintRGB={dangerTint.rgb}
-      dangerVisibility={dangerTint.visibility}
+      dangerTint={dangerTint}
     />
   );
 };
@@ -565,12 +551,9 @@ const WastedPhase: React.FC<{
         warmth={pulse.warmth}
         kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
         previousHighScore={previousHighScore}
-        highScoreOpacity={highScore.highScoreOpacity}
-        highScoreSettleT={highScore.settleT}
-        highScoreApproach={highScore.approachLevel}
+        highScore={highScore}
         waterDanger={waterDanger}
-        dangerTintRGB={dangerTint.rgb}
-        dangerVisibility={dangerTint.visibility}
+        dangerTint={dangerTint}
       />
 
       <Audio src={audioUrl} startFrom={audioStartFromFrames} />

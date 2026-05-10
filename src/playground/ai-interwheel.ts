@@ -420,8 +420,10 @@ function applyScenePreset(name: keyof typeof SCENE_PRESETS): void {
   scenePastilleSpawnNatural = preset.pastilleSpawn.natural;
   sceneRampSpeed = preset.rampSpeed;
   syncSceneControls();
-  if (preset.focus !== undefined) applyPolicy(policyFromFocus(preset.focus, policy));
-  if (preset.wall !== undefined) applyPolicy({ ...policy, wall: preset.wall });
+  if (preset.focus !== undefined || preset.wall !== undefined) {
+    const base = preset.wall !== undefined ? { ...policy, wall: preset.wall } : policy;
+    applyPolicy(preset.focus !== undefined ? policyFromFocus(preset.focus, base) : base);
+  }
   if (preset.widthMin !== undefined) applyOverlayParam('widthMin', preset.widthMin);
   if (preset.alphaMin !== undefined) applyOverlayParam('alphaMin', preset.alphaMin);
   if (preset.alphaGamma !== undefined) applyOverlayParam('alphaGamma', preset.alphaGamma);

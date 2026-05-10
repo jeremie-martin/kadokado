@@ -65,10 +65,8 @@ const CINEMATIC_WASTED_PROPS = {
   drainSec: 1.2,
   textAppearSec: 1.43,
   totalSec: 6.76,
-  // Pushed toward fuller "old film" look on the user's request — leverage
-  // the existing desat-then-sepia path that WASTED already does, just more
-  // strongly. Lower endSaturation → near-grayscale before tint; higher
-  // tintStrength → richer warm sepia overlay.
+  // "Old film" target: deeper desaturation toward grayscale plus a stronger
+  // warm sepia overlay than the standalone cinematic preset.
   endSaturation: 0.10,
   endBrightness: 0.62,
   endContrast: 1.12,

@@ -85,6 +85,10 @@ export function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+function clampIdx(frame: number, length: number): number {
+  return Math.min(Math.max(0, frame), Math.max(0, length - 1));
+}
+
 export type ScorePulseState = {
   warmth: number;   // normalized [0, 1]
   kickEnv: number;  // [0, 1]
@@ -104,7 +108,7 @@ export function useScorePulseState(
   if (!signals || !sidecar || sidecar.length === 0) {
     return { warmth: 0, kickEnv: 0 };
   }
-  const idx = Math.min(Math.max(0, frame), sidecar.length - 1);
+  const idx = clampIdx(frame, sidecar.length);
   return {
     warmth: clamp01(signals.warmth[idx] / WARMTH_NORM),
     kickEnv: pulseDecay(signals.kickElapsed[idx], KICK_DECAY_SEC),
@@ -141,8 +145,7 @@ export function useWaterDanger(
     [sidecar, fps],
   );
   if (!arr || !sidecar || sidecar.length === 0) return 0;
-  const idx = Math.min(Math.max(0, frame), sidecar.length - 1);
-  return clamp01(arr[idx]);
+  return clamp01(arr[clampIdx(frame, sidecar.length)]);
 }
 
 // High-score crossing — when the current score first equals/exceeds the
@@ -182,11 +185,10 @@ function findCrossingFrame(
 }
 
 export type HighScoreState = {
-  highScoreOpacity: number;       // hard step: 1 pre-crossing, 0 at/after crossing
-  settleT: number;                // [0, 1]; 0 at crossing, lerps to 1 over SETTLE_DURATION
-  scoreLabelIsNewBest: boolean;   // false pre-crossing, true at/after the crossing frame
-  crossKickEnv: number;           // [0, 1]; synthetic kick fired on the score at the crossing
-  approachLevel: number;          // [0, 1]; ramps up as score nears highScore, 0 post-crossing
+  highScoreOpacity: number;   // hard step: 1 pre-crossing, 0 at/after crossing
+  settleT: number;            // [0, 1]; 0 at crossing, lerps to 1 over SETTLE_DURATION
+  crossKickEnv: number;       // [0, 1]; synthetic kick fired on the score at the crossing
+  approachLevel: number;      // [0, 1]; ramps up as score nears highScore, 0 post-crossing
 };
 
 export function useHighScoreState(
@@ -200,47 +202,22 @@ export function useHighScoreState(
     return findCrossingFrame(sidecar, previousHighScore);
   }, [sidecar, previousHighScore]);
 
-  // Approach: only meaningful pre-crossing. Linear from 0 (gap == DELTA) to
-  // 1 (gap == 0) using an absolute point margin.
-  const computeApproach = (idx: number): number => {
-    if (!sidecar || previousHighScore == null || previousHighScore <= 0) return 0;
-    const score = sidecar[idx]?.score ?? 0;
-    const gap = previousHighScore - score;
-    if (gap >= APPROACH_START_DELTA) return 0;
-    if (gap <= 0) return 1;
-    return 1 - gap / APPROACH_START_DELTA;
-  };
+  const elapsed = crossingFrame == null ? -1 : (frame - crossingFrame) / fps;
+  const post = elapsed >= 0;
 
-  if (crossingFrame == null) {
-    const idx = sidecar
-      ? Math.min(Math.max(0, frame), sidecar.length - 1)
-      : 0;
-    return {
-      highScoreOpacity: 1,
-      settleT: 0,
-      scoreLabelIsNewBest: false,
-      crossKickEnv: 0,
-      approachLevel: computeApproach(idx),
-    };
+  // Approach (pre-crossing only): linear ramp from 0 (gap ≥ DELTA) to 1
+  // (gap ≤ 0) using an absolute point margin.
+  let approachLevel = 0;
+  if (!post && sidecar && previousHighScore != null && previousHighScore > 0) {
+    const idx = clampIdx(frame, sidecar.length);
+    const gap = previousHighScore - (sidecar[idx]?.score ?? 0);
+    approachLevel = gap >= APPROACH_START_DELTA ? 0 : gap <= 0 ? 1 : 1 - gap / APPROACH_START_DELTA;
   }
-  const elapsed = (frame - crossingFrame) / fps;
-  if (elapsed < 0) {
-    const idx = Math.min(Math.max(0, frame), (sidecar?.length ?? 1) - 1);
-    return {
-      highScoreOpacity: 1,
-      settleT: 0,
-      scoreLabelIsNewBest: false,
-      crossKickEnv: 0,
-      approachLevel: computeApproach(idx),
-    };
-  }
-  // Post-crossing: hard cut on visibility, smooth on settle. The kick's
-  // peak at elapsed=0 masks the layout swap.
+
   return {
-    highScoreOpacity: 0,
-    settleT: clamp01(elapsed / HIGH_SCORE_SETTLE_DURATION_SEC),
-    scoreLabelIsNewBest: true,
-    crossKickEnv: pulseDecay(elapsed, HIGH_SCORE_KICK_DECAY_SEC),
-    approachLevel: 0,
+    highScoreOpacity: post ? 0 : 1,
+    settleT: post ? clamp01(elapsed / HIGH_SCORE_SETTLE_DURATION_SEC) : 0,
+    crossKickEnv: post ? pulseDecay(elapsed, HIGH_SCORE_KICK_DECAY_SEC) : 0,
+    approachLevel,
   };
 }

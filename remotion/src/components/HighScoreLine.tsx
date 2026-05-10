@@ -1,17 +1,13 @@
 // HUD readout for the previous run's high score — stacked under the live
 // score on the top band. Renders muted by default ("reference info, not
-// the actor"), gains a white glow + brighter alpha as the live score
-// approaches the threshold, then fades out via `opacity` once the
-// crossing fires (see useHighScoreState in scoreSignals).
+// the actor"), gains a warm glow + brighter alpha as the live score
+// approaches the threshold (see useHighScoreState in scoreSignals).
 //
 // Same baseline-size compensation as ScoreLine: value font-size is bumped
 // a few px above the label to offset the bold-weight optical compression.
-//
-// Renders even at opacity 0 (returns transparent spans rather than null)
-// so the grid row keeps its space — prevents the score from jolting back
-// to vertical center the moment HIGH finishes fading after the crossing.
 
 import { Fragment } from 'react';
+import { clamp01 } from '../scoreSignals';
 
 const FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 const LABEL_FONT_SIZE = 80;
@@ -43,13 +39,12 @@ const baseValueStyle: React.CSSProperties = {
 
 export const HighScoreLine: React.FC<{
   highScore: number;
-  opacity?: number;
   // [0, 1] — ramps up as the live score approaches the high. Drives the
-  // alpha, white glow, and a tiny scale bump on the readout. 0 below the
-  // approach threshold, 1 at the crossing, 0 again post-crossing.
+  // alpha, warm glow, and a tiny scale bump on the readout. 0 below the
+  // approach threshold, 1 at the crossing.
   approachLevel?: number;
-}> = ({ highScore, opacity = 1, approachLevel = 0 }) => {
-  const a = Math.max(0, Math.min(1, approachLevel));
+}> = ({ highScore, approachLevel = 0 }) => {
+  const a = clamp01(approachLevel);
   // Alpha lerps 0.45 (muted reference) → 1.00 (full presence at threshold).
   const alpha = 0.45 + 0.55 * a;
   // Color lerp white(255,255,255) → soft gold(255,220,150) at peak.
@@ -68,7 +63,7 @@ export const HighScoreLine: React.FC<{
 
   return (
     <Fragment>
-      <span style={{ ...labelStyle, color: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`, opacity }}>
+      <span style={{ ...labelStyle, color: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})` }}>
         High
       </span>
       <span
@@ -77,7 +72,6 @@ export const HighScoreLine: React.FC<{
           color: `rgba(${r}, ${g}, ${b}, ${Math.min(1, alpha + 0.1).toFixed(3)})`,
           filter,
           transform: `scale(${scale.toFixed(4)})`,
-          opacity,
         }}
       >
         {highScore.toLocaleString('en-US')}
