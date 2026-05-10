@@ -47,24 +47,31 @@ const DEFAULT_WASTED_AUDIO = 'wasted.mp3';
 // of bleeding into the file's natural fade-out.
 const DEFAULT_MUSIC_TAIL_OFFSET_SEC = 8;
 
-// Cinematic preset for WASTED, mirrored from compose-wasted.mjs (which is
-// the canonical iteration tool for the effect itself). Keep in sync. This
-// is the recipe the user landed on as "very, very, very, very good".
+// Cinematic preset for WASTED, mirrored from compose-wasted.mjs. Keep in
+// sync. The values below are a full merge of WASTED_EFFECT_DEFAULTS + the
+// `cinematic` overrides + per-iteration tweaks, so every knob is explicit
+// here — there's no implicit fallback to component defaults across the wire.
 //
-// The values below are a full merge of WASTED_EFFECT_DEFAULTS + the
-// `cinematic` preset, so every knob is explicit here — there's no implicit
-// fallback to component defaults across the wire.
+// Tweaks (relative to compose-wasted's `cinematic` preset):
+//   * textAppearSec 2.43 → 1.43, totalSec 7.76 → 6.76 — pull the WASTED
+//     impact 1s sooner and trim 1s of slow-mo build-up. InterwheelShort
+//     offsets the audio with startFrom so the chord still lands on the text.
+//   * drainSec 1.8 → 1.2 — drain finishes before the (earlier) impact.
+//   * endSaturation/endBrightness/endContrast/tintStrength/vignetteIntensity
+//     pulled back from the cinematic peak so the central gameplay reads as
+//     "drama-graded but still legible". The HUD bands are graded separately
+//     (see LayoutFrame in InterwheelShort.tsx).
 const CINEMATIC_WASTED_PROPS = {
-  drainSec: 1.8,
-  textAppearSec: 2.43,
-  totalSec: 7.76,
-  endSaturation: 0.18,
-  endBrightness: 0.50,
-  endContrast: 1.22,
-  tintStrength: 0.30,
+  drainSec: 1.2,
+  textAppearSec: 1.43,
+  totalSec: 6.76,
+  endSaturation: 0.32,
+  endBrightness: 0.62,
+  endContrast: 1.12,
+  tintStrength: 0.22,
   tintColor: '#3a2410',
-  vignetteIntensity: 0.94,
-  vignetteInnerRadius: 0.22,
+  vignetteIntensity: 0.78,
+  vignetteInnerRadius: 0.26,
   basePlaybackRate: 0.10,
   baseStartFromSec: 0,            // overwritten inside InterwheelShort
   textOvershootScale: 1.24,
