@@ -14,8 +14,8 @@ import {
 import { ScoreLine } from './components/ScoreLine';
 import { HeightLine } from './components/HeightLine';
 import { WaterGauge } from './components/WaterGauge';
-import { ScoreVariantsLab } from './components/ScoreVariantsLab';
 import { loadSidecar, SidecarRow } from './sidecar';
+import { useScorePulseState } from './scoreSignals';
 import {
   WastedEffectKnobs,
   WastedTextLayer,
@@ -72,11 +72,6 @@ export type InterwheelShortProps = {
   // the WASTED phase derives it from wastedStartFrame so the slow-mo replay
   // begins exactly where the regular gameplay leaves off.
   wastedEffectProps: WastedEffectKnobs;
-
-  // TEMP iteration scaffold: render five score-pulse candidate treatments
-  // in the bottom band's empty column so all variants are visible in a
-  // single render. Default off — only set by --score-lab on the composer.
-  showScoreLab?: boolean;
 };
 
 function resolveUrl(src: string): string {
@@ -103,13 +98,11 @@ const LayoutFrame: React.FC<{
   // box only (HUD bands and backdrop unaffected) during the regular phase's
   // lead-in window. Ignored when `wasted` is set — WASTED's grade takes over.
   preTellGrade?: string | null;
-  // TEMP iteration scaffold flag. When true, the central gameplay box does
-  // NOT receive the WASTED grade/tint/vignette — the lab content fills it
-  // raw so subtle warmth/glow effects are visible without competing with a
-  // WASTED color drain. The caller is responsible for passing the lab as
-  // `game` when this is set.
-  isScoreLab?: boolean;
-}> = ({ row, backdrop, game, wasted, textNode, preTellGrade, isScoreLab }) => {
+  // Score-pulse state from useScorePulseState (warmth in [0,1], kickEnv
+  // in [0,1]). Passed through to ScoreLine.
+  warmth: number;
+  kickEnv: number;
+}> = ({ row, backdrop, game, wasted, textNode, preTellGrade, warmth, kickEnv }) => {
   const drain = wasted?.drainEased ?? 0;
   // Soft grade applied to the HUD bands and the blurred backdrop during
   // WASTED. Peak (drain=1) lands at saturate(0.55) brightness(0.82) — strong
@@ -154,7 +147,7 @@ const LayoutFrame: React.FC<{
           filter: supportFilter,
         }}
       >
-        <ScoreLine score={row?.score ?? 0} />
+        <ScoreLine score={row?.score ?? 0} warmth={warmth} kickEnv={kickEnv} />
         <HeightLine heightM={row?.heightM ?? 0} />
       </div>
 
@@ -168,12 +161,10 @@ const LayoutFrame: React.FC<{
           overflow: 'hidden',
         }}
       >
-        <AbsoluteFill
-          style={{ filter: isScoreLab ? undefined : wasted?.grade.filter ?? preTellGrade ?? undefined }}
-        >
+        <AbsoluteFill style={{ filter: wasted?.grade.filter ?? preTellGrade ?? undefined }}>
           {game}
         </AbsoluteFill>
-        {wasted && !isScoreLab && (
+        {wasted && (
           <>
             <WastedTintLayer opacity={wasted.tint.opacity} color={wasted.tint.color} />
             <WastedVignetteLayer
@@ -225,11 +216,11 @@ const RegularPhase: React.FC<{
   videoUrl: string;
   sidecar: SidecarRow[] | null;
   wastedStartFrame: number | null;
-  showScoreLab: boolean;
-}> = ({ videoUrl, sidecar, wastedStartFrame, showScoreLab }) => {
+}> = ({ videoUrl, sidecar, wastedStartFrame }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const row = sidecar ? sidecar[Math.min(frame, sidecar.length - 1)] ?? null : null;
+  const pulse = useScorePulseState(sidecar, frame, fps);
 
   let preTellGrade: string | null = null;
   if (wastedStartFrame != null) {
@@ -251,15 +242,10 @@ const RegularPhase: React.FC<{
     <LayoutFrame
       row={row}
       backdrop={<OffthreadVideo src={videoUrl} muted style={blurredBackdropStyle} />}
-      game={
-        showScoreLab ? (
-          <ScoreVariantsLab sidecar={sidecar} frame={frame} fps={fps} />
-        ) : (
-          <OffthreadVideo src={videoUrl} muted style={centerGameStyle} />
-        )
-      }
-      preTellGrade={showScoreLab ? null : preTellGrade}
-      isScoreLab={showScoreLab}
+      game={<OffthreadVideo src={videoUrl} muted style={centerGameStyle} />}
+      preTellGrade={preTellGrade}
+      warmth={pulse.warmth}
+      kickEnv={pulse.kickEnv}
     />
   );
 };
@@ -285,7 +271,6 @@ const WastedPhase: React.FC<{
   sidecar: SidecarRow[] | null;
   wastedStartFrame: number;
   effectProps: WastedEffectKnobs;
-  showScoreLab: boolean;
 }> = ({
   videoUrl,
   textUrl,
@@ -293,7 +278,6 @@ const WastedPhase: React.FC<{
   sidecar,
   wastedStartFrame,
   effectProps,
-  showScoreLab,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -304,6 +288,7 @@ const WastedPhase: React.FC<{
 
   const absFrame = wastedStartFrame + frame;
   const row = sidecar ? sidecar[Math.min(absFrame, sidecar.length - 1)] ?? null : null;
+  const pulse = useScorePulseState(sidecar, absFrame, fps);
 
   const slowMoBackdrop = (
     <OffthreadVideo
@@ -334,13 +319,7 @@ const WastedPhase: React.FC<{
       <LayoutFrame
         row={row}
         backdrop={slowMoBackdrop}
-        game={
-          showScoreLab ? (
-            <ScoreVariantsLab sidecar={sidecar} frame={absFrame} fps={fps} />
-          ) : (
-            slowMoGame
-          )
-        }
+        game={slowMoGame}
         wasted={timeline}
         textNode={
           timeline.text.visible ? (
@@ -352,7 +331,8 @@ const WastedPhase: React.FC<{
             />
           ) : null
         }
-        isScoreLab={showScoreLab}
+        warmth={pulse.warmth}
+        kickEnv={pulse.kickEnv}
       />
 
       <Audio src={audioUrl} startFrom={audioStartFromFrames} />
@@ -369,7 +349,6 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
   wastedTextSrc,
   wastedAudioSrc,
   wastedEffectProps,
-  showScoreLab = false,
 }) => {
   const [sidecar, setSidecar] = useState<SidecarRow[] | null>(null);
   const [handle] = useState(() => delayRender('Loading sidecar'));
@@ -414,7 +393,6 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
           videoUrl={videoUrl}
           sidecar={sidecar}
           wastedStartFrame={wastedStartFrame}
-          showScoreLab={showScoreLab}
         />
       </Sequence>
 
@@ -427,7 +405,6 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
             sidecar={sidecar}
             wastedStartFrame={wastedStartFrame}
             effectProps={wastedEffectProps}
-            showScoreLab={showScoreLab}
           />
         </Sequence>
       )}
