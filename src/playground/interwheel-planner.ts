@@ -815,8 +815,13 @@ export class InterwheelPlanner {
       }
     }
 
-    const targetNode = this.bestStableLeafNode(nodes, edges)
-      ?? this.bestStableNode(nodes, edges)
+    // Fix 2a: prefer the best stable node over the best stable LEAF node.
+    // Reason: once a strong intermediate gets expanded it's no longer a leaf,
+    // and the previous leaf-first preference would commit to a worse
+    // descendant ("receding-horizon procrastination"). Re-planning every tick
+    // means picking a shallower target only commits a shorter prefix of plan.
+    const targetNode = this.bestStableNode(nodes, edges)
+      ?? this.bestStableLeafNode(nodes, edges)
       ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);

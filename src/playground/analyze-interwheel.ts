@@ -8,7 +8,18 @@ import {
   type InterwheelSim,
   type SimSnapshot,
 } from '../games/interwheel/index';
-import { FPS, InterwheelSim as PureInterwheelSim, SCORE_PASTILLE, setGenerationDifficultyOverride, setPastilleSpawnChanceOverride, type SimEvents } from '../games/interwheel/sim';
+import {
+  FPS,
+  InterwheelSim as PureInterwheelSim,
+  SCORE_PASTILLE,
+  setGenerationDifficultyOverride,
+  setInitialWaterMarginPxOverride,
+  setMineDifficultyOverride,
+  setPastilleSpawnChanceOverride,
+  setRampSpeedOverride,
+  setWaterSpeedMultiplierOverride,
+  type SimEvents,
+} from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
 import {
   emptyScoreBreakdown,
@@ -1646,6 +1657,10 @@ async function parityCheck(maxTicks = 24_000): Promise<{
       parityCheck: typeof parityCheck;
       setPastilleSpawnChanceOverride: typeof setPastilleSpawnChanceOverride;
       setGenerationDifficultyOverride: typeof setGenerationDifficultyOverride;
+      setInitialWaterMarginPxOverride: typeof setInitialWaterMarginPxOverride;
+      setWaterSpeedMultiplierOverride: typeof setWaterSpeedMultiplierOverride;
+      setMineDifficultyOverride: typeof setMineDifficultyOverride;
+      setRampSpeedOverride: typeof setRampSpeedOverride;
     };
   }).__interwheelAnalytics__ = {
     runBatch,
@@ -1660,6 +1675,10 @@ async function parityCheck(maxTicks = 24_000): Promise<{
     parityCheck,
     setPastilleSpawnChanceOverride,
     setGenerationDifficultyOverride,
+    setInitialWaterMarginPxOverride,
+    setWaterSpeedMultiplierOverride,
+    setMineDifficultyOverride,
+    setRampSpeedOverride,
   };
 })().catch((err) => {
   log(`Boot failed: ${err}`);

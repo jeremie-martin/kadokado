@@ -17,6 +17,30 @@ const CLIMB_METRIC_MODES = ['legacy', 'time-cost', 'wait-cost'];
 const PASTILLE_MODES = ['count', 'graded'];
 const WALL_MODES = ['event', 'productive'];
 
+// Mirror of src/playground/ai-interwheel.ts:135-152 SCENE_PRESETS. Kept as a
+// copy so this script stays self-contained (no bundler hop). Update both when
+// presets change.
+const PX_PER_METER = 5;
+const SCENE_PRESETS = {
+  natural: {
+    waterMargin: { meters: 60, natural: true },
+    waterSpeed: { min: 1.0, max: 1.0, natural: true },
+    difficulty: { min: 0.30, max: 0.30, natural: true },
+    mineDensity: { min: 0.30, max: 0.30, natural: true },
+    pastilleSpawn: { min: 1.0, max: 1.0, natural: true },
+    rampSpeed: 1.0,
+  },
+  video: {
+    waterMargin: { meters: 0, natural: false },
+    waterSpeed: { min: 3.0, max: 4.0, natural: false },
+    difficulty: { min: 0.2, max: 0.4, natural: false },
+    mineDensity: { min: 0.3, max: 0.6, natural: false },
+    pastilleSpawn: { min: 0.5, max: 0.8, natural: false },
+    rampSpeed: 1.0,
+  },
+};
+const SCENE_NAMES = Object.keys(SCENE_PRESETS);
+
 const PRESETS = {
   smoke: {
     description: 'wiring check only',
@@ -236,8 +260,16 @@ function parseArgs(argv) {
     configName: null,
     outDir: null,
     paramPoints: null,
+    // Scene preset (optional). When unset, the script preserves its historical
+    // behavior of fixing pastille=1.0 and difficulty=0.3 for apples-to-apples
+    // baselines. When set, the named SCENE_PRESETS recipe drives ALL six sim
+    // override setters; --pastille-spawn / --difficulty still take precedence
+    // if explicitly passed alongside.
+    scene: null,
     pastilleSpawnChance: 1.0,
     difficulty: 0.3,
+    pastilleSpawnChanceExplicit: false,
+    difficultyExplicit: false,
     help: false,
   };
 
@@ -302,10 +334,11 @@ function parseArgs(argv) {
     else if (raw.startsWith('--name=')) args.configName = raw.slice('--name='.length);
     else if (raw.startsWith('--out=')) args.outDir = raw.slice('--out='.length);
     else if (raw.startsWith('--param-points=')) args.paramPoints = Number(raw.slice('--param-points='.length));
-    else if (raw === '--pastille-spawn=natural') args.pastilleSpawnChance = null;
-    else if (raw.startsWith('--pastille-spawn=')) args.pastilleSpawnChance = Number(raw.slice('--pastille-spawn='.length));
-    else if (raw === '--difficulty=natural') args.difficulty = null;
-    else if (raw.startsWith('--difficulty=')) args.difficulty = Number(raw.slice('--difficulty='.length));
+    else if (raw === '--pastille-spawn=natural') { args.pastilleSpawnChance = null; args.pastilleSpawnChanceExplicit = true; }
+    else if (raw.startsWith('--pastille-spawn=')) { args.pastilleSpawnChance = Number(raw.slice('--pastille-spawn='.length)); args.pastilleSpawnChanceExplicit = true; }
+    else if (raw === '--difficulty=natural') { args.difficulty = null; args.difficultyExplicit = true; }
+    else if (raw.startsWith('--difficulty=')) { args.difficulty = Number(raw.slice('--difficulty='.length)); args.difficultyExplicit = true; }
+    else if (raw.startsWith('--scene=')) args.scene = raw.slice('--scene='.length);
     else {
       console.error(`Unknown argument: ${raw}`);
       args.help = true;
@@ -313,6 +346,10 @@ function parseArgs(argv) {
   }
 
   if (!PRESETS[args.preset]) args.help = true;
+  if (args.scene !== null && !SCENE_PRESETS[args.scene]) {
+    console.error(`Unknown --scene "${args.scene}". Available: ${SCENE_NAMES.join(', ')}`);
+    args.help = true;
+  }
   if (!['all', 'responsiveness', 'params', 'config'].includes(args.suite)) args.help = true;
   if (args.metric !== 'all' && !METRICS[args.metric]) args.help = true;
   if (args.param !== 'all' && !SWEEP_METRIC_PARAM_KEYS.includes(args.param)) args.help = true;
@@ -356,7 +393,49 @@ function parseArgs(argv) {
   args.paramPoints = Math.max(2, Math.round(args.paramPoints));
   args.maxTicks = Math.max(1, Math.ceil(args.maxSeconds * GAME_FPS));
   args.valueSet = preset.valueSet;
+  args.sceneOverrides = resolveSceneOverrides(args);
   return args;
+}
+
+// Resolve the six sim override values that runCondition will push to
+// __interwheelAnalytics__. Returns either {scene:null, ...} (historical
+// behavior, only pastille+difficulty are set, others untouched) or the full
+// six-key set with curve-shaped values (for explicit --scene=).
+//
+// When --scene is set: every key is taken from the named preset, EXCEPT
+// pastilleSpawn and difficulty which can still be overridden by the legacy
+// --pastille-spawn / --difficulty flags. waterMargin/waterSpeed/mineDensity/
+// rampSpeed always come from the preset. natural=true → null override (= use
+// production curves).
+function resolveSceneOverrides(args) {
+  if (args.scene === null) {
+    return {
+      scene: null,
+      pastilleSpawnChance: args.pastilleSpawnChance,
+      difficulty: args.difficulty,
+      waterMarginPx: undefined,
+      waterSpeed: undefined,
+      mineDensity: undefined,
+      rampSpeed: undefined,
+    };
+  }
+  const preset = SCENE_PRESETS[args.scene];
+  const pastille = args.pastilleSpawnChanceExplicit
+    ? args.pastilleSpawnChance
+    : (preset.pastilleSpawn.natural ? null : { min: preset.pastilleSpawn.min, max: preset.pastilleSpawn.max });
+  const difficulty = args.difficultyExplicit
+    ? args.difficulty
+    : (preset.difficulty.natural ? null : { min: preset.difficulty.min, max: preset.difficulty.max });
+  const anyCurveActive = !preset.waterSpeed.natural || !preset.difficulty.natural || !preset.mineDensity.natural || !preset.pastilleSpawn.natural;
+  return {
+    scene: args.scene,
+    pastilleSpawnChance: pastille,
+    difficulty,
+    waterMarginPx: preset.waterMargin.natural ? null : preset.waterMargin.meters * PX_PER_METER,
+    waterSpeed: preset.waterSpeed.natural ? null : { min: preset.waterSpeed.min, max: preset.waterSpeed.max },
+    mineDensity: preset.mineDensity.natural ? null : { min: preset.mineDensity.min, max: preset.mineDensity.max },
+    rampSpeed: anyCurveActive ? preset.rampSpeed : null,
+  };
 }
 
 function parseMetricParamValue(key, rawValue) {
@@ -498,6 +577,15 @@ Useful overrides:
 Defaults fix pastille spawn to 1.0 and generation difficulty to 0.3.
 Use --pastille-spawn=natural or --difficulty=natural to disable an override.
 Concurrency defaults to roughly two thirds of available CPU cores.
+
+Scene presets (--scene=NAME) drive all six sim overrides at once
+(waterMargin, waterSpeed, difficulty, mineDensity, pastilleSpawn, rampSpeed):
+  natural   production curves on every dimension
+  video     short-clip preset: water at blob, fast water (3-4x), escalating
+            difficulty/mines/pastille, ramp speed 1x
+When --scene is set, --pastille-spawn and --difficulty still take precedence
+if explicitly passed. When --scene is unset, only pastille+difficulty are
+overridden (historical study behavior).
 
 Outputs raw.json, summary.json, and report.md under .tmp/interwheel-studies/<timestamp>/.
 `);
@@ -659,13 +747,19 @@ async function runCondition(browser, url, condition, args) {
   const partials = await Promise.all(chunks.map(async (chunk) => {
     const page = await openPage(browser, url);
     try {
-      return await page.evaluate(async ({ chunk, condition, maxTicks, plannerSearch, pastilleSpawnChance, difficulty }) => {
-        if (pastilleSpawnChance !== null) {
-          window.__interwheelAnalytics__.setPastilleSpawnChanceOverride(pastilleSpawnChance);
-        }
-        if (difficulty !== null) {
-          window.__interwheelAnalytics__.setGenerationDifficultyOverride(difficulty);
-        }
+      return await page.evaluate(async ({ chunk, condition, maxTicks, plannerSearch, sceneOverrides }) => {
+        const api = window.__interwheelAnalytics__;
+        // pastille/difficulty: undefined → don't touch; otherwise apply (number,
+        // {min,max}, or null=production curves).
+        if (sceneOverrides.pastilleSpawnChance !== undefined) api.setPastilleSpawnChanceOverride(sceneOverrides.pastilleSpawnChance);
+        if (sceneOverrides.difficulty !== undefined) api.setGenerationDifficultyOverride(sceneOverrides.difficulty);
+        // Other four scene setters only fire when --scene is explicit. When
+        // scene=null we preserve historical study behavior (only pastille +
+        // difficulty are touched, water/mines/ramp use module defaults).
+        if (sceneOverrides.waterMarginPx !== undefined) api.setInitialWaterMarginPxOverride(sceneOverrides.waterMarginPx);
+        if (sceneOverrides.waterSpeed !== undefined) api.setWaterSpeedMultiplierOverride(sceneOverrides.waterSpeed);
+        if (sceneOverrides.mineDensity !== undefined) api.setMineDifficultyOverride(sceneOverrides.mineDensity);
+        if (sceneOverrides.rampSpeed !== undefined) api.setRampSpeedOverride(sceneOverrides.rampSpeed);
         const plannerConfig = {
           budgetMs: plannerSearch.budgetMs,
           maxEdgeRollouts: plannerSearch.maxEdgeRollouts,
@@ -754,8 +848,7 @@ async function runCondition(browser, url, condition, args) {
           maxStableDepth: args.maxStableDepth,
           revealScreensAbove: args.revealScreensAbove,
         },
-        pastilleSpawnChance: args.pastilleSpawnChance,
-        difficulty: args.difficulty,
+        sceneOverrides: args.sceneOverrides,
       });
     } finally {
       await page.close();
@@ -869,6 +962,16 @@ function fmt(value, digits = 1) {
   return Number.isFinite(value) ? value.toFixed(digits) : 'n/a';
 }
 
+function formatCurveValue(value) {
+  if (value === null) return 'natural (production curve)';
+  if (value === undefined) return '—';
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'object' && 'min' in value && 'max' in value) {
+    return value.min === value.max ? String(value.min) : `${value.min}..${value.max}`;
+  }
+  return String(value);
+}
+
 function reportMarkdown(summary) {
   const lines = [
     '# Interwheel Study',
@@ -881,8 +984,15 @@ function reportMarkdown(summary) {
     `- seed base: ${summary.meta.seedBase}`,
     `- concurrency: ${summary.meta.concurrency}`,
     `- planner search: lookahead=${summary.meta.plannerSearch.revealScreensAbove}, jumps=${summary.meta.plannerSearch.maxStableDepth}, edges=${summary.meta.plannerSearch.maxEdgeRollouts}, cpu=${summary.meta.plannerSearch.budgetMs}ms`,
-    `- pastille spawn: ${summary.meta.pastilleSpawnChance ?? 'natural'}`,
-    `- difficulty: ${summary.meta.difficulty ?? 'natural'}`,
+    `- scene: ${summary.meta.scene ?? '(none / historical defaults)'}`,
+    `- pastille spawn: ${formatCurveValue(summary.meta.sceneOverrides?.pastilleSpawnChance ?? summary.meta.pastilleSpawnChance)}`,
+    `- difficulty: ${formatCurveValue(summary.meta.sceneOverrides?.difficulty ?? summary.meta.difficulty)}`,
+    ...(summary.meta.sceneOverrides?.scene !== null && summary.meta.sceneOverrides ? [
+      `- water margin (px): ${formatCurveValue(summary.meta.sceneOverrides.waterMarginPx)}`,
+      `- water speed: ${formatCurveValue(summary.meta.sceneOverrides.waterSpeed)}`,
+      `- mine density: ${formatCurveValue(summary.meta.sceneOverrides.mineDensity)}`,
+      `- ramp speed: ${formatCurveValue(summary.meta.sceneOverrides.rampSpeed)}`,
+    ] : []),
     `- wall seconds: ${fmt(summary.meta.wallSeconds, 1)}`,
     '',
     '## Headline',
@@ -962,7 +1072,7 @@ async function main() {
     process.exit(0);
   }
   const conditions = makeConditions(args);
-  const outDir = args.outDir ?? join('.tmp', 'interwheel-studies', timestamp());
+  const outDir = args.outDir ?? join('.tmp', 'interwheel-studies', `${timestamp()}${args.scene ? `-${args.scene}` : ''}`);
   await mkdir(outDir, { recursive: true });
 
   const server = await createServer({
@@ -1003,6 +1113,8 @@ async function main() {
         maxEdgeRollouts: args.maxEdgeRollouts,
         budgetMs: args.budgetMs,
       },
+      scene: args.scene,
+      sceneOverrides: args.sceneOverrides,
       pastilleSpawnChance: args.pastilleSpawnChance,
       difficulty: args.difficulty,
       conditions: conditions.length,
