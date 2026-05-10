@@ -199,6 +199,7 @@ const LayoutFrame: React.FC<{
   kickEnv: number;
   previousHighScore: number | null | undefined;
   highScoreOpacity: number;
+  highScoreSettleT: number;
   highScoreApproach: number;
   // Water danger ∈ [0, 1], LP-filtered (see useWaterDanger). Drives a red
   // tint overlay on both top and bottom bands — replaces the numeric
@@ -222,6 +223,7 @@ const LayoutFrame: React.FC<{
   kickEnv,
   previousHighScore,
   highScoreOpacity,
+  highScoreSettleT,
   highScoreApproach,
   waterDanger,
   dangerTintRGB,
@@ -333,7 +335,7 @@ const LayoutFrame: React.FC<{
                 flexDirection: 'column',
                 alignItems: 'center',
                 rowGap: 16,
-                transform: `scale(${(1.15 - 0.15 * (1 - highScoreOpacity)).toFixed(4)})`,
+                transform: `scale(${(1.15 - 0.15 * highScoreSettleT).toFixed(4)})`,
                 transformOrigin: 'center center',
               }}
             >
@@ -460,6 +462,7 @@ const RegularPhase: React.FC<{
       kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
       previousHighScore={previousHighScore}
       highScoreOpacity={highScore.highScoreOpacity}
+      highScoreSettleT={highScore.settleT}
       highScoreApproach={highScore.approachLevel}
       waterDanger={waterDanger}
       dangerTintRGB={dangerTint.rgb}
@@ -563,6 +566,7 @@ const WastedPhase: React.FC<{
         kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
         previousHighScore={previousHighScore}
         highScoreOpacity={highScore.highScoreOpacity}
+        highScoreSettleT={highScore.settleT}
         highScoreApproach={highScore.approachLevel}
         waterDanger={waterDanger}
         dangerTintRGB={dangerTint.rgb}

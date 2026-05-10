@@ -151,7 +151,17 @@ export function useWaterDanger(
 // "New Best". `previousHighScore` is null/undefined for runs without a high
 // score input (no crossing, HIGH not displayed).
 
-export const HIGH_SCORE_FADE_DURATION_SEC = 0.50;
+// Layout swap at the crossing is a hard cut (Option B): pre-layout is
+// visible up to crossingFrame−1, post-layout from crossingFrame onwards.
+// No opacity crossfade — the synthetic kick's gold-glow + scale spike at
+// the same frame is what masks the layout shift, so the viewer reads it
+// as a single beat rather than a fading dissolve.
+//
+// Independent of that, the post-layout's burst scale settles smoothly
+// from 1.15× to 1.0× over HIGH_SCORE_SETTLE_DURATION_SEC. The "explosion
+// then breathe down" is the cinematic feel; the layout swap itself is
+// instant.
+export const HIGH_SCORE_SETTLE_DURATION_SEC = 0.50;
 export const HIGH_SCORE_KICK_DECAY_SEC = 0.25; // matches score's kick decay
 // Approach treatment on HighScoreLine kicks in when the gap between the
 // current score and the previous high closes to APPROACH_START_DELTA points
@@ -172,7 +182,8 @@ function findCrossingFrame(
 }
 
 export type HighScoreState = {
-  highScoreOpacity: number;       // 1 pre-crossing, 0 fully past, lerps over fade window
+  highScoreOpacity: number;       // hard step: 1 pre-crossing, 0 at/after crossing
+  settleT: number;                // [0, 1]; 0 at crossing, lerps to 1 over SETTLE_DURATION
   scoreLabelIsNewBest: boolean;   // false pre-crossing, true at/after the crossing frame
   crossKickEnv: number;           // [0, 1]; synthetic kick fired on the score at the crossing
   approachLevel: number;          // [0, 1]; ramps up as score nears highScore, 0 post-crossing
@@ -206,6 +217,7 @@ export function useHighScoreState(
       : 0;
     return {
       highScoreOpacity: 1,
+      settleT: 0,
       scoreLabelIsNewBest: false,
       crossKickEnv: 0,
       approachLevel: computeApproach(idx),
@@ -216,14 +228,17 @@ export function useHighScoreState(
     const idx = Math.min(Math.max(0, frame), (sidecar?.length ?? 1) - 1);
     return {
       highScoreOpacity: 1,
+      settleT: 0,
       scoreLabelIsNewBest: false,
       crossKickEnv: 0,
       approachLevel: computeApproach(idx),
     };
   }
-  const fadeT = clamp01(elapsed / HIGH_SCORE_FADE_DURATION_SEC);
+  // Post-crossing: hard cut on visibility, smooth on settle. The kick's
+  // peak at elapsed=0 masks the layout swap.
   return {
-    highScoreOpacity: 1 - fadeT,
+    highScoreOpacity: 0,
+    settleT: clamp01(elapsed / HIGH_SCORE_SETTLE_DURATION_SEC),
     scoreLabelIsNewBest: true,
     crossKickEnv: pulseDecay(elapsed, HIGH_SCORE_KICK_DECAY_SEC),
     approachLevel: 0,
