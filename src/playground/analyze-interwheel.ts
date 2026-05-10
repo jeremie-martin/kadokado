@@ -59,6 +59,9 @@ const ANALYTICS_PLANNER_CONFIG = {
   maxEdgeRollouts: 360,
   maxStableDepth: 3,
   collectSegments: false,
+  // Analytics consumes per-tick leafScoreSpreads / leafCount diagnostics
+  // (analyze-interwheel.ts:844 onwards). Live play and probe-pure don't.
+  collectDiagnostics: true,
 } satisfies PlannerConfig;
 const DETERMINISTIC_PLANNER_CONFIG = {
   ...ANALYTICS_PLANNER_CONFIG,

@@ -189,6 +189,11 @@ function probeSeed(seed: number, args: Args): ProbeResult {
     maxEdgeRollouts: preset.searchLimits?.maxEdgeRollouts ?? PLANNER_SEARCH_DEFAULTS.maxEdgeRollouts,
     maxStableDepth: preset.searchLimits?.maxStableDepth ?? PLANNER_SEARCH_DEFAULTS.maxStableDepth,
     budgetMs: preset.searchLimits?.budgetMs ?? PLANNER_SEARCH_DEFAULTS.budgetMs,
+    // Headless probe doesn't render the candidate-line overlay and doesn't
+    // consume planner diagnostics — both default to false here so the
+    // lineage-support / segment-build / diagnostics passes are skipped.
+    collectSegments: false,
+    collectDiagnostics: false,
   });
 
   // Post-reset RNG: a fresh seeded stream for sim.step's per-tick draws.

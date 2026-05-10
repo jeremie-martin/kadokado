@@ -17,6 +17,13 @@ import { renderedGenerationLimitForSearchDepth } from './trajectory-rendering';
 // sampled value.
 const constantRng = () => 0.5;
 
+// Shared empties used when collectSegments+collectDiagnostics are both off
+// (probe-pure path) so we can avoid running the lineage-support pass.
+// Frozen to make accidental mutation a hard error — callers that fall back
+// to these never write to them in the current code paths.
+const EMPTY_SUPPORT: number[] = Object.freeze([]) as unknown as number[];
+const EMPTY_LEAF_IDS: number[] = Object.freeze([]) as unknown as number[];
+
 const MAX_GRAB_WAIT = 100;
 const MAX_WALL_WAIT = 24;
 const MAX_FLIGHT_TICKS = 260;
@@ -367,6 +374,14 @@ export type PlannerConfig = {
    *  perceived snapshot every tick regardless of attached/flight state. */
   memoryScreensBelow?: number;
   collectSegments?: boolean;
+  /**
+   * Compute lineage-support / leaf-spread diagnostics. Defaults to false
+   * because only analyze-interwheel.ts consumes them (live play and probe
+   * paths just want the chosen plan). Skipping the lineage-support pass
+   * and the per-edge spread aggregation is a measurable headless win
+   * without any effect on the chosen plan or per-edge scores.
+   */
+  collectDiagnostics?: boolean;
   policy?: Partial<PlannerPolicy>;
   metricParams?: Partial<PlannerMetricParams>;
 };
@@ -612,6 +627,7 @@ export class InterwheelPlanner {
       revealScreensAbove: cfg.revealScreensAbove ?? PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove,
       memoryScreensBelow: cfg.memoryScreensBelow ?? PLANNER_PERCEPTION_DEFAULTS.memoryScreensBelow,
       collectSegments: cfg.collectSegments ?? true,
+      collectDiagnostics: cfg.collectDiagnostics ?? false,
       policy: resolvePlannerPolicy(cfg.policy),
       metricParams: resolvePlannerMetricParams(cfg.metricParams),
     };
@@ -831,10 +847,17 @@ export class InterwheelPlanner {
       ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
-    const supportResult = this.lineageSupportForEdges(nodes, edges, leafEdges);
+    // Lineage support is only consumed by segments (visual) and diagnostics
+    // (analytics). Skip the bottom-up walk entirely when neither is needed.
+    const needsLineage = this.cfg.collectSegments || this.cfg.collectDiagnostics;
+    const supportResult = needsLineage
+      ? this.lineageSupportForEdges(nodes, edges, leafEdges)
+      : { support: EMPTY_SUPPORT, leafEdges, leafIdsSorted: EMPTY_LEAF_IDS };
     const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, supportResult.support, nodes, leafEdges) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
-    const diagnostics = this.computeDiagnostics(nodes, edges, supportResult, bestEdgeIds);
+    const diagnostics = this.cfg.collectDiagnostics
+      ? this.computeDiagnostics(nodes, edges, supportResult, bestEdgeIds)
+      : emptyDiagnostics();
     return {
       plan: plan.length > 0 ? plan : [false],
       segments,
