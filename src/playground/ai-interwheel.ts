@@ -131,6 +131,16 @@ type ScenePreset = {
   widthMin?: number;    // overlay base line width
   alphaMin?: number;    // overlay alpha floor
   alphaGamma?: number;  // overlay alpha curve exponent
+  // Optional planner-experiment knobs. When present, the preset writes the
+  // perception lookahead and the search limits — useful for "video mode"
+  // captures that need probe/render parity (no wall-clock budget) and for
+  // baking a known-good search depth / edge cap into the preset itself.
+  lookaheadScreens?: number;
+  searchLimits?: {
+    maxEdgeRollouts?: number;
+    budgetMs?: number;        // Number.POSITIVE_INFINITY = wall-clock disabled
+    maxStableDepth?: number;
+  };
 };
 
 // Preset shape recipes the user can flip between with one click. "natural"
@@ -159,6 +169,15 @@ const SCENE_PRESETS: Record<string, ScenePreset> = {
     widthMin: 0.45,
     alphaMin: 0.06,
     alphaGamma: 3.0,
+    // Video-mode planner: pure perception (no lookahead above viewport),
+    // pure step-budget A* (no wall-clock cap) so probe and render get the
+    // same search results, deeper edge cap so 3-jump search isn't truncated.
+    lookaheadScreens: 0,
+    searchLimits: {
+      maxEdgeRollouts: 500,
+      budgetMs: Number.POSITIVE_INFINITY,
+      maxStableDepth: 3,
+    },
   },
 };
 const PX_PER_METER = 5;
@@ -486,6 +505,8 @@ function applyScenePreset(name: keyof typeof SCENE_PRESETS): void {
   if (preset.widthMin !== undefined) applyOverlayParam('widthMin', preset.widthMin);
   if (preset.alphaMin !== undefined) applyOverlayParam('alphaMin', preset.alphaMin);
   if (preset.alphaGamma !== undefined) applyOverlayParam('alphaGamma', preset.alphaGamma);
+  if (preset.lookaheadScreens !== undefined) applyLookaheadScreens(preset.lookaheadScreens);
+  if (preset.searchLimits !== undefined) applySearchLimits(preset.searchLimits);
 }
 
 function syncPlannerExperimentControls(): void {
@@ -495,8 +516,14 @@ function syncPlannerExperimentControls(): void {
   if (searchDepthOutput) searchDepthOutput.value = String(searchLimits.maxStableDepth);
   if (edgeBudgetInput) edgeBudgetInput.value = String(searchLimits.maxEdgeRollouts);
   if (edgeBudgetOutput) edgeBudgetOutput.value = String(searchLimits.maxEdgeRollouts);
-  if (planBudgetInput) planBudgetInput.value = String(searchLimits.budgetMs);
-  if (planBudgetOutput) planBudgetOutput.value = `${searchLimits.budgetMs.toFixed(0)}ms`;
+  if (planBudgetInput) {
+    // Slider only represents finite budgets; "off" sticks at the top of the
+    // range visually so the slider doesn't read as 0.
+    planBudgetInput.value = Number.isFinite(searchLimits.budgetMs)
+      ? String(searchLimits.budgetMs)
+      : planBudgetInput.max || '50';
+  }
+  if (planBudgetOutput) planBudgetOutput.value = formatBudgetMs(searchLimits.budgetMs);
 }
 
 function applyLookaheadScreens(value: number): void {
@@ -509,8 +536,16 @@ function applyLookaheadScreens(value: number): void {
 }
 
 function applySearchLimits(next: Partial<typeof PLANNER_SEARCH_DEFAULTS>): void {
+  // budgetMs accepts Number.POSITIVE_INFINITY to disable the wall-clock cap
+  // ("step-only" search). Finite values are clamped to the slider's [1, 50]
+  // range. Without this escape hatch the slider would always force a finite
+  // budget — which is the right default for the playground but the wrong
+  // default for video captures, where probe and render need parity.
+  const nextBudget = next.budgetMs;
   searchLimits = {
-    budgetMs: next.budgetMs !== undefined ? clamp(next.budgetMs, 1, 50) : searchLimits.budgetMs,
+    budgetMs: nextBudget !== undefined
+      ? (Number.isFinite(nextBudget) ? clamp(nextBudget, 1, 50) : Number.POSITIVE_INFINITY)
+      : searchLimits.budgetMs,
     maxEdgeRollouts: next.maxEdgeRollouts !== undefined ? Math.round(clamp(next.maxEdgeRollouts, 16, 2_000)) : searchLimits.maxEdgeRollouts,
     maxStableDepth: next.maxStableDepth !== undefined ? Math.round(clamp(next.maxStableDepth, 1, 8)) : searchLimits.maxStableDepth,
   };
@@ -518,6 +553,10 @@ function applySearchLimits(next: Partial<typeof PLANNER_SEARCH_DEFAULTS>): void 
   syncPlannerExperimentControls();
   schedulePolicyPreview();
   refreshStats();
+}
+
+function formatBudgetMs(budgetMs: number): string {
+  return Number.isFinite(budgetMs) ? `${budgetMs.toFixed(0)}ms` : 'off';
 }
 
 function setupPlannerExperimentControls(): void {
@@ -767,7 +806,7 @@ function refreshStats(): void {
     statItem('Visible', lastPerceived),
     statItem('Lookahead', `${lookaheadScreens.toFixed(2)}x`),
     statItem('Depth', `${searchLimits.maxStableDepth} jumps`),
-    statItem('Budget', `${searchLimits.maxEdgeRollouts}e/${searchLimits.budgetMs.toFixed(0)}ms`),
+    statItem('Budget', `${searchLimits.maxEdgeRollouts}e/${formatBudgetMs(searchLimits.budgetMs)}`),
     statItem('Shown', `${lastShownSegments} seg / ${lastShownEdges} edges`),
     statItem('Culled', `${lastCulledEdges} edges`),
     statItem('Support', lastSupportRange),

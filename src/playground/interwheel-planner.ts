@@ -676,7 +676,12 @@ export class InterwheelPlanner {
       this.cfg.maxNodes = rollouts;
     }
     if (params.budgetMs !== undefined) {
-      this.cfg.budgetMs = clamp(params.budgetMs, 1, 50);
+      // Number.POSITIVE_INFINITY disables the wall-clock cap entirely. Used
+      // by video-mode captures where the probe and render need to make
+      // identical search decisions regardless of CPU load.
+      this.cfg.budgetMs = Number.isFinite(params.budgetMs)
+        ? clamp(params.budgetMs, 1, 50)
+        : Number.POSITIVE_INFINITY;
     }
     this.lastResult = null;
   }

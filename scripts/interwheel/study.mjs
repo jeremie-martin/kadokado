@@ -37,6 +37,15 @@ const SCENE_PRESETS = {
     mineDensity: { min: 0.3, max: 0.6, natural: false },
     pastilleSpawn: { min: 0.5, max: 0.8, natural: false },
     rampSpeed: 1.0,
+    // Video-mode planner overrides — applied on top of the analysis preset
+    // (smoke/quick/standard/overnight) when --scene=video. Mirrors
+    // src/playground/ai-interwheel.ts SCENE_PRESETS.video.
+    searchOverrides: {
+      revealScreensAbove: 0,
+      maxStableDepth: 3,
+      maxEdgeRollouts: 500,
+      budgetMs: Number.POSITIVE_INFINITY,
+    },
   },
 };
 const SCENE_NAMES = Object.keys(SCENE_PRESETS);
@@ -378,18 +387,24 @@ function parseArgs(argv) {
   }
 
   const preset = PRESETS[args.preset] ?? PRESETS.standard;
+  // Scene-level search overrides (currently only `video`) take precedence
+  // over the analysis preset's search defaults but lose to explicit CLI
+  // flags. Lets `--scene=video` consistently mean "no wall-clock budget,
+  // 500-edge cap, 0 lookahead, 3-jump depth" across analysis presets.
+  const sceneOverrides = (args.scene && SCENE_PRESETS[args.scene]?.searchOverrides) || null;
   args.trials ??= preset.trials;
   args.maxSeconds ??= preset.maxSeconds;
-  args.revealScreensAbove ??= preset.revealScreensAbove;
-  args.maxStableDepth ??= preset.maxStableDepth;
-  args.maxEdgeRollouts ??= preset.maxEdgeRollouts;
-  args.budgetMs ??= preset.budgetMs;
+  args.revealScreensAbove ??= sceneOverrides?.revealScreensAbove ?? preset.revealScreensAbove;
+  args.maxStableDepth ??= sceneOverrides?.maxStableDepth ?? preset.maxStableDepth;
+  args.maxEdgeRollouts ??= sceneOverrides?.maxEdgeRollouts ?? preset.maxEdgeRollouts;
+  args.budgetMs ??= sceneOverrides?.budgetMs ?? preset.budgetMs;
   args.concurrency ??= defaultConcurrency();
   args.paramPoints ??= preset.paramPoints;
   args.concurrency = Math.max(1, Math.round(args.concurrency));
   args.maxStableDepth = Math.max(1, Math.round(args.maxStableDepth));
   args.maxEdgeRollouts = Math.max(16, Math.round(args.maxEdgeRollouts));
-  args.budgetMs = Math.max(1, args.budgetMs);
+  // budgetMs accepts Number.POSITIVE_INFINITY ("off") for video-mode parity.
+  args.budgetMs = Number.isFinite(args.budgetMs) ? Math.max(1, args.budgetMs) : Number.POSITIVE_INFINITY;
   args.paramPoints = Math.max(2, Math.round(args.paramPoints));
   args.maxTicks = Math.max(1, Math.ceil(args.maxSeconds * GAME_FPS));
   args.valueSet = preset.valueSet;
@@ -528,12 +543,16 @@ function defaultConcurrency() {
   return Math.max(1, Math.floor(availableParallelism() * 2 / 3));
 }
 
+function formatBudgetMs(budgetMs) {
+  return Number.isFinite(budgetMs) ? `${budgetMs}ms` : 'off';
+}
+
 function help() {
   const presets = Object.entries(PRESETS)
     .map(([name, p]) => (
       `  ${name.padEnd(9)} ${p.trials} trials, ${p.maxSeconds}s, ` +
       `lookahead=${p.revealScreensAbove}, jumps=${p.maxStableDepth}, ` +
-      `edges=${p.maxEdgeRollouts}, cpu=${p.budgetMs}ms, params=${p.paramPoints} (${p.description})`
+      `edges=${p.maxEdgeRollouts}, cpu=${formatBudgetMs(p.budgetMs)}, params=${p.paramPoints} (${p.description})`
     ))
     .join('\n');
   const metrics = Object.keys(METRICS).join(', ');
@@ -983,7 +1002,7 @@ function reportMarkdown(summary) {
     `- max seconds: ${fmt(summary.meta.maxTicks / GAME_FPS, 1)}`,
     `- seed base: ${summary.meta.seedBase}`,
     `- concurrency: ${summary.meta.concurrency}`,
-    `- planner search: lookahead=${summary.meta.plannerSearch.revealScreensAbove}, jumps=${summary.meta.plannerSearch.maxStableDepth}, edges=${summary.meta.plannerSearch.maxEdgeRollouts}, cpu=${summary.meta.plannerSearch.budgetMs}ms`,
+    `- planner search: lookahead=${summary.meta.plannerSearch.revealScreensAbove}, jumps=${summary.meta.plannerSearch.maxStableDepth}, edges=${summary.meta.plannerSearch.maxEdgeRollouts}, cpu=${formatBudgetMs(summary.meta.plannerSearch.budgetMs)}`,
     `- scene: ${summary.meta.scene ?? '(none / historical defaults)'}`,
     `- pastille spawn: ${formatCurveValue(summary.meta.sceneOverrides?.pastilleSpawnChance ?? summary.meta.pastilleSpawnChance)}`,
     `- difficulty: ${formatCurveValue(summary.meta.sceneOverrides?.difficulty ?? summary.meta.difficulty)}`,
