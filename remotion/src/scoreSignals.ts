@@ -153,10 +153,13 @@ export function useWaterDanger(
 
 export const HIGH_SCORE_FADE_DURATION_SEC = 0.4;
 export const HIGH_SCORE_KICK_DECAY_SEC = 0.25; // matches score's kick decay
-// Approach treatment on HighScoreLine kicks in when current/highScore
-// crosses APPROACH_START_RATIO and ramps quadratically to 1.0 at the
-// crossing point. Keeps far-from-high runs visually quiet.
-export const APPROACH_START_RATIO = 0.7;
+// Approach treatment on HighScoreLine kicks in when the gap between the
+// current score and the previous high closes to APPROACH_START_DELTA points
+// and ramps linearly to 1.0 at the crossing. Absolute margin (rather than
+// a percentage) lets the activation feel consistent regardless of how big
+// the high score is — "5k from beating the record" reads the same whether
+// the high is 20k or 200k.
+export const APPROACH_START_DELTA = 5000;
 
 function findCrossingFrame(
   sidecar: SidecarRow[],
@@ -186,15 +189,15 @@ export function useHighScoreState(
     return findCrossingFrame(sidecar, previousHighScore);
   }, [sidecar, previousHighScore]);
 
-  // Approach: only meaningful pre-crossing. Computed from the current
-  // sidecar score / previousHighScore ratio with a quadratic ease-in
-  // starting at APPROACH_START_RATIO.
+  // Approach: only meaningful pre-crossing. Linear from 0 (gap == DELTA) to
+  // 1 (gap == 0) using an absolute point margin.
   const computeApproach = (idx: number): number => {
     if (!sidecar || previousHighScore == null || previousHighScore <= 0) return 0;
     const score = sidecar[idx]?.score ?? 0;
-    const ratio = clamp01(score / previousHighScore);
-    const t = clamp01((ratio - APPROACH_START_RATIO) / (1 - APPROACH_START_RATIO));
-    return t * t;
+    const gap = previousHighScore - score;
+    if (gap >= APPROACH_START_DELTA) return 0;
+    if (gap <= 0) return 1;
+    return 1 - gap / APPROACH_START_DELTA;
   };
 
   if (crossingFrame == null) {

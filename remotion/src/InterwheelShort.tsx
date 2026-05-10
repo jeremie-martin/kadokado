@@ -197,7 +197,6 @@ const LayoutFrame: React.FC<{
   // kick — caller composes.
   warmth: number;
   kickEnv: number;
-  scoreLabel: string;
   previousHighScore: number | null | undefined;
   highScoreOpacity: number;
   highScoreApproach: number;
@@ -221,7 +220,6 @@ const LayoutFrame: React.FC<{
   preTellGrade,
   warmth,
   kickEnv,
-  scoreLabel,
   previousHighScore,
   highScoreOpacity,
   highScoreApproach,
@@ -264,31 +262,75 @@ const LayoutFrame: React.FC<{
           top: 0,
           width: SHORT_WIDTH,
           height: TOP_BAND_HEIGHT,
-          display: 'grid',
-          gridTemplateColumns: 'auto auto',
-          alignContent: 'center',
-          justifyContent: 'start',
-          columnGap: 40,
-          rowGap: 12,
-          padding: '0 44px',
           filter: supportFilter,
           backgroundColor: waterDanger > 0 && dangerVisibility > 0
             ? `rgba(${dangerTintRGB}, ${(waterDanger * 0.55 * dangerVisibility).toFixed(3)})`
             : undefined,
         }}
       >
-        <ScoreLine
-          score={row?.score ?? 0}
-          warmth={warmth}
-          kickEnv={kickEnv}
-          label={scoreLabel}
-        />
-        {previousHighScore != null && previousHighScore > 0 && (
-          <HighScoreLine
-            highScore={previousHighScore}
-            opacity={highScoreOpacity}
-            approachLevel={highScoreApproach}
+        {/*
+         * Pre-crossing layout — score over high, both left-aligned in a
+         * 2-row grid. Fades out as transitionT (= 1 − highScoreOpacity)
+         * goes 0 → 1 over the 0.4 s window after the crossing fires.
+         */}
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            display: 'grid',
+            gridTemplateColumns: 'auto auto',
+            alignContent: 'center',
+            justifyContent: 'start',
+            columnGap: 40,
+            rowGap: 12,
+            padding: '0 44px',
+            opacity: highScoreOpacity,
+          }}
+        >
+          <ScoreLine
+            score={row?.score ?? 0}
+            warmth={warmth}
+            kickEnv={kickEnv}
+            label="Score"
           />
+          {previousHighScore != null && previousHighScore > 0 && (
+            <HighScoreLine
+              highScore={previousHighScore}
+              opacity={1}
+              approachLevel={highScoreApproach}
+            />
+          )}
+        </div>
+
+        {/*
+         * Post-crossing layout — "NEW BEST" centered above the score, both
+         * horizontally and vertically centered in the top band. Fades in
+         * synchronously with the pre-layout fade-out. ScoreLine's centered
+         * prop redirects its kick transform-origin to center-center so the
+         * scale grows symmetrically.
+         */}
+        {previousHighScore != null && previousHighScore > 0 && highScoreOpacity < 1 && (
+          <div
+            style={{
+              position: 'absolute',
+              inset: 0,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              justifyContent: 'center',
+              rowGap: 16,
+              padding: '0 44px',
+              opacity: 1 - highScoreOpacity,
+            }}
+          >
+            <ScoreLine
+              score={row?.score ?? 0}
+              warmth={warmth}
+              kickEnv={kickEnv}
+              label="New Best"
+              centered
+            />
+          </div>
         )}
       </div>
 
@@ -401,7 +443,6 @@ const RegularPhase: React.FC<{
       preTellGrade={preTellGrade}
       warmth={pulse.warmth}
       kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
-      scoreLabel={highScore.scoreLabelIsNewBest ? 'New Best' : 'Score'}
       previousHighScore={previousHighScore}
       highScoreOpacity={highScore.highScoreOpacity}
       highScoreApproach={highScore.approachLevel}
@@ -505,7 +546,6 @@ const WastedPhase: React.FC<{
         }
         warmth={pulse.warmth}
         kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
-        scoreLabel={highScore.scoreLabelIsNewBest ? 'New Best' : 'Score'}
         previousHighScore={previousHighScore}
         highScoreOpacity={highScore.highScoreOpacity}
         highScoreApproach={highScore.approachLevel}

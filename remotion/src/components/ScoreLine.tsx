@@ -57,7 +57,12 @@ export const ScoreLine: React.FC<{
   warmth?: number;
   kickEnv?: number;
   label?: string;
-}> = ({ score, warmth = 0, kickEnv = 0, label = 'Score' }) => {
+  // When true, the value's transform-origin is recentered so kick scaling
+  // grows symmetrically rather than from the left edge — matters when the
+  // value is rendered inside a horizontally-centered layout (post-crossing
+  // "NEW BEST" state).
+  centered?: boolean;
+}> = ({ score, warmth = 0, kickEnv = 0, label = 'Score', centered = false }) => {
   const blur = 6 + 28 * warmth + 22 * kickEnv;
   const glowOpacity = Math.min(1, 0.2 + 0.5 * warmth + 0.4 * kickEnv);
   const scale = (1 + 0.025 * warmth) * (1 + 0.06 * kickEnv);
@@ -76,6 +81,7 @@ export const ScoreLine: React.FC<{
           color: warmthColor(warmth),
           filter,
           transform: `scale(${scale.toFixed(4)})`,
+          transformOrigin: centered ? 'center center' : 'left center',
         }}
       >
         {score.toLocaleString('en-US')}

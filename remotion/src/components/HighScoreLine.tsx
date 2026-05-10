@@ -50,27 +50,31 @@ export const HighScoreLine: React.FC<{
   approachLevel?: number;
 }> = ({ highScore, opacity = 1, approachLevel = 0 }) => {
   const a = Math.max(0, Math.min(1, approachLevel));
-  // Alpha lerps from 0.45 (muted reference) to 0.85 (active challenge).
-  const alpha = 0.45 + 0.4 * a;
-  // White glow builds from 0 to (20 px blur, 0.55 opacity) at the threshold.
-  const glowBlur = 20 * a;
-  const glowOpacity = 0.55 * a;
+  // Alpha lerps 0.45 (muted reference) → 1.00 (full presence at threshold).
+  const alpha = 0.45 + 0.55 * a;
+  // Color lerp white(255,255,255) → soft gold(255,220,150) at peak.
+  const r = 255;
+  const g = Math.round(255 - (255 - 220) * a);
+  const b = Math.round(255 - (255 - 150) * a);
+  // Glow grows in matching warm tone, peaks at (32 px, 0.75 opacity).
+  const glowBlur = 32 * a;
+  const glowOpacity = 0.75 * a;
   const filter =
     glowBlur > 0.1
-      ? `drop-shadow(0 0 ${glowBlur.toFixed(1)}px rgba(255, 255, 255, ${glowOpacity.toFixed(3)}))`
+      ? `drop-shadow(0 0 ${glowBlur.toFixed(1)}px rgba(255, 220, 150, ${glowOpacity.toFixed(3)}))`
       : undefined;
-  // Tiny scale bump — keeps tabular alignment, just adds presence.
-  const scale = 1 + 0.03 * a;
+  // Slightly bigger scale bump than before for "ignited" presence.
+  const scale = 1 + 0.05 * a;
 
   return (
     <Fragment>
-      <span style={{ ...labelStyle, color: `rgba(255, 255, 255, ${alpha.toFixed(3)})`, opacity }}>
+      <span style={{ ...labelStyle, color: `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})`, opacity }}>
         High
       </span>
       <span
         style={{
           ...baseValueStyle,
-          color: `rgba(255, 255, 255, ${(alpha + 0.1).toFixed(3)})`,
+          color: `rgba(${r}, ${g}, ${b}, ${Math.min(1, alpha + 0.1).toFixed(3)})`,
           filter,
           transform: `scale(${scale.toFixed(4)})`,
           opacity,
