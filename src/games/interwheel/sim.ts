@@ -356,6 +356,12 @@ function freshEvents(): SimEvents {
   };
 }
 
+// Note: an earlier optimization tried to mutate `this.events` in place each
+// step (resetEvents helper) to skip GC pressure. Empirically that caused
+// a ~10% regression: V8's escape analysis inlines small fresh literals very
+// well, and the array.length=0 pattern triggered hidden-class transitions
+// that hurt more than allocations cost. Keeping the freshEvents() approach.
+
 // ============================================================================
 // Snapshots (clone / restore)
 // ============================================================================
@@ -506,7 +512,10 @@ export class InterwheelSim {
       },
       wheels: this.wheels.map((w) => ({
         x: w.x, y: w.y, ray: w.ray, speed: w.speed, a: w.a, fr: w.fr,
-        mines: w.mines.slice(),
+        // wheel.mines is read-only after init (only `addMine()` mutates it,
+        // and that's only called from sim.reset). Sharing the reference
+        // avoids per-clone allocs and per-restore copies.
+        mines: w.mines,
         destroyed: w.destroyed, boomAngle: w.boomAngle,
         active: w.active, dustTick: w.dustTick,
       })),
@@ -528,14 +537,15 @@ export class InterwheelSim {
     // added/removed after init, so length always matches; we keep object
     // identity stable so blob.cw can be re-resolved.
     if (this.wheels.length !== s.wheels.length) {
-      this.wheels = s.wheels.map((w) => ({ ...w, mines: w.mines.slice() }));
+      // wheel.mines is read-only post-init (see clone()); share the array.
+      this.wheels = s.wheels.map((w) => ({ ...w }));
     } else {
       for (let i = 0; i < this.wheels.length; i += 1) {
         const w = this.wheels[i];
         const ws = s.wheels[i];
         w.x = ws.x; w.y = ws.y; w.ray = ws.ray; w.speed = ws.speed;
         w.a = ws.a; w.fr = ws.fr;
-        w.mines = ws.mines.slice();
+        w.mines = ws.mines;
         w.destroyed = ws.destroyed; w.boomAngle = ws.boomAngle;
         w.active = ws.active; w.dustTick = ws.dustTick;
       }
@@ -564,7 +574,10 @@ export class InterwheelSim {
     this.ended = s.ended;
     this.spaceHeld = s.spaceHeld; this.spacePressed = s.spacePressed;
     this.pointerPressed = s.pointerPressed;
-    this.events = freshEvents();
+    // No `this.events = freshEvents()` here: every observed call site
+    // calls `sim.step(...)` immediately after `restore()`, and `step()`
+    // resets events on its first line. Allocating a SimEvents that the
+    // very next call discards is per-edge GC pressure for nothing.
   }
 
   // ---------------------------------------------------------------- helpers

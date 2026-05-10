@@ -596,8 +596,6 @@ export class InterwheelPlanner {
   private knownWheelIdx = new Set<number>();
   private knownPastilleKeys = new Set<string>();
   private lastSeenTick = -1;
-  private currentPerceived: PerceivedSnapshot | null = null;
-  private currentPerceivedKeys: string[] = [];
   private lineageGamma = LINEAGE_DEFAULTS.gamma;
   private lineageDecay = LINEAGE_DEFAULTS.decay;
 
@@ -712,8 +710,6 @@ export class InterwheelPlanner {
     this.lastSeenTick = fullSnap.tick;
     this.updatePerception(fullSnap);
     const perceived = this.buildPerceivedSnapshot(fullSnap);
-    this.currentPerceived = perceived;
-    this.currentPerceivedKeys = perceived.snap.pastilles.map((p) => this.pastilleKey(p));
 
     if (fullSnap.blob.state === BLOB_STATE_DEAD || fullSnap.ending || fullSnap.ended) {
       return this.emptyResult(fullSnap.blob.y, perceived, 'dead');
@@ -825,13 +821,18 @@ export class InterwheelPlanner {
     // and the previous leaf-first preference would commit to a worse
     // descendant ("receding-horizon procrastination"). Re-planning every tick
     // means picking a shallower target only commits a shorter prefix of plan.
+    // leafEdges is consumed by bestStableLeafNode, lineageSupportForEdges,
+    // and segmentsForEdges. Compute once and thread through — the function
+    // does two passes over `edges` plus a Set alloc, and the result is
+    // identical for all three callers within a plan.
+    const leafEdges = edges.length > 0 ? this.computeLeafEdges(edges) : [];
     const targetNode = this.bestStableNode(nodes, edges)
-      ?? this.bestStableLeafNode(nodes, edges)
+      ?? this.bestStableLeafNode(nodes, leafEdges)
       ?? (fallbackEdge ? nodes[fallbackEdge.childId] : root);
     const bestEdgeIds = this.bestEdgeIds(nodes, targetNode);
     const plan = this.planForNode(nodes, edges, targetNode);
-    const supportResult = this.lineageSupportForEdges(nodes, edges);
-    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, supportResult.support, nodes) : [];
+    const supportResult = this.lineageSupportForEdges(nodes, edges, leafEdges);
+    const segments = this.cfg.collectSegments ? this.segmentsForEdges(edges, bestEdgeIds, supportResult.support, nodes, leafEdges) : [];
     const bestScoreBreakdown = this.scoreBreakdownForNode(edges, targetNode) ?? rootScore;
     const diagnostics = this.computeDiagnostics(nodes, edges, supportResult, bestEdgeIds);
     return {
@@ -1429,9 +1430,9 @@ export class InterwheelPlanner {
     return node.value + yGainTerm - node.totalTicks * 1.5;
   }
 
-  private bestStableLeafNode(nodes: SearchNode[], edges: SearchEdge[]): SearchNode | null {
+  private bestStableLeafNode(nodes: SearchNode[], leafEdges: SearchEdge[]): SearchNode | null {
     let best: SearchNode | null = null;
-    for (const edge of this.leafEdgeIds(edges)) {
+    for (const edge of leafEdges) {
       if (edge.isDead || !edge.isStable || edge.childId < 0) continue;
       const node = nodes[edge.childId];
       if (!best || node.value > best.value) best = node;
@@ -1479,7 +1480,11 @@ export class InterwheelPlanner {
     return edges[target.edgeId].scoreBreakdown;
   }
 
-  private lineageSupportForEdges(nodes: SearchNode[], edges: SearchEdge[]): {
+  private lineageSupportForEdges(
+    nodes: SearchNode[],
+    edges: SearchEdge[],
+    leafEdges: SearchEdge[],
+  ): {
     support: number[];
     leafEdges: SearchEdge[];
     leafIdsSorted: number[];
@@ -1496,7 +1501,6 @@ export class InterwheelPlanner {
     // and a child edge can only be created after its parent node has been
     // popped, so a parent edge always precedes any child edge in `edges`.
     const support = new Array<number>(edges.length).fill(0);
-    const leafEdges = this.leafEdgeIds(edges);
     const leafIds = leafEdges
       .map((edge) => edge.id)
       .sort((a, b) => edges[a].value - edges[b].value || a - b);
@@ -1593,7 +1597,7 @@ export class InterwheelPlanner {
     return out;
   }
 
-  private leafEdgeIds(edges: SearchEdge[]): SearchEdge[] {
+  private computeLeafEdges(edges: SearchEdge[]): SearchEdge[] {
     const expandedNodeIds = new Set<number>();
     for (const edge of edges) expandedNodeIds.add(edge.parentId);
     return edges.filter((edge) => !expandedNodeIds.has(edge.childId));
@@ -1604,9 +1608,10 @@ export class InterwheelPlanner {
     bestEdgeIds: Set<number>,
     support: number[],
     nodes: SearchNode[],
+    leafEdges: SearchEdge[],
   ): Segment[] {
     const out: Segment[] = [];
-    const leafIds = new Set(this.leafEdgeIds(edges).map((edge) => edge.id));
+    const leafIds = new Set(leafEdges.map((edge) => edge.id));
     const renderGenerationLimit = renderedGenerationLimitForSearchDepth(this.cfg.maxStableDepth);
     for (const edge of edges) {
       const onChosenChain = bestEdgeIds.has(edge.id);
@@ -1667,7 +1672,8 @@ export class InterwheelPlanner {
     const wheels = wheelIndices.map((idx, localIdx) => {
       wheelIdxMap.set(idx, localIdx);
       const wheel = full.wheels[idx];
-      return { ...wheel, mines: wheel.mines.slice() };
+      // Mines are read-only post-init; share the reference (see sim.ts:clone).
+      return { ...wheel };
     });
     if (this.cfg.metricParams.climbPhantomWheelEnabled) {
       const position = this.phantomWheelPosition(full);
