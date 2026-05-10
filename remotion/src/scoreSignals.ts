@@ -153,6 +153,10 @@ export function useWaterDanger(
 
 export const HIGH_SCORE_FADE_DURATION_SEC = 0.4;
 export const HIGH_SCORE_KICK_DECAY_SEC = 0.25; // matches score's kick decay
+// Approach treatment on HighScoreLine kicks in when current/highScore
+// crosses APPROACH_START_RATIO and ramps quadratically to 1.0 at the
+// crossing point. Keeps far-from-high runs visually quiet.
+export const APPROACH_START_RATIO = 0.7;
 
 function findCrossingFrame(
   sidecar: SidecarRow[],
@@ -168,6 +172,7 @@ export type HighScoreState = {
   highScoreOpacity: number;       // 1 pre-crossing, 0 fully past, lerps over fade window
   scoreLabelIsNewBest: boolean;   // false pre-crossing, true at/after the crossing frame
   crossKickEnv: number;           // [0, 1]; synthetic kick fired on the score at the crossing
+  approachLevel: number;          // [0, 1]; ramps up as score nears highScore, 0 post-crossing
 };
 
 export function useHighScoreState(
@@ -181,17 +186,43 @@ export function useHighScoreState(
     return findCrossingFrame(sidecar, previousHighScore);
   }, [sidecar, previousHighScore]);
 
+  // Approach: only meaningful pre-crossing. Computed from the current
+  // sidecar score / previousHighScore ratio with a quadratic ease-in
+  // starting at APPROACH_START_RATIO.
+  const computeApproach = (idx: number): number => {
+    if (!sidecar || previousHighScore == null || previousHighScore <= 0) return 0;
+    const score = sidecar[idx]?.score ?? 0;
+    const ratio = clamp01(score / previousHighScore);
+    const t = clamp01((ratio - APPROACH_START_RATIO) / (1 - APPROACH_START_RATIO));
+    return t * t;
+  };
+
   if (crossingFrame == null) {
-    return { highScoreOpacity: 1, scoreLabelIsNewBest: false, crossKickEnv: 0 };
+    const idx = sidecar
+      ? Math.min(Math.max(0, frame), sidecar.length - 1)
+      : 0;
+    return {
+      highScoreOpacity: 1,
+      scoreLabelIsNewBest: false,
+      crossKickEnv: 0,
+      approachLevel: computeApproach(idx),
+    };
   }
   const elapsed = (frame - crossingFrame) / fps;
   if (elapsed < 0) {
-    return { highScoreOpacity: 1, scoreLabelIsNewBest: false, crossKickEnv: 0 };
+    const idx = Math.min(Math.max(0, frame), (sidecar?.length ?? 1) - 1);
+    return {
+      highScoreOpacity: 1,
+      scoreLabelIsNewBest: false,
+      crossKickEnv: 0,
+      approachLevel: computeApproach(idx),
+    };
   }
   const fadeT = clamp01(elapsed / HIGH_SCORE_FADE_DURATION_SEC);
   return {
     highScoreOpacity: 1 - fadeT,
     scoreLabelIsNewBest: true,
     crossKickEnv: pulseDecay(elapsed, HIGH_SCORE_KICK_DECAY_SEC),
+    approachLevel: 0,
   };
 }

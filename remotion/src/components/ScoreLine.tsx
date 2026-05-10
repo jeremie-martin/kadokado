@@ -13,7 +13,12 @@
 import { Fragment } from 'react';
 
 const FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-const FONT_SIZE = 104;
+// Label and value differ by ~13% on font-size to compensate for the bold
+// weight (800) optically compressing digits vs the medium (500) label —
+// this is what makes the *baseline* score visually equal to its label.
+// Effects (warmth, kick) scale the value above this baseline.
+const LABEL_FONT_SIZE = 104;
+const VALUE_FONT_SIZE = 112;
 
 // Lerp white(255,255,255) → gold(255, 209, 102) by warmth ∈ [0, 1].
 function warmthColor(warmth: number): string {
@@ -25,7 +30,7 @@ function warmthColor(warmth: number): string {
 
 const labelStyle: React.CSSProperties = {
   fontFamily: FONT_FAMILY,
-  fontSize: FONT_SIZE,
+  fontSize: LABEL_FONT_SIZE,
   lineHeight: 1,
   fontWeight: 500,
   color: 'rgba(255, 255, 255, 0.65)',
@@ -36,7 +41,7 @@ const labelStyle: React.CSSProperties = {
 
 const baseValueStyle: React.CSSProperties = {
   fontFamily: FONT_FAMILY,
-  fontSize: FONT_SIZE,
+  fontSize: VALUE_FONT_SIZE,
   lineHeight: 1,
   fontWeight: 800,
   fontVariantNumeric: 'tabular-nums',

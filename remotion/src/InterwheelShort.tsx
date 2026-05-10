@@ -200,6 +200,7 @@ const LayoutFrame: React.FC<{
   scoreLabel: string;
   previousHighScore: number | null | undefined;
   highScoreOpacity: number;
+  highScoreApproach: number;
   // Water danger ∈ [0, 1], LP-filtered (see useWaterDanger). Drives a red
   // tint overlay on both top and bottom bands — replaces the numeric
   // WaterGauge readout. 0 = calm, 1 = blob touching/below water.
@@ -223,6 +224,7 @@ const LayoutFrame: React.FC<{
   scoreLabel,
   previousHighScore,
   highScoreOpacity,
+  highScoreApproach,
   waterDanger,
   dangerTintRGB,
   dangerVisibility,
@@ -262,9 +264,12 @@ const LayoutFrame: React.FC<{
           top: 0,
           width: SHORT_WIDTH,
           height: TOP_BAND_HEIGHT,
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
+          display: 'grid',
+          gridTemplateColumns: 'auto auto',
+          alignContent: 'center',
+          justifyContent: 'start',
+          columnGap: 40,
+          rowGap: 12,
           padding: '0 44px',
           filter: supportFilter,
           backgroundColor: waterDanger > 0 && dangerVisibility > 0
@@ -272,18 +277,18 @@ const LayoutFrame: React.FC<{
             : undefined,
         }}
       >
-        <div style={{ display: 'flex', alignItems: 'baseline', columnGap: 40 }}>
-          <ScoreLine
-            score={row?.score ?? 0}
-            warmth={warmth}
-            kickEnv={kickEnv}
-            label={scoreLabel}
+        <ScoreLine
+          score={row?.score ?? 0}
+          warmth={warmth}
+          kickEnv={kickEnv}
+          label={scoreLabel}
+        />
+        {previousHighScore != null && previousHighScore > 0 && (
+          <HighScoreLine
+            highScore={previousHighScore}
+            opacity={highScoreOpacity}
+            approachLevel={highScoreApproach}
           />
-        </div>
-        {previousHighScore != null && previousHighScore > 0 && highScoreOpacity > 0 && (
-          <div style={{ display: 'flex', alignItems: 'baseline', columnGap: 24 }}>
-            <HighScoreLine highScore={previousHighScore} opacity={highScoreOpacity} />
-          </div>
         )}
       </div>
 
@@ -399,6 +404,7 @@ const RegularPhase: React.FC<{
       scoreLabel={highScore.scoreLabelIsNewBest ? 'New Best' : 'Score'}
       previousHighScore={previousHighScore}
       highScoreOpacity={highScore.highScoreOpacity}
+      highScoreApproach={highScore.approachLevel}
       waterDanger={waterDanger}
       dangerTintRGB={dangerTint.rgb}
       dangerVisibility={dangerTint.visibility}
@@ -502,6 +508,7 @@ const WastedPhase: React.FC<{
         scoreLabel={highScore.scoreLabelIsNewBest ? 'New Best' : 'Score'}
         previousHighScore={previousHighScore}
         highScoreOpacity={highScore.highScoreOpacity}
+        highScoreApproach={highScore.approachLevel}
         waterDanger={waterDanger}
         dangerTintRGB={dangerTint.rgb}
         dangerVisibility={dangerTint.visibility}
