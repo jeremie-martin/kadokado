@@ -9,6 +9,19 @@ playwright-report/
 tools/
 extracted-assets/
 generated-assets/
-public/assets/interwheel-2x/
-public/assets/interwheel-4x/
-public/assets/interwheel-4x-alpha-aa/
+# Upscale variant outputs. The interwheel-2x/-4x mounts under public/assets/
+# are symlinks created on demand by scripts/interwheel/make-video.mjs and
+# point into generated-assets/, so no trailing slash here (a trailing slash
+# only matches directories, not symlinks).
+public/assets/interwheel-2x
+public/assets/interwheel-4x
+public/assets/interwheel-4x-alpha-aa
+# Stray top-level upscale variants (occasionally copied out of generated-assets
+# while comparing models).
+/animejanai-v3-compact-x2x2
+/median-4x
+remotion/node_modules/
+# Per-run sources & dynamic assets copied into Remotion public/ by
+# compose-short.mjs. Ignore everything except the .gitkeep placeholder.
+remotion/public/latest/*
+!remotion/public/latest/.gitkeep

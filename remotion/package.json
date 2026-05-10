@@ -1,0 +1,22 @@
+{
+  "name": "motiontwin-remotion",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Remotion compositions for Interwheel YouTube Shorts",
+  "scripts": {
+    "studio": "remotion studio src/index.ts",
+    "render": "remotion render src/index.ts InterwheelShort"
+  },
+  "dependencies": {
+    "@remotion/cli": "4.0.459",
+    "@remotion/google-fonts": "^4.0.459",
+    "@remotion/renderer": "4.0.459",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "remotion": "4.0.459"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "typescript": "^5.5.4"
+  }
+}
