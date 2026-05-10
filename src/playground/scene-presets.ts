@@ -33,6 +33,7 @@ export type ScenePreset = {
   // applyScenePreset() also writes these so a one-click preset configures the
   // AI's intent and the candidate-line look together with the world params.
   focus?: number;       // 0..1; drives climb/pastille via policyFromFocus
+  wall?: number;        // optional planner wall weight; overrides DEFAULT_PLANNER_POLICY.wall
   widthMin?: number;    // overlay base line width
   alphaMin?: number;    // overlay alpha floor
   alphaGamma?: number;  // overlay alpha curve exponent
@@ -59,12 +60,13 @@ export const SCENE_PRESETS: Record<ScenePresetName, ScenePreset> = {
   },
   video: {
     waterMargin: { meters: 20, natural: false },
-    waterSpeed: { min: 3.8, max: 4.6, natural: false },
-    difficulty: { min: 0.2, max: 0.4, natural: false },
-    mineDensity: { min: 0.3, max: 0.6, natural: false },
-    pastilleSpawn: { min: 0.5, max: 0.8, natural: false },
+    waterSpeed: { min: 4.0, max: 5.0, natural: false },
+    difficulty: { min: 0.25, max: 0.4, natural: false },
+    mineDensity: { min: 0.4, max: 0.7, natural: false },
+    pastilleSpawn: { min: 0.4, max: 0.7, natural: false },
     rampSpeed: 1.0,
-    focus: 0.6,        // climb=0.90, pastille=0.60
+    focus: 0.75,       // climb=0.75, pastille=0.75
+    wall: 0.6,
     widthMin: 0.45,
     alphaMin: 0.06,
     alphaGamma: 3.0,

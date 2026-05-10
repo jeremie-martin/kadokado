@@ -183,6 +183,7 @@ function probeSeed(seed: number, args: Args): ProbeResult {
   const policy: PlannerPolicy = preset.focus !== undefined
     ? policyFromFocus(preset.focus)
     : { climb: 1.0, wall: 0.5, pastille: 0.0 };
+  if (preset.wall !== undefined) policy.wall = preset.wall;
   const planner = new InterwheelPlanner(sim, {
     policy,
     revealScreensAbove: lookahead,

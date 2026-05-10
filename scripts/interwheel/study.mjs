@@ -31,11 +31,11 @@ const SCENE_PRESETS = {
     rampSpeed: 1.0,
   },
   video: {
-    waterMargin: { meters: 0, natural: false },
-    waterSpeed: { min: 3.0, max: 4.0, natural: false },
-    difficulty: { min: 0.2, max: 0.4, natural: false },
-    mineDensity: { min: 0.3, max: 0.6, natural: false },
-    pastilleSpawn: { min: 0.5, max: 0.8, natural: false },
+    waterMargin: { meters: 20, natural: false },
+    waterSpeed: { min: 4.0, max: 5.0, natural: false },
+    difficulty: { min: 0.25, max: 0.4, natural: false },
+    mineDensity: { min: 0.4, max: 0.7, natural: false },
+    pastilleSpawn: { min: 0.4, max: 0.7, natural: false },
     rampSpeed: 1.0,
     // Video-mode planner overrides — applied on top of the analysis preset
     // (smoke/quick/standard/overnight) when --scene=video. Mirrors

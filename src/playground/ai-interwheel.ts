@@ -421,6 +421,7 @@ function applyScenePreset(name: keyof typeof SCENE_PRESETS): void {
   sceneRampSpeed = preset.rampSpeed;
   syncSceneControls();
   if (preset.focus !== undefined) applyPolicy(policyFromFocus(preset.focus, policy));
+  if (preset.wall !== undefined) applyPolicy({ ...policy, wall: preset.wall });
   if (preset.widthMin !== undefined) applyOverlayParam('widthMin', preset.widthMin);
   if (preset.alphaMin !== undefined) applyOverlayParam('alphaMin', preset.alphaMin);
   if (preset.alphaGamma !== undefined) applyOverlayParam('alphaGamma', preset.alphaGamma);
