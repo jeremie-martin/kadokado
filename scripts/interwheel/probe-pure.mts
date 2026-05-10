@@ -1,19 +1,33 @@
 #!/usr/bin/env tsx
 // Pure-Node Interwheel probe. Imports the simulator and planner directly from
 // src/, applies the SCENE_PRESETS.video recipe, and runs the headless game
-// loop without a browser. Emits one JSON object per --seed on stdout so
-// callers (make-video.mjs, parity tests) can consume cheaply.
+// loop without a browser. Emits one JSON object per seed on stdout in
+// completion order (so callers can stream-consume and stop early when a
+// match is found).
 //
 // Why this exists: until now every "headless" tool (study.mjs, make-video.mjs
 // probe, analyze-interwheel.mjs) launched Chromium and ran sim+planner via
-// page.evaluate. That's correct but slow; this path is the same code minus
-// the Pixi/DOM seam. Parity is enforced by analyze-interwheel.spec.ts at the
-// `parityCheck()` level — same sim, same planner, same RNG draws.
+// page.evaluate. That works but spends startup on browser+Pixi and limits
+// parallelism to "one Chromium page per worker". This path is the same code
+// minus the Pixi/DOM seam, parallelised with worker_threads.
+//
+// Parity vs the browser path: pre-death trajectories are bit-identical;
+// during a death sequence cosmetics consume Math.random in the browser path
+// only, drifting the final blob.y by ~0.013 px (sub-pixel, irrelevant for
+// probe purposes). All summary fields (ticks, endingTick, ended, height,
+// score) match exactly. See scripts/interwheel/probe-browser.mjs for the
+// matching browser-side oracle used to validate this.
 //
 // Usage:
 //   npx tsx scripts/interwheel/probe-pure.mts --seed=4200
-//   npx tsx scripts/interwheel/probe-pure.mts --seed=4200 --max-seconds=60
 //   npx tsx scripts/interwheel/probe-pure.mts --seed-base=4200 --count=20
+//   npx tsx scripts/interwheel/probe-pure.mts --seed-base=4200 --count=50 \
+//     --concurrency=8 --max-seconds=54
+
+import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { availableParallelism } from 'node:os';
+import { fileURLToPath } from 'node:url';
 
 import { InterwheelSim } from '../../src/games/interwheel/sim.ts';
 import { makeSeededRng } from '../../src/playground/interwheel-edge-validator.ts';
@@ -37,11 +51,10 @@ type Args = {
   count: number;
   maxSeconds: number;
   preset: ScenePresetName;
-  // Trajectory hash mode for parity: 'none' = just the summary,
-  // 'final' = blob xy + waterY + score at last tick, 'full' = a tick-stream
-  // hash so any single divergent step is detectable.
   hash: 'none' | 'final' | 'full';
+  concurrency: number;
   printTrajectory: boolean;
+  worker: boolean;
   help: boolean;
 };
 
@@ -51,21 +64,26 @@ function parseArgs(argv: string[]): Args {
     count: 1,
     maxSeconds: 60,
     preset: 'video',
-    hash: 'full',
+    hash: 'none',
+    concurrency: 1,
     printTrajectory: false,
+    worker: false,
     help: false,
   };
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
+    else if (raw === '--worker') args.worker = true;
     else if (raw.startsWith('--seed=')) { args.seedBase = Number(raw.slice('--seed='.length)); args.count = 1; }
     else if (raw.startsWith('--seed-base=')) args.seedBase = Number(raw.slice('--seed-base='.length));
     else if (raw.startsWith('--count=')) args.count = Number(raw.slice('--count='.length));
     else if (raw.startsWith('--max-seconds=')) args.maxSeconds = Number(raw.slice('--max-seconds='.length));
     else if (raw.startsWith('--preset=')) args.preset = raw.slice('--preset='.length) as ScenePresetName;
     else if (raw.startsWith('--hash=')) args.hash = raw.slice('--hash='.length) as Args['hash'];
+    else if (raw.startsWith('--concurrency=')) args.concurrency = Number(raw.slice('--concurrency='.length));
     else if (raw === '--print-trajectory') args.printTrajectory = true;
     else throw new Error(`Unknown arg: ${raw}`);
   }
+  args.concurrency = Math.max(1, Math.min(args.concurrency, args.count, availableParallelism()));
   return args;
 }
 
@@ -74,35 +92,38 @@ function help(): void {
 
 USAGE:
   npx tsx scripts/interwheel/probe-pure.mts --seed=4200
-  npx tsx scripts/interwheel/probe-pure.mts --seed-base=4200 --count=20
+  npx tsx scripts/interwheel/probe-pure.mts --seed-base=4200 --count=50 --concurrency=8
 
 OPTIONS:
   --seed=N            Single seed (sets --count=1).
   --seed-base=N       First seed in a sweep. Default 4200.
   --count=N           How many consecutive seeds to probe. Default 1.
   --max-seconds=N     Hard cap per probe in simulated seconds. Default 60.
+                      Set this to your window's UPPER bound to skip pointless
+                      tail work on surviving seeds.
   --preset=NAME       SCENE_PRESETS key. Default "video".
-  --hash=MODE         "none" | "final" | "full". Default "full".
-  --print-trajectory  Dump per-tick blob/water state to stderr (debug).
+  --hash=MODE         "none" | "final" | "full". Default "none".
+  --concurrency=N     Worker subprocesses. Default 1. Capped by --count and CPU count.
+  --print-trajectory  Dump per-tick blob/water state to stderr (debug, single thread only).
 
-Output: one JSON object per seed on stdout, one line each. Schema:
-  { seed, ticks, endingTick, ended, heightMeters, score, hash, planMs }
+Output: one JSON object per seed on stdout, in COMPLETION order (parallel
+runs may interleave). Schema:
+  { seed, ticks, endingTick, ended, heightMeters, score, hash, planMs, wallMs }
 `);
 }
 
-// FNV-1a 32-bit. We hash a synthetic byte stream of (tick, blob.x, blob.y,
-// blob.vx, blob.vy, blob.state, waterY, score, press) so any single
-// divergent step shows up as a different final hash. 32-bit is plenty —
-// collision probability over 60s × 40fps = 2400 ticks is negligible.
+// FNV-1a 32-bit. Hashes a synthetic byte stream of (tick, blob.x, blob.y,
+// blob.vx, blob.vy, blob.state, waterY, score, press) so any single divergent
+// step shows up as a different final hash.
 class TrajectoryHasher {
   private h = 0x811c9dc5 >>> 0;
+  private buf = new ArrayBuffer(8);
+  private f64 = new Float64Array(this.buf);
+  private u32 = new Uint32Array(this.buf);
   push(value: number): void {
-    // Reinterpret float bits via Float64 → two Uint32 limbs.
-    const buf = new ArrayBuffer(8);
-    new Float64Array(buf)[0] = value;
-    const u = new Uint32Array(buf);
-    this.mix(u[0]!);
-    this.mix(u[1]!);
+    this.f64[0] = value;
+    this.mix(this.u32[0]!);
+    this.mix(this.u32[1]!);
   }
   private mix(x: number): void {
     let h = this.h;
@@ -128,24 +149,27 @@ type ProbeResult = {
   waterY: number;
   hash: string | null;
   planMs: { total: number; max: number };
+  wallMs: number;
 };
 
 function probeSeed(seed: number, args: Args): ProbeResult {
+  const t0 = performance.now();
   const preset = SCENE_PRESETS[args.preset];
   if (!preset) throw new Error(`Unknown preset: ${args.preset}`);
 
-  // 1. World overrides — same as clicking the scene-preset button.
+  // World overrides — same as clicking the scene-preset button in the playground.
   applyScenePresetToSim(preset);
 
-  // 2. Sim reset. Mirror the playground's wrapped reset: scene overrides
-  //    are now staged in the sim module's globals, and reset() is invoked
-  //    with a seeded RNG so wheel layout / pastille placement / mines are
-  //    reproducible.
+  // Sim reset. Mirrors the playground's wrapped reset: scene overrides are
+  // staged in the sim module's globals (above), then reset() runs with a
+  // seeded RNG so wheel layout / pastille placement / mines are reproducible.
   const sim = new InterwheelSim();
   const resetRng = makeSeededRng(seed);
-  // Some sim init code paths call Math.random directly; bridge it onto the
-  // seeded stream for the duration of reset to match the playground exactly
-  // (which wraps reset under `Math.random = makeSeededRng(seed)`).
+  // Some sim init paths (and the game class's buildDecor in live play) call
+  // Math.random directly; bridge it onto the seeded stream for reset to
+  // match the playground exactly. Only matters for code paths *outside*
+  // sim.ts that consult Math.random during reset; sim.ts itself uses the
+  // explicit rng arg.
   const savedRandom = Math.random;
   Math.random = resetRng;
   try {
@@ -154,34 +178,27 @@ function probeSeed(seed: number, args: Args): ProbeResult {
     Math.random = savedRandom;
   }
 
-  // 3. Planner. Use the same defaults the playground uses, then apply the
-  //    preset's overrides. The constructor takes lookahead + search limits
-  //    via cfg; policy is set explicitly.
+  // Planner. Use the playground defaults, then apply the preset's overrides.
   const lookahead = preset.lookaheadScreens ?? PLANNER_PERCEPTION_DEFAULTS.revealScreensAbove;
-  const searchLimits = {
-    maxEdgeRollouts: preset.searchLimits?.maxEdgeRollouts ?? PLANNER_SEARCH_DEFAULTS.maxEdgeRollouts,
-    maxStableDepth: preset.searchLimits?.maxStableDepth ?? PLANNER_SEARCH_DEFAULTS.maxStableDepth,
-    budgetMs: preset.searchLimits?.budgetMs ?? PLANNER_SEARCH_DEFAULTS.budgetMs,
-  };
   const policy: PlannerPolicy = preset.focus !== undefined
     ? policyFromFocus(preset.focus)
     : { climb: 1.0, wall: 0.5, pastille: 0.0 };
   const planner = new InterwheelPlanner(sim, {
     policy,
     revealScreensAbove: lookahead,
-    maxEdgeRollouts: searchLimits.maxEdgeRollouts,
-    maxStableDepth: searchLimits.maxStableDepth,
-    budgetMs: searchLimits.budgetMs,
+    maxEdgeRollouts: preset.searchLimits?.maxEdgeRollouts ?? PLANNER_SEARCH_DEFAULTS.maxEdgeRollouts,
+    maxStableDepth: preset.searchLimits?.maxStableDepth ?? PLANNER_SEARCH_DEFAULTS.maxStableDepth,
+    budgetMs: preset.searchLimits?.budgetMs ?? PLANNER_SEARCH_DEFAULTS.budgetMs,
   });
 
-  // 4. Post-reset RNG: a fresh seeded stream for sim.step's per-tick draws.
-  //    The playground does the same — reseed is two independent mulberry32
-  //    streams seeded with the same `seed`.
+  // Post-reset RNG: a fresh seeded stream for sim.step's per-tick draws.
+  // The playground's reseedGame() does the equivalent — two independent
+  // mulberry32 streams seeded with the same `seed`.
   const stepRng = makeSeededRng(seed);
 
-  // 5. Tick loop. Mirror the playground's reseedGame path: pendingPress
-  //    starts null (no plan ran before the first tick), so tick 1 has
-  //    press=false. After each sim.step, plan for the next tick.
+  // Tick loop. Mirror the playground's reseedGame path: pendingPress starts
+  // null (no plan ran before tick 1), so tick 1 has press=false. After each
+  // sim.step, plan for the next tick.
   const hasher = args.hash !== 'none' ? new TrajectoryHasher() : null;
   const maxTicks = Math.max(1, Math.round(args.maxSeconds * GAME_FPS));
   let ticks = 0;
@@ -215,9 +232,9 @@ function probeSeed(seed: number, args: Args): ProbeResult {
 
     if (sim.ended) break;
 
-    const t0 = performance.now();
+    const tPlan0 = performance.now();
     const result = planner.step();
-    const dt = performance.now() - t0;
+    const dt = performance.now() - tPlan0;
     totalPlanMs += dt;
     if (dt > maxPlanMs) maxPlanMs = dt;
     pendingPress = result.press;
@@ -234,20 +251,158 @@ function probeSeed(seed: number, args: Args): ProbeResult {
     waterY: sim.waterY,
     hash: hasher?.digest() ?? null,
     planMs: { total: Number(totalPlanMs.toFixed(2)), max: Number(maxPlanMs.toFixed(2)) },
+    wallMs: Number((performance.now() - t0).toFixed(1)),
   };
 }
 
-function main(): void {
-  const args = parseArgs(process.argv);
-  if (args.help) { help(); return; }
+// ----------------------------------------------------------------------------
+// Master loop: spawn N child processes (each running this same script with
+// --worker), distribute seeds round-robin via stdin JSON-lines, collect
+// results from each child's stdout. We use child_process rather than
+// worker_threads because Node's worker_threads + tsx loader interaction
+// drops nested .ts resolutions in the worker's module graph (the loader is
+// invoked but its resolve hook isn't applied to imports inside imported
+// .ts files). Subprocess startup is ~1s per worker; for sweeps of 50+ seeds
+// this is amortised well below the per-probe cost (~13s).
+// ----------------------------------------------------------------------------
 
-  for (let i = 0; i < args.count; i += 1) {
-    const seed = args.seedBase + i;
-    const t0 = performance.now();
+type ChildHandle = {
+  proc: ReturnType<typeof spawn>;
+  inflight: number | null;     // seed currently being probed, or null if idle
+  stdout: ReturnType<typeof createInterface>;
+};
+
+async function runMaster(args: Args): Promise<void> {
+  // Stop quietly when the consumer closes our stdout (e.g. piped to head,
+  // or make-video.mjs found a GREEN seed and is shutting us down).
+  process.stdout.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);
+  });
+
+  // Forward termination signals to children so workers don't outlive us.
+  // Without this, SIGTERM to the master leaves CPU-bound workers running
+  // until they finish their current probe.
+  let activeChildren: ChildHandle[] = [];
+  for (const sig of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(sig, () => {
+      for (const c of activeChildren) c.proc.kill(sig);
+      process.exit(0);
+    });
+  }
+
+  if (args.concurrency === 1) {
+    // Fast path: skip subprocess overhead entirely. Useful for --seed=N.
+    for (let i = 0; i < args.count; i += 1) {
+      const result = probeSeed(args.seedBase + i, args);
+      process.stdout.write(JSON.stringify(result) + '\n');
+    }
+    return;
+  }
+
+  const total = args.count;
+  let nextOffset = 0;
+  let emitted = 0;
+  const scriptPath = fileURLToPath(import.meta.url);
+
+  const workerArgs = [
+    '--worker',
+    `--max-seconds=${args.maxSeconds}`,
+    `--preset=${args.preset}`,
+    `--hash=${args.hash}`,
+  ];
+
+  const children: ChildHandle[] = activeChildren;
+
+  // execArgv: forward only the tsx loader flags from this process so the
+  // child boots with the same TS resolution. `--require/--import` already
+  // live in process.execArgv when we're being run by `npx tsx`.
+  const loaderArgv = process.execArgv.filter((arg, i, arr) => {
+    if (arg === '--require' || arg === '--import') return true;
+    const prev = arr[i - 1];
+    return prev === '--require' || prev === '--import';
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const dispatch = (child: ChildHandle): void => {
+      if (nextOffset < total) {
+        const seed = args.seedBase + nextOffset;
+        nextOffset += 1;
+        child.inflight = seed;
+        child.proc.stdin!.write(JSON.stringify({ seed }) + '\n');
+      } else {
+        child.proc.stdin!.end();
+      }
+    };
+
+    for (let i = 0; i < args.concurrency; i += 1) {
+      const proc = spawn(process.execPath, [...loaderArgv, scriptPath, ...workerArgs], {
+        stdio: ['pipe', 'pipe', 'inherit'],
+      });
+      const stdout = createInterface({ input: proc.stdout!, crlfDelay: Infinity });
+      const child: ChildHandle = { proc, inflight: null, stdout };
+      children.push(child);
+
+      stdout.on('line', (line) => {
+        if (!line) return;
+        try {
+          const result = JSON.parse(line) as ProbeResult;
+          process.stdout.write(JSON.stringify(result) + '\n');
+          emitted += 1;
+          child.inflight = null;
+          if (emitted >= total) {
+            for (const c of children) c.proc.stdin!.end();
+          } else {
+            dispatch(child);
+          }
+        } catch (err) {
+          reject(new Error(`Bad worker line: ${line} (${err})`));
+        }
+      });
+
+      proc.on('error', reject);
+      proc.on('exit', (code) => {
+        if (code !== 0 && code !== null && emitted < total) {
+          reject(new Error(`Worker exited with code ${code}`));
+          return;
+        }
+        if (children.every((c) => c.proc.exitCode !== null)) resolve();
+      });
+
+      // Prime the worker with its first seed.
+      dispatch(child);
+    }
+  });
+}
+
+// ----------------------------------------------------------------------------
+// Worker loop: read JSON lines from stdin (`{ "seed": N }`), run probeSeed,
+// write the result JSON line to stdout. Loop until stdin closes.
+// ----------------------------------------------------------------------------
+
+async function runWorker(args: Args): Promise<void> {
+  // Master may close our stdout before we finish writing (e.g. it found a
+  // GREEN seed and is shutting the sweep down). Exit silently rather than
+  // dumping a stack trace.
+  process.stdout.on('error', (err) => {
+    if ((err as NodeJS.ErrnoException).code === 'EPIPE') process.exit(0);
+  });
+  const stdin = createInterface({ input: process.stdin, crlfDelay: Infinity });
+  for await (const line of stdin) {
+    if (!line.trim()) continue;
+    const { seed } = JSON.parse(line) as { seed: number };
     const result = probeSeed(seed, args);
-    const wall = performance.now() - t0;
-    process.stdout.write(JSON.stringify({ ...result, wallMs: Number(wall.toFixed(1)) }) + '\n');
+    process.stdout.write(JSON.stringify(result) + '\n');
   }
 }
 
-main();
+// ----------------------------------------------------------------------------
+// Entry point
+// ----------------------------------------------------------------------------
+
+const cliArgs = parseArgs(process.argv);
+if (cliArgs.help) { help(); process.exit(0); }
+if (cliArgs.worker) {
+  await runWorker(cliArgs);
+} else {
+  await runMaster(cliArgs);
+}

@@ -13,6 +13,8 @@
 import { mkdir, symlink, lstat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { createInterface } from 'node:readline';
+import { availableParallelism } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
 import { createServer } from 'vite';
@@ -90,6 +92,11 @@ function parseArgs(argv) {
     // from `--seed-base` for each preset. Output mp4s get a `-quickNs` tag so
     // they don't clobber a real probe-and-render capture for the same seed.
     quickSeconds: null,
+    // Probe parallelism. Probes are CPU-bound (planner dominates ~98% of
+    // wall-clock per probe), so this scales nearly linearly until you hit
+    // your CPU's performance-core count. Defaults to 8 because that's
+    // both common and big enough to amortise the per-worker tsx startup.
+    probeConcurrency: Math.min(8, Math.max(1, availableParallelism())),
     help: false,
   };
   for (const raw of argv.slice(2)) {
@@ -109,6 +116,7 @@ function parseArgs(argv) {
     }
     else if (raw.startsWith('--presets=')) args.presets = raw.slice('--presets='.length).split(',').map((s) => s.trim()).filter(Boolean);
     else if (raw.startsWith('--quick-seconds=')) args.quickSeconds = Number(raw.slice('--quick-seconds='.length));
+    else if (raw.startsWith('--probe-concurrency=')) args.probeConcurrency = Number(raw.slice('--probe-concurrency='.length));
     else {
       console.error(`Unknown argument: ${raw}`);
       args.help = true;
@@ -266,52 +274,65 @@ function startRawVideoEncoder(opts, outPath) {
   return { child, closed };
 }
 
-async function probeSeed(page, seed, maxTicks) {
-  // Single page.evaluate so applyScene/reseed/loop run with no inter-eval
-  // boundaries — keeps Math.random consumption identical to the render path
-  // (where setupFrameCanvas + reseedRandomFresh + first stepFrame is the
-  // equivalent boundary).
-  return await page.evaluate(({ s, maxT }) => {
-    const game = window.__game__;
-    if (!game?.app) throw new Error('Interwheel game is not ready');
-    game.app.ticker.stop();
-    // Apply video scene + seed via the live UI controls (button click
-    // fires applyScenePreset; reseed click fires the wrapped reset).
-    const presetBtn = document.getElementById('scene-preset-video');
-    if (!presetBtn) throw new Error('scene-preset-video button missing');
-    presetBtn.click();
-    const seedInput = document.getElementById('game-seed');
-    if (!seedInput) throw new Error('game-seed input missing');
-    seedInput.value = String(s);
-    seedInput.dispatchEvent(new Event('change', { bubbles: true }));
-    const reseedBtn = document.getElementById('game-reseed');
-    if (!reseedBtn) throw new Error('game-reseed button missing');
-    reseedBtn.click();
-    // Reseed Math.random AFTER the wrapped-reset's own seed/save/restore so
-    // every subsequent game.update consumes from a known fresh stream.
-    let rs = (s | 0) >>> 0;
-    Math.random = () => {
-      rs = (rs + 0x6d2b79f5) | 0;
-      let t = rs;
-      t = Math.imul(t ^ (t >>> 15), t | 1);
-      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-    let ticks = 0;
-    let endingTick = -1;
-    while (!game.ended && ticks < maxT) {
-      game.update();
-      ticks += 1;
-      if (endingTick < 0 && game.ending) endingTick = ticks;
+// Pure-Node probe sweep. Spawns scripts/interwheel/probe-pure.mts as a child
+// process, streams JSON-line results from stdout in completion order, and
+// returns the first seed dying inside [minSeconds, maxSeconds]. Probes are
+// run with `--concurrency` workers in parallel (each worker is a child of
+// the probe process, not a browser page); the death-time-window verdict is
+// computed here so we can kill the sweep as soon as a GREEN seed is found.
+async function probeSeedsForGreen(repoRoot, args) {
+  const minTicks = Math.round(args.minSeconds * GAME_FPS);
+  const maxTicks = Math.round(args.maxSeconds * GAME_FPS);
+  const probeScript = path.resolve(repoRoot, 'scripts/interwheel/probe-pure.mts');
+  const tsxBin = path.resolve(repoRoot, 'node_modules/.bin/tsx');
+  const child = spawn(tsxBin, [
+    probeScript,
+    `--seed-base=${args.seedBase}`,
+    `--count=${args.maxProbes}`,
+    `--concurrency=${args.probeConcurrency}`,
+    // --max-seconds caps each probe at the window's UPPER bound so
+    // surviving seeds don't waste tail compute. A tiny tail is added so
+    // a death right at the edge still registers (probe ends slightly
+    // after endingTick).
+    `--max-seconds=${args.maxSeconds + 2}`,
+    '--preset=video',
+    '--hash=none',
+  ], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'inherit'],
+  });
+
+  console.log(`Probing seeds ${args.seedBase}..${args.seedBase + args.maxProbes - 1} for a death in ${args.minSeconds}–${args.maxSeconds}s (video preset, concurrency=${args.probeConcurrency})`);
+
+  const reader = createInterface({ input: child.stdout, crlfDelay: Infinity });
+  let chosenSeed = null;
+  let chosenProbe = null;
+  for await (const line of reader) {
+    if (!line.trim()) continue;
+    const probe = JSON.parse(line);
+    const deathSec = (probe.endingTick > 0 ? probe.endingTick : probe.ticks) / GAME_FPS;
+    const verdict = !probe.ended
+      ? 'survived' // hit max-seconds cap or stuck
+      : probe.endingTick >= minTicks && probe.endingTick <= maxTicks
+        ? 'GREEN'
+        : probe.endingTick < minTicks
+          ? 'too short'
+          : 'too long';
+    console.log(`  seed=${probe.seed} death=${deathSec.toFixed(2)}s height=${probe.heightMeters}m ticks=${probe.ticks} (${(probe.wallMs / 1000).toFixed(1)}s real, ${verdict})`);
+    if (verdict === 'GREEN') {
+      chosenSeed = probe.seed;
+      chosenProbe = probe;
+      break;
     }
-    return {
-      ticks,
-      endingTick,
-      ended: game.ended,
-      heightMeters: Math.floor(game.maxHeight * 0.2),
-      score: game.score,
-    };
-  }, { s: seed, maxT: maxTicks });
+  }
+  // Stop the sweep cleanly. Closing stdin lets each in-flight worker
+  // finish its current probe and exit naturally; SIGTERM aborts the
+  // CPU-bound probes that haven't yet returned a result. The probe
+  // workers handle EPIPE silently (see runWorker's stdout handler), so
+  // any in-flight writes after GREEN don't pollute the console.
+  if (!child.killed) child.kill('SIGTERM');
+  await new Promise((resolve) => child.on('exit', resolve));
+  return { chosenSeed, chosenProbe };
 }
 
 async function setupRenderRun(page, opts, seed) {
@@ -589,60 +610,10 @@ async function main() {
     );
   }
 
-  const probeBrowser = chosenSeed === null
-    ? await chromium.launch({ headless: !args.headed })
-    : null;
-  let probeCtx = null;
-  let probePage = null;
-
-  if (probeBrowser) {
-    try {
-      probeCtx = await probeBrowser.newContext({
-        acceptDownloads: false,
-        deviceScaleFactor: 1,
-        viewport: { width: STAGE_SIZE, height: STAGE_SIZE },
-      });
-      await probeCtx.addInitScript(devicePixelRatioSource(1));
-      const probeUrl = new URL(`http://127.0.0.1:${port}/playground.html`);
-      probeUrl.searchParams.set('assetPreset', 'x1');
-      probePage = await probeCtx.newPage();
-      probePage.on('pageerror', (err) => { throw err; });
-      probePage.on('console', (msg) => {
-        if (msg.type() === 'error') console.error('probe console error:', msg.text());
-      });
-      await probePage.goto(probeUrl.href);
-      await probePage.waitForFunction(() => Boolean(window.__game__), null, { timeout: 30_000 });
-
-      const probeMaxTicks = Math.max(1, Math.round(args.probeTimeoutSeconds * GAME_FPS));
-      const minTicks = Math.round(args.minSeconds * GAME_FPS);
-      const maxTicks = Math.round(args.maxSeconds * GAME_FPS);
-
-      console.log(`Probing seeds ${args.seedBase}..${args.seedBase + args.maxProbes - 1} for a death in ${args.minSeconds}–${args.maxSeconds}s (video preset)`);
-      for (let i = 0; i < args.maxProbes; i += 1) {
-        const seed = args.seedBase + i;
-        const probeStart = Date.now();
-        const probe = await probeSeed(probePage, seed, probeMaxTicks);
-        const elapsed = ((Date.now() - probeStart) / 1000).toFixed(1);
-        const deathSec = (probe.endingTick > 0 ? probe.endingTick : probe.ticks) / GAME_FPS;
-        const verdict = !probe.ended
-          ? 'survived' // hit cap
-          : probe.endingTick >= minTicks && probe.endingTick <= maxTicks
-            ? 'GREEN'
-            : probe.endingTick < minTicks
-              ? 'too short'
-              : 'too long';
-        console.log(`  seed=${seed} death=${deathSec.toFixed(2)}s height=${probe.heightMeters}m ticks=${probe.ticks} (${elapsed}s real, ${verdict})`);
-        if (verdict === 'GREEN') {
-          chosenSeed = seed;
-          chosenProbe = probe;
-          break;
-        }
-      }
-    } finally {
-      if (probePage) await probePage.close().catch(() => {});
-      if (probeCtx) await probeCtx.close().catch(() => {});
-      await probeBrowser.close().catch(() => {});
-    }
+  if (chosenSeed === null) {
+    const result = await probeSeedsForGreen(repoRoot, args);
+    chosenSeed = result.chosenSeed;
+    chosenProbe = result.chosenProbe;
   }
 
   if (chosenSeed === null) {
