@@ -1,13 +1,5 @@
 import { mount, type InterwheelGame } from '../games/interwheel/index';
-import {
-  clamp,
-  setGenerationDifficultyOverride,
-  setInitialWaterMarginPxOverride,
-  setMineDifficultyOverride,
-  setPastilleSpawnChanceOverride,
-  setRampSpeedOverride,
-  setWaterSpeedMultiplierOverride,
-} from '../games/interwheel/sim';
+import { clamp } from '../games/interwheel/sim';
 import { noopGameHost } from '../games/types';
 import { makeSeededRng } from './interwheel-edge-validator';
 import {
@@ -19,6 +11,14 @@ import {
   type PlannerPolicy,
   type PlanResult,
 } from './interwheel-planner';
+import {
+  applyScenePresetToSim,
+  FOCUS_PASTILLE_MAX,
+  PX_PER_METER,
+  SCENE_PRESETS,
+  policyFromFocus,
+  type ScenePreset,
+} from './scene-presets';
 import { OVERLAY_DEFAULTS, TrajectoryOverlay } from './trajectory-overlay';
 
 const stage = document.getElementById('stage');
@@ -37,17 +37,9 @@ const policyOutputs = new Map<PolicyKey, HTMLOutputElement>();
 const policyReset = document.getElementById('policy-reset') as HTMLButtonElement | null;
 const focusInput = document.getElementById('policy-focus') as HTMLInputElement | null;
 const focusOutput = document.getElementById('policy-focus-value') as HTMLOutputElement | null;
-// Focus is a derived "Climb ⇄ Pastille" blend that lerps both knobs in
-// opposite directions: focus=0 emphasizes climb (climb=1.5, pastille=0),
-// focus=1 emphasizes pastille capture (climb=0.5, pastille=1). The endpoints
-// span the empirically useful range — pastille=1 in count mode is the
-// saturation knee on capture rate (~90.5%), and the [0.5, 1.5] climb range
-// brackets the live default of 1.0. Underlying climb/pastille sliders stay
-// for fine control; Focus visually tracks pastille position so a manual
-// climb tweak doesn't auto-snap focus.
-const FOCUS_CLIMB_MAX = 1.5;
-const FOCUS_CLIMB_MIN = 0.5;
-const FOCUS_PASTILLE_MAX = 1.0;
+// Focus / scene-preset machinery (FOCUS_*, ScenePreset, SCENE_PRESETS,
+// policyFromFocus, PX_PER_METER, applyScenePresetToSim) lives in
+// `scene-presets.ts` so headless probes share the same source of truth.
 const lookaheadInput = document.getElementById('planner-lookahead') as HTMLInputElement | null;
 const lookaheadOutput = document.getElementById('planner-lookahead-value') as HTMLOutputElement | null;
 const searchDepthInput = document.getElementById('planner-searchDepth') as HTMLInputElement | null;
@@ -117,70 +109,6 @@ let searchLimits = { ...PLANNER_SEARCH_DEFAULTS };
 // Max > Min and speed=1×, the parameter reaches Max at 1600m altitude —
 // matching the natural ramp pace. speed=2× reaches Max in 800m; speed=0
 // keeps the parameter at Min indefinitely.
-type ScenePreset = {
-  waterMargin: { meters: number; natural: boolean };
-  waterSpeed: { min: number; max: number; natural: boolean };
-  difficulty: { min: number; max: number; natural: boolean };
-  mineDensity: { min: number; max: number; natural: boolean };
-  pastilleSpawn: { min: number; max: number; natural: boolean };
-  rampSpeed: number;
-  // Optional planner-policy / overlay knobs. When present, applyScenePreset
-  // also writes these so a one-click preset configures the AI's intent and
-  // the candidate-line look together with the world parameters.
-  focus?: number;       // 0..1; drives climb/pastille via policyFromFocus
-  widthMin?: number;    // overlay base line width
-  alphaMin?: number;    // overlay alpha floor
-  alphaGamma?: number;  // overlay alpha curve exponent
-  // Optional planner-experiment knobs. When present, the preset writes the
-  // perception lookahead and the search limits — useful for "video mode"
-  // captures that need probe/render parity (no wall-clock budget) and for
-  // baking a known-good search depth / edge cap into the preset itself.
-  lookaheadScreens?: number;
-  searchLimits?: {
-    maxEdgeRollouts?: number;
-    budgetMs?: number;        // Number.POSITIVE_INFINITY = wall-clock disabled
-    maxStableDepth?: number;
-  };
-};
-
-// Preset shape recipes the user can flip between with one click. "natural"
-// puts every parameter back on its production curve (effectively a reset).
-// "video" is the short-clip starting point we converged on while playtesting
-// the Scene panel — water visible from frame 1, all three escalating curves
-// active with modest ramps that produce a real fight in 30–60 seconds
-// without crushing the AI immediately.
-const SCENE_PRESETS: Record<string, ScenePreset> = {
-  natural: {
-    waterMargin: { meters: 60, natural: true },
-    waterSpeed: { min: 1.0, max: 1.0, natural: true },
-    difficulty: { min: 0.30, max: 0.30, natural: true },
-    mineDensity: { min: 0.30, max: 0.30, natural: true },
-    pastilleSpawn: { min: 1.0, max: 1.0, natural: true },
-    rampSpeed: 1.0,
-  },
-  video: {
-    waterMargin: { meters: 20, natural: false },
-    waterSpeed: { min: 3.8, max: 4.6, natural: false },
-    difficulty: { min: 0.2, max: 0.4, natural: false },
-    mineDensity: { min: 0.3, max: 0.6, natural: false },
-    pastilleSpawn: { min: 0.5, max: 0.8, natural: false },
-    rampSpeed: 1.0,
-    focus: 0.6,        // climb=0.90, pastille=0.60
-    widthMin: 0.45,
-    alphaMin: 0.06,
-    alphaGamma: 3.0,
-    // Video-mode planner: pure perception (no lookahead above viewport),
-    // pure step-budget A* (no wall-clock cap) so probe and render get the
-    // same search results, deeper edge cap so 3-jump search isn't truncated.
-    lookaheadScreens: 0,
-    searchLimits: {
-      maxEdgeRollouts: 500,
-      budgetMs: Number.POSITIVE_INFINITY,
-      maxStableDepth: 3,
-    },
-  },
-};
-const PX_PER_METER = 5;
 let sceneWaterMarginMeters = SCENE_PRESETS.natural.waterMargin.meters;
 let sceneWaterMarginNatural = SCENE_PRESETS.natural.waterMargin.natural;
 let sceneWaterSpeedMin = SCENE_PRESETS.natural.waterSpeed.min;
@@ -235,15 +163,6 @@ function syncPolicyControls(): void {
     if (focusInput) focusInput.value = String(focus);
     if (focusOutput) focusOutput.value = formatPolicyValue(focus);
   }
-}
-
-function policyFromFocus(focus: number, base: PlannerPolicy): PlannerPolicy {
-  const f = clamp(focus, 0, 1);
-  return {
-    ...base,
-    climb: FOCUS_CLIMB_MAX - (FOCUS_CLIMB_MAX - FOCUS_CLIMB_MIN) * f,
-    pastille: FOCUS_PASTILLE_MAX * f,
-  };
 }
 
 function readPolicyControls(): PlannerPolicy {
@@ -393,18 +312,18 @@ function syncSceneControls(): void {
 }
 
 // Push the current scene knobs into the sim. Called before each reset so a
-// reseed picks them up; also called on initial mount.
+// reseed picks them up; also called on initial mount. Builds a ScenePreset
+// view of the current slider state and delegates to the shared headless path
+// so the playground and probe-pure agree on what "scene = X" means.
 function applySceneOverridesToSim(): void {
-  setInitialWaterMarginPxOverride(sceneWaterMarginNatural ? null : sceneWaterMarginMeters * PX_PER_METER);
-  setWaterSpeedMultiplierOverride(sceneWaterSpeedNatural ? null : { min: sceneWaterSpeedMin, max: sceneWaterSpeedMax });
-  setGenerationDifficultyOverride(sceneDifficultyNatural ? null : { min: sceneDifficultyMin, max: sceneDifficultyMax });
-  setMineDifficultyOverride(sceneMineDensityNatural ? null : { min: sceneMineDensityMin, max: sceneMineDensityMax });
-  setPastilleSpawnChanceOverride(scenePastilleSpawnNatural ? null : { min: scenePastilleSpawnMin, max: scenePastilleSpawnMax });
-  // Ramp speed only matters when at least one curve override is active. If
-  // every curve is in natural mode, the override has no effect, but we set
-  // it anyway for consistency with the user's panel state.
-  const anyCurveActive = !sceneWaterSpeedNatural || !sceneDifficultyNatural || !sceneMineDensityNatural || !scenePastilleSpawnNatural;
-  setRampSpeedOverride(anyCurveActive ? sceneRampSpeed : null);
+  applyScenePresetToSim({
+    waterMargin: { meters: sceneWaterMarginMeters, natural: sceneWaterMarginNatural },
+    waterSpeed: { min: sceneWaterSpeedMin, max: sceneWaterSpeedMax, natural: sceneWaterSpeedNatural },
+    difficulty: { min: sceneDifficultyMin, max: sceneDifficultyMax, natural: sceneDifficultyNatural },
+    mineDensity: { min: sceneMineDensityMin, max: sceneMineDensityMax, natural: sceneMineDensityNatural },
+    pastilleSpawn: { min: scenePastilleSpawnMin, max: scenePastilleSpawnMax, natural: scenePastilleSpawnNatural },
+    rampSpeed: sceneRampSpeed,
+  });
 }
 
 function bindSliderInput(
