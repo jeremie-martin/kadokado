@@ -12,7 +12,6 @@ import {
   useVideoConfig,
 } from 'remotion';
 import { ScoreLine } from './components/ScoreLine';
-import { HeightLine } from './components/HeightLine';
 import { WaterGauge } from './components/WaterGauge';
 import { loadSidecar, SidecarRow } from './sidecar';
 import { useScorePulseState } from './scoreSignals';
@@ -138,17 +137,15 @@ const LayoutFrame: React.FC<{
           top: 0,
           width: SHORT_WIDTH,
           height: TOP_BAND_HEIGHT,
-          display: 'grid',
-          gridTemplateColumns: 'auto 1fr',
-          alignContent: 'center',
-          rowGap: 28,
-          columnGap: 40,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          gap: 40,
           padding: '0 80px',
           filter: supportFilter,
         }}
       >
         <ScoreLine score={row?.score ?? 0} warmth={warmth} kickEnv={kickEnv} />
-        <HeightLine heightM={row?.heightM ?? 0} />
       </div>
 
       <div
