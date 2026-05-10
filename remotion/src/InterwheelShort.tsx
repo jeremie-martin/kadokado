@@ -177,6 +177,14 @@ const LayoutFrame: React.FC<{
         <AbsoluteFill style={{ filter: wasted?.grade.filter ?? preTellGrade ?? undefined }}>
           {game}
         </AbsoluteFill>
+        {!wasted && waterDanger > 0 && (
+          <AbsoluteFill
+            style={{
+              backgroundColor: `rgba(255, 60, 50, ${(waterDanger * 0.25).toFixed(3)})`,
+              pointerEvents: 'none',
+            }}
+          />
+        )}
         {wasted && (
           <>
             <WastedTintLayer opacity={wasted.tint.opacity} color={wasted.tint.color} />

@@ -26,7 +26,11 @@ export const KICK_THRESHOLD = 100;
 export const KICK_DECAY_SEC = 0.25;
 
 export const PX_PER_METER = 5;
-export const DANGER_FAR_M = 20;
+// Water enters the "danger" range starting this far below the blob. The
+// raw signal uses a quadratic ease-in so the response stays subtle across
+// the wider range and only intensifies as water gets genuinely close —
+// "red even at distance, not red all the time".
+export const DANGER_FAR_M = 35;
 export const TAU_WATER_DANGER_SEC = 0.3;
 
 export type ScoreSignals = {
@@ -109,7 +113,8 @@ export function buildWaterDanger(sidecar: SidecarRow[], fps: number): number[] {
   const raw = new Array<number>(n);
   for (let i = 0; i < n; i++) {
     const distM = (sidecar[i].waterY - sidecar[i].blob.y) / PX_PER_METER;
-    raw[i] = clamp01(1 - Math.max(0, distM) / DANGER_FAR_M);
+    const t = clamp01(1 - Math.max(0, distM) / DANGER_FAR_M);
+    raw[i] = t * t; // quadratic ease-in: subtle at distance, sharp near 0
   }
   return computeLeaky(raw, TAU_WATER_DANGER_SEC, fps);
 }
