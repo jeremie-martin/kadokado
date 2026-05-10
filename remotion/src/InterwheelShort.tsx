@@ -333,7 +333,7 @@ const LayoutFrame: React.FC<{
                 flexDirection: 'column',
                 alignItems: 'center',
                 rowGap: 16,
-                transform: `scale(${(1.10 - 0.10 * (1 - highScoreOpacity)).toFixed(4)})`,
+                transform: `scale(${(1.15 - 0.15 * (1 - highScoreOpacity)).toFixed(4)})`,
                 transformOrigin: 'center center',
               }}
             >

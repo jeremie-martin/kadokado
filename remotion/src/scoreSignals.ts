@@ -151,7 +151,7 @@ export function useWaterDanger(
 // "New Best". `previousHighScore` is null/undefined for runs without a high
 // score input (no crossing, HIGH not displayed).
 
-export const HIGH_SCORE_FADE_DURATION_SEC = 0.25;
+export const HIGH_SCORE_FADE_DURATION_SEC = 0.50;
 export const HIGH_SCORE_KICK_DECAY_SEC = 0.25; // matches score's kick decay
 // Approach treatment on HighScoreLine kicks in when the gap between the
 // current score and the previous high closes to APPROACH_START_DELTA points
