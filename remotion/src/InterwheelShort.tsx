@@ -13,7 +13,7 @@ import {
 } from 'remotion';
 import { ScoreLine } from './components/ScoreLine';
 import { loadSidecar, SidecarRow } from './sidecar';
-import { useScorePulseState, useWaterDanger } from './scoreSignals';
+import { useScorePulseState, useWaterDanger, clamp01 } from './scoreSignals';
 import {
   WastedEffectKnobs,
   WastedTextLayer,
@@ -54,6 +54,58 @@ const WASTED_AUDIO_STING_OFFSET_SEC = 2.43;
 const PRE_WASTED_TELL_SEC = 2.0;
 const PRE_WASTED_TELL_END_SAT = 0.7;
 const PRE_WASTED_TELL_END_BRI = 0.92;
+
+// Danger tint composition over time. Three behaviours layered:
+//   * Slow heartbeat — ±DANGER_HEARTBEAT_AMP sine on alpha at
+//     DANGER_HEARTBEAT_HZ, gated by danger ≥ DANGER_HEARTBEAT_GATE so
+//     it stays silent at low danger and rises with the threat. Phased on
+//     absolute frame to keep rhythm continuous across the regular→WASTED
+//     cut.
+//   * Color shift — during WASTED, lerp from the calm-phase orange-red
+//     (R0,G0,B0) to a more saturated pure red (R1,G1,B1) over
+//     [0, DANGER_WASTED_COLOR_END_SEC] of the WASTED phase.
+//   * Tint fade-out — also during WASTED, multiplicatively fade the tint's
+//     visibility from 1 → 0 between DANGER_WASTED_FADE_START_SEC and the
+//     WASTED text impact (textAppearSec). The danger signal has done its
+//     job by the time the WASTED text lands; let the cinematic grade
+//     own the death moment uncontested.
+const DANGER_HEARTBEAT_HZ = 0.8;
+const DANGER_HEARTBEAT_AMP = 0.15;
+const DANGER_HEARTBEAT_GATE = 0.4;
+const DANGER_TINT_RGB_CALM: [number, number, number] = [255, 100, 60];
+const DANGER_TINT_RGB_WASTED: [number, number, number] = [255, 60, 50];
+const DANGER_WASTED_COLOR_END_SEC = 1.0;
+const DANGER_WASTED_FADE_START_SEC = 1.0;
+
+type DangerTintParams = { rgb: string; visibility: number };
+
+function computeDangerTint(args: {
+  waterDanger: number;
+  frameAbs: number;
+  fps: number;
+  wastedT: number | null; // seconds since WASTED start, or null in regular phase
+  wastedTextAppearSec: number;
+}): DangerTintParams {
+  const { waterDanger, frameAbs, fps, wastedT, wastedTextAppearSec } = args;
+  const inWasted = wastedT != null;
+  const wT = wastedT ?? 0;
+
+  const colorT = inWasted ? clamp01(wT / DANGER_WASTED_COLOR_END_SEC) : 0;
+  const r = DANGER_TINT_RGB_CALM[0]; // both calm and wasted reds use 255
+  const g = Math.round(DANGER_TINT_RGB_CALM[1] + (DANGER_TINT_RGB_WASTED[1] - DANGER_TINT_RGB_CALM[1]) * colorT);
+  const b = Math.round(DANGER_TINT_RGB_CALM[2] + (DANGER_TINT_RGB_WASTED[2] - DANGER_TINT_RGB_CALM[2]) * colorT);
+  const rgb = `${r}, ${g}, ${b}`;
+
+  const fadeWindow = Math.max(0.01, wastedTextAppearSec - DANGER_WASTED_FADE_START_SEC);
+  const fadeT = inWasted ? clamp01((wT - DANGER_WASTED_FADE_START_SEC) / fadeWindow) : 0;
+  const fadeVisibility = 1 - fadeT;
+
+  const heartbeatGate = clamp01((waterDanger - DANGER_HEARTBEAT_GATE) / (1 - DANGER_HEARTBEAT_GATE));
+  const heartbeat =
+    1 + DANGER_HEARTBEAT_AMP * heartbeatGate * Math.sin(2 * Math.PI * DANGER_HEARTBEAT_HZ * (frameAbs / fps));
+
+  return { rgb, visibility: heartbeat * fadeVisibility };
+}
 
 export type InterwheelShortProps = {
   gameVideoSrc: string;
@@ -104,6 +156,13 @@ const LayoutFrame: React.FC<{
   // tint overlay on both top and bottom bands — replaces the numeric
   // WaterGauge readout. 0 = calm, 1 = blob touching/below water.
   waterDanger: number;
+  // RGB string ("r, g, b") for the danger tint. Phase-dependent — see
+  // computeDangerTint. Caller composes; LayoutFrame just inserts.
+  dangerTintRGB: string;
+  // Multiplier on the tint alpha (heartbeat × fade). 1 = full tint, 0 =
+  // hidden. Caller computes; LayoutFrame multiplies into both band and
+  // gameplay alphas.
+  dangerVisibility: number;
 }> = ({
   row,
   backdrop,
@@ -114,6 +173,8 @@ const LayoutFrame: React.FC<{
   warmth,
   kickEnv,
   waterDanger,
+  dangerTintRGB,
+  dangerVisibility,
 }) => {
   const drain = wasted?.drainEased ?? 0;
   // Soft grade applied to the HUD bands and the blurred backdrop during
@@ -156,8 +217,8 @@ const LayoutFrame: React.FC<{
           columnGap: 40,
           padding: '0 44px',
           filter: supportFilter,
-          backgroundColor: waterDanger > 0
-            ? `rgba(255, 100, 60, ${(waterDanger * 0.55).toFixed(3)})`
+          backgroundColor: waterDanger > 0 && dangerVisibility > 0
+            ? `rgba(${dangerTintRGB}, ${(waterDanger * 0.55 * dangerVisibility).toFixed(3)})`
             : undefined,
         }}
       >
@@ -176,10 +237,10 @@ const LayoutFrame: React.FC<{
       >
         <AbsoluteFill style={{ filter: wasted?.grade.filter ?? preTellGrade ?? undefined }}>
           {game}
-          {waterDanger > 0 && (
+          {waterDanger > 0 && dangerVisibility > 0 && (
             <AbsoluteFill
               style={{
-                backgroundColor: `rgba(255, 100, 60, ${(waterDanger * 0.25).toFixed(3)})`,
+                backgroundColor: `rgba(${dangerTintRGB}, ${(waterDanger * 0.25 * dangerVisibility).toFixed(3)})`,
                 pointerEvents: 'none',
               }}
             />
@@ -204,8 +265,8 @@ const LayoutFrame: React.FC<{
           width: SHORT_WIDTH,
           height: BOTTOM_BAND_HEIGHT,
           filter: supportFilter,
-          backgroundColor: waterDanger > 0
-            ? `rgba(255, 100, 60, ${(waterDanger * 0.55).toFixed(3)})`
+          backgroundColor: waterDanger > 0 && dangerVisibility > 0
+            ? `rgba(${dangerTintRGB}, ${(waterDanger * 0.55 * dangerVisibility).toFixed(3)})`
             : undefined,
         }}
       />
@@ -239,6 +300,13 @@ const RegularPhase: React.FC<{
   const row = sidecar ? sidecar[Math.min(frame, sidecar.length - 1)] ?? null : null;
   const pulse = useScorePulseState(sidecar, frame, fps);
   const waterDanger = useWaterDanger(sidecar, frame, fps);
+  const dangerTint = computeDangerTint({
+    waterDanger,
+    frameAbs: frame,
+    fps,
+    wastedT: null,
+    wastedTextAppearSec: 0,
+  });
 
   let preTellGrade: string | null = null;
   if (wastedStartFrame != null) {
@@ -265,6 +333,8 @@ const RegularPhase: React.FC<{
       warmth={pulse.warmth}
       kickEnv={pulse.kickEnv}
       waterDanger={waterDanger}
+      dangerTintRGB={dangerTint.rgb}
+      dangerVisibility={dangerTint.visibility}
     />
   );
 };
@@ -309,6 +379,13 @@ const WastedPhase: React.FC<{
   const row = sidecar ? sidecar[Math.min(absFrame, sidecar.length - 1)] ?? null : null;
   const pulse = useScorePulseState(sidecar, absFrame, fps);
   const waterDanger = useWaterDanger(sidecar, absFrame, fps);
+  const dangerTint = computeDangerTint({
+    waterDanger,
+    frameAbs: absFrame,
+    fps,
+    wastedT: frame / fps,
+    wastedTextAppearSec: effectProps.textAppearSec,
+  });
 
   const slowMoBackdrop = (
     <OffthreadVideo
@@ -354,6 +431,8 @@ const WastedPhase: React.FC<{
         warmth={pulse.warmth}
         kickEnv={pulse.kickEnv}
         waterDanger={waterDanger}
+        dangerTintRGB={dangerTint.rgb}
+        dangerVisibility={dangerTint.visibility}
       />
 
       <Audio src={audioUrl} startFrom={audioStartFromFrames} />
