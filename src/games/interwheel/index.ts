@@ -313,6 +313,7 @@ export class InterwheelGame {
   private sparkViews = new Map<SimSpark, Container>();
   private blobView: Sprite;
   private particles: Particle[] = [];
+  private panelSprite!: Sprite;
 
   // Per-tick prev-state cache so render() can detect transitions even
   // though sim's events are also fired by sim.step().
@@ -345,9 +346,9 @@ export class InterwheelGame {
       this.particleLayer, this.waterLayer, this.waterParticleLayer,
     );
 
-    const panel = makeSprite(assets.panel);
-    panel.position.set(PANEL_X, PANEL_Y);
-    this.hudLayer.addChild(panel);
+    this.panelSprite = makeSprite(assets.panel);
+    this.panelSprite.position.set(PANEL_X, PANEL_Y);
+    this.hudLayer.addChild(this.panelSprite);
 
     this.meterText.anchor.set(0.5);
     this.meterText.position.set(PANEL_TEXT_X, PANEL_TEXT_Y);
@@ -386,6 +387,13 @@ export class InterwheelGame {
   get blob() { return this.sim.blob; }
   get wheels(): readonly SimWheel[] { return this.sim.wheels; }
   get pastilles(): readonly SimPastille[] { return this.sim.pastilles; }
+
+  // Show/hide the wooden bottom-right scoreboard (panel sprite + height meter).
+  // Default is on for live human play; make-video / clean captures flip this off.
+  setCanvasHudVisible(visible: boolean): void {
+    this.panelSprite.visible = visible;
+    this.meterText.visible = visible;
+  }
 
   // ============================================================================
   // Lifecycle

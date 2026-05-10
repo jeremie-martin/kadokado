@@ -700,6 +700,22 @@ function refreshOverlayStats(): void {
   }
 }
 
+function setupCanvasHudToggle(): void {
+  if (!game) return;
+  const toggle = document.getElementById('game-canvas-hud') as HTMLInputElement | null;
+  // make-video.mjs and other clean captures pass ?canvasHud=off so the rendered
+  // mp4 has no in-game wooden scoreboard. Default is on (live human play).
+  const urlOff = new URLSearchParams(window.location.search).get('canvasHud') === 'off';
+  const initial = !urlOff;
+  game.setCanvasHudVisible(initial);
+  if (toggle) {
+    toggle.checked = initial;
+    toggle.addEventListener('change', () => {
+      game?.setCanvasHudVisible(toggle.checked);
+    });
+  }
+}
+
 function statItem(label: string, value: string): HTMLElement {
   const item = document.createElement('div');
   item.className = 'stat';
@@ -892,6 +908,7 @@ mount(stage as HTMLElement, {
     setupSceneControls();
     setupPlannerExperimentControls();
     setupOverlayParamControls();
+    setupCanvasHudToggle();
     refreshStats();
   },
 }).catch((err) => {

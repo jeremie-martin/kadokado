@@ -483,6 +483,7 @@ async function renderRun(repoRoot, port, args, target, seed, tailFrames, hardCap
   url.searchParams.set('assetRoot', target.root);
   url.searchParams.set('assetScale', String(target.scale));
   url.searchParams.set('hud', 'off');
+  url.searchParams.set('canvasHud', 'off');
 
   const browser = await chromium.launch({ headless: !args.headed });
   try {
