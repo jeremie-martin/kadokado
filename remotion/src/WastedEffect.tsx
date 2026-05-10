@@ -30,14 +30,13 @@ import {
 //   impact–end     sustain   — text holds with a tiny breathing scale,
 //                              base drifts via slow ambient zoom.
 //
-// Knobs all come in via props with defaults documented inline; tune via
-// compose-wasted.mjs and surface attempts in the dashboard.
+// The fullscreen `WastedEffect` composition below is what compose-wasted.mjs
+// renders standalone. The exported timeline hook and layer components let
+// InterwheelShort compose the same effect *on top of* its existing layout
+// (HUD bands + central 1080×1080 game) without scaling the base video to
+// fill the full frame.
 
-export interface WastedEffectProps {
-  baseVideoSrc: string;
-  wastedTextSrc: string;
-  wastedAudioSrc: string;
-
+export type WastedEffectKnobs = {
   // Phase durations (seconds).
   drainSec: number;            // 1.5  — color/vignette ramp-in length
   textAppearSec: number;       // 2.43 — when text impact lands (audio-sync)
@@ -72,14 +71,19 @@ export interface WastedEffectProps {
 
   // Cosmetic.
   ambientZoomEnd: number;      // 1.05 — base scale at totalSec (start = 1.0)
+};
+
+export interface WastedEffectProps extends WastedEffectKnobs {
+  baseVideoSrc: string;
+  wastedTextSrc: string;
+  wastedAudioSrc: string;
 }
 
 // Canonical recipe (a.k.a. the `default` preset in compose-wasted.mjs).
 // Synced to the audio sting at 2.43s, sepia-warm tint, retained color
 // (sat 0.26), tight ~200ms impact spike via bloom + RGB-split rather than
 // flash/shake. Override any subset for stylistic variants.
-export const WASTED_EFFECT_DEFAULTS: Omit<WastedEffectProps,
-  'baseVideoSrc' | 'wastedTextSrc' | 'wastedAudioSrc'> = {
+export const WASTED_EFFECT_DEFAULTS: WastedEffectKnobs = {
   drainSec: 1.5,
   textAppearSec: 2.43,
   totalSec: 7.76,
@@ -105,6 +109,138 @@ export const WASTED_EFFECT_DEFAULTS: Omit<WastedEffectProps,
 // Cubic-bezier-ish overshoot for the text punch (stronger than easeOut).
 const overshootEase = Easing.bezier(0.16, 1.4, 0.3, 1);
 
+// Computed per-frame state for the WASTED effect. Pure derivation from
+// props + (frame, fps); shared between the standalone composition and the
+// integrated InterwheelShort treatment so visual behavior can't drift.
+export type WastedTimeline = {
+  drainEased: number;
+  grade: { sat: number; bri: number; con: number; filter: string };
+  tint: { opacity: number; color: string };
+  vignette: { opacity: number; innerPct: number };
+  text: { visible: boolean; opacity: number; scale: number; filter: string };
+  ambientZoom: number;
+};
+
+export function useWastedTimeline(
+  props: WastedEffectKnobs,
+  ctx: { frame: number; fps: number },
+): WastedTimeline {
+  const t = ctx.frame / ctx.fps;
+
+  const drain = clamp(t / props.drainSec, 0, 1);
+  const drainEased = Easing.out(Easing.cubic)(drain);
+
+  const sat = lerp(1, props.endSaturation, drainEased);
+  const bri = lerp(1, props.endBrightness, drainEased);
+  const con = lerp(1, props.endContrast, drainEased);
+
+  const tintOpacity = props.tintStrength * drainEased;
+  const vigOpacity = props.vignetteIntensity * drainEased;
+  const vigInner = lerp(0.55, props.vignetteInnerRadius, drainEased) * 100;
+
+  const ambientZoom = interpolate(
+    t, [0, props.totalSec],
+    [1.0, props.ambientZoomEnd],
+    { easing: Easing.inOut(Easing.quad), extrapolateRight: 'clamp' },
+  );
+
+  const stingT = t - props.textAppearSec;
+  const textVisible = stingT >= 0;
+  const punchProg = clamp(stingT / props.textPunchDurationSec, 0, 1);
+  const punchScale = textVisible
+    ? interpolate(overshootEase(punchProg), [0, 1],
+        [props.textOvershootScale, 1.0])
+    : 0;
+  const breathPhase = Math.max(0, stingT - props.textPunchDurationSec);
+  const breath = textVisible
+    ? Math.sin(breathPhase * 1.6) * props.textBreathAmplitude
+    : 0;
+  const textScale = textVisible ? punchScale + breath : 0;
+  const textOpacity = textVisible
+    ? interpolate(punchProg, [0, 0.4, 1], [0, 0.95, 1], {
+        extrapolateRight: 'clamp',
+      })
+    : 0;
+
+  const bloomProg = clamp(stingT / props.textBloomDurationSec, 0, 1);
+  const bloomRadius = textVisible
+    ? props.textBloomPeakPx * (1 - bloomProg) ** 1.5
+    : 0;
+  const abProg = clamp(stingT / props.textAberrationDurationSec, 0, 1);
+  const abOffset = textVisible
+    ? props.textAberrationPeakPx * (1 - abProg) ** 2
+    : 0;
+  const textFilter = buildTextFilter({
+    bloomRadius,
+    aberrationOffset: abOffset,
+  });
+
+  return {
+    drainEased,
+    grade: {
+      sat, bri, con,
+      filter:
+        `saturate(${sat.toFixed(3)}) ` +
+        `brightness(${bri.toFixed(3)}) ` +
+        `contrast(${con.toFixed(3)})`,
+    },
+    tint: { opacity: tintOpacity, color: props.tintColor },
+    vignette: { opacity: vigOpacity, innerPct: vigInner },
+    text: { visible: textVisible, opacity: textOpacity, scale: textScale, filter: textFilter },
+    ambientZoom,
+  };
+}
+
+export const WastedTintLayer: React.FC<{ opacity: number; color: string }> = ({
+  opacity, color,
+}) => (
+  <AbsoluteFill style={{
+    backgroundColor: color,
+    mixBlendMode: 'multiply',
+    opacity,
+    pointerEvents: 'none',
+  }} />
+);
+
+export const WastedVignetteLayer: React.FC<{ opacity: number; innerPct: number }> = ({
+  opacity, innerPct,
+}) => (
+  <AbsoluteFill style={{
+    background:
+      `radial-gradient(ellipse at center, ` +
+      `rgba(0,0,0,0) ${innerPct.toFixed(1)}%, ` +
+      `rgba(0,0,0,1) 100%)`,
+    opacity,
+    pointerEvents: 'none',
+  }} />
+);
+
+export const WastedTextLayer: React.FC<{
+  src: string;
+  opacity: number;
+  scale: number;
+  filter: string;
+  widthPct?: number;
+}> = ({ src, opacity, scale, filter, widthPct = 78 }) => (
+  <AbsoluteFill style={{
+    alignItems: 'center',
+    justifyContent: 'center',
+    pointerEvents: 'none',
+  }}>
+    <Img
+      src={src}
+      style={{
+        width: `${widthPct}%`,
+        height: 'auto',
+        opacity,
+        transform: `scale(${scale.toFixed(4)})`,
+        transformOrigin: 'center center',
+        filter,
+      }}
+    />
+  </AbsoluteFill>
+);
+
 function resolveUrl(src: string): string {
   return src.startsWith('http') || src.startsWith('/') ? src : staticFile(src);
 }
@@ -112,138 +248,41 @@ function resolveUrl(src: string): string {
 export const WastedEffect: React.FC<WastedEffectProps> = (props) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
-  const t = frame / fps;
+  const timeline = useWastedTimeline(props, { frame, fps });
+
   const baseUrl = resolveUrl(props.baseVideoSrc);
   const textUrl = resolveUrl(props.wastedTextSrc);
   const audioUrl = resolveUrl(props.wastedAudioSrc);
-
-  // Drain progress 0..1 over [0, drainSec].
-  const drain = clamp(t / props.drainSec, 0, 1);
-  const drainEased = Easing.out(Easing.cubic)(drain);
-
-  // Color grade — animate via CSS filter on the wrapper around the video.
-  const sat = lerp(1, props.endSaturation, drainEased);
-  const bri = lerp(1, props.endBrightness, drainEased);
-  const con = lerp(1, props.endContrast, drainEased);
-  // Tint pushed in via a multiply overlay layer (separate from the filter
-  // chain so it doesn't fight the saturate/brightness/contrast filters).
-  const tintOpacity = props.tintStrength * drainEased;
-
-  // Vignette — radial gradient overlay that grows in opacity, with the
-  // bright inner radius shrinking slightly so the edges encroach.
-  const vigOpacity = props.vignetteIntensity * drainEased;
-  const vigInner = lerp(0.55, props.vignetteInnerRadius, drainEased) * 100; // %
-
-  // Ambient zoom on the base video (very slow, runs the full composition).
-  const ambientZoom = interpolate(
-    t, [0, props.totalSec],
-    [1.0, props.ambientZoomEnd],
-    { easing: Easing.inOut(Easing.quad), extrapolateRight: 'clamp' },
-  );
-
-  // Sting timing: text appears at textAppearSec.
-  const stingT = t - props.textAppearSec;     // negative before sting
-  const textVisible = stingT >= 0;
-  const punchProg = clamp(stingT / props.textPunchDurationSec, 0, 1);
-  const punchScale = textVisible
-    ? interpolate(overshootEase(punchProg), [0, 1],
-        [props.textOvershootScale, 1.0])
-    : 0;
-
-  // Breathing scale after the punch lands — small ±amplitude sine.
-  const breathPhase = Math.max(0, stingT - props.textPunchDurationSec);
-  const breath = textVisible
-    ? Math.sin(breathPhase * 1.6) * props.textBreathAmplitude
-    : 0;
-  const textScale = textVisible ? punchScale + breath : 0;
-
-  // Text opacity ramps over the same window as the scale so we don't pop
-  // the glyphs in before the overshoot starts settling.
-  const textOpacity = textVisible
-    ? interpolate(punchProg, [0, 0.4, 1], [0, 0.95, 1], {
-        extrapolateRight: 'clamp',
-      })
-    : 0;
-
-  // Bloom: wide-blur warm halo via drop-shadow that decays from peak at
-  // impact. Color is a warm off-white that complements red text.
-  const bloomProg = clamp(stingT / props.textBloomDurationSec, 0, 1);
-  const bloomRadius = textVisible
-    ? props.textBloomPeakPx * (1 - bloomProg) ** 1.5
-    : 0;
-
-  // Chromatic aberration: red ghost shifted right + cyan ghost shifted left,
-  // decaying from peak at impact. drop-shadow filters cascade so the two
-  // offsets compose naturally with the depth shadow.
-  const abProg = clamp(stingT / props.textAberrationDurationSec, 0, 1);
-  const abOffset = textVisible
-    ? props.textAberrationPeakPx * (1 - abProg) ** 2
-    : 0;
-
-  const textFilter = buildTextFilter({
-    bloomRadius,
-    aberrationOffset: abOffset,
-  });
 
   return (
     <AbsoluteFill style={{ backgroundColor: '#000' }}>
       {/* Base video + grade + ambient zoom. */}
       <AbsoluteFill style={{
-        transform: `scale(${ambientZoom})`,
-        filter:
-          `saturate(${sat.toFixed(3)}) ` +
-          `brightness(${bri.toFixed(3)}) ` +
-          `contrast(${con.toFixed(3)})`,
+        transform: `scale(${timeline.ambientZoom})`,
+        filter: timeline.grade.filter,
       }}>
         <OffthreadVideo
           src={baseUrl}
           playbackRate={props.basePlaybackRate}
           startFrom={Math.round(props.baseStartFromSec * fps)}
-          style={{
-            width: '100%',
-            height: '100%',
-            objectFit: 'cover',
-          }}
+          style={{ width: '100%', height: '100%', objectFit: 'cover' }}
           muted
         />
       </AbsoluteFill>
 
-      {/* Tint overlay (multiply blend keeps highlights from going chalky). */}
-      <AbsoluteFill style={{
-        backgroundColor: props.tintColor,
-        mixBlendMode: 'multiply',
-        opacity: tintOpacity,
-      }} />
+      <WastedTintLayer opacity={timeline.tint.opacity} color={timeline.tint.color} />
+      <WastedVignetteLayer
+        opacity={timeline.vignette.opacity}
+        innerPct={timeline.vignette.innerPct}
+      />
 
-      {/* Vignette: radial gradient from transparent inner radius to black. */}
-      <AbsoluteFill style={{
-        background:
-          `radial-gradient(ellipse at center, ` +
-          `rgba(0,0,0,0) ${vigInner.toFixed(1)}%, ` +
-          `rgba(0,0,0,1) 100%)`,
-        opacity: vigOpacity,
-        pointerEvents: 'none',
-      }} />
-
-      {/* WASTED text: centered, scale + breath, fades up at sting, with
-          the bloom + RGB-split impact accents as drop-shadow filters. */}
-      {textVisible && (
-        <AbsoluteFill style={{
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}>
-          <Img
-            src={textUrl}
-            style={{
-              width: '78%',
-              height: 'auto',
-              opacity: textOpacity,
-              transform: `scale(${textScale.toFixed(4)})`,
-              transformOrigin: 'center center',
-              filter: textFilter,
-            }}
-          />
-        </AbsoluteFill>
+      {timeline.text.visible && (
+        <WastedTextLayer
+          src={textUrl}
+          opacity={timeline.text.opacity}
+          scale={timeline.text.scale}
+          filter={timeline.text.filter}
+        />
       )}
 
       {/* Audio. Plays from composition start so the chord at audio T =

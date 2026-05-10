@@ -21,7 +21,7 @@ const GAME_FPS = 40;
 const STAGE_SIZE = 300;
 const DEFAULT_OUT_DIR = '.tmp/captures/video';
 const DEFAULT_MIN_SECONDS = 30;
-const DEFAULT_MAX_SECONDS = 60;
+const DEFAULT_MAX_SECONDS = 54;
 const DEFAULT_TAIL_SECONDS = 2;
 const DEFAULT_MAX_PROBES = 50;
 const DEFAULT_PROBE_TIMEOUT_SECONDS = 5 * 60;
@@ -86,6 +86,10 @@ function parseArgs(argv) {
     outputSide: null,
     presets: ['x1', 'x2'],
     headed: false,
+    // Quick mode: skip the death-time probe and capture exactly N seconds
+    // from `--seed-base` for each preset. Output mp4s get a `-quickNs` tag so
+    // they don't clobber a real probe-and-render capture for the same seed.
+    quickSeconds: null,
     help: false,
   };
   for (const raw of argv.slice(2)) {
@@ -104,6 +108,7 @@ function parseArgs(argv) {
       args.outputSide = v === 'native' ? null : Number(v);
     }
     else if (raw.startsWith('--presets=')) args.presets = raw.slice('--presets='.length).split(',').map((s) => s.trim()).filter(Boolean);
+    else if (raw.startsWith('--quick-seconds=')) args.quickSeconds = Number(raw.slice('--quick-seconds='.length));
     else {
       console.error(`Unknown argument: ${raw}`);
       args.help = true;
@@ -121,6 +126,10 @@ function parseArgs(argv) {
   }
   if (args.minSeconds > args.maxSeconds) {
     console.error('--min-seconds must be <= --max-seconds');
+    args.help = true;
+  }
+  if (args.quickSeconds !== null && (!Number.isFinite(args.quickSeconds) || args.quickSeconds <= 0)) {
+    console.error('--quick-seconds must be a positive number');
     args.help = true;
   }
   for (const p of args.presets) {
@@ -157,6 +166,10 @@ OPTIONS:
                             number to force one size for all presets.
   --fps=N                   Recording frame rate. Default ${DEFAULT_FPS}.
   --out-dir=PATH            Output directory. Default ${DEFAULT_OUT_DIR}.
+  --quick-seconds=N         Skip the death probe and capture exactly N seconds from
+                            --seed-base. Output names get a -quickNs tag so they don't
+                            clobber a real capture. Use this for fast color/encoding
+                            iteration, not for finished shorts.
   --headed                  Show Chromium while running.
 
 The probe applies the playground's "video" scene preset, then steps the
@@ -211,6 +224,15 @@ function startRawVideoEncoder(opts, outPath) {
   // saturated colors and sharp edges needs this. -preset veryfast keeps the
   // encode wall-clock close to the rendering loop's pace; lossless mode means
   // the preset only affects compression ratio, not visual quality.
+  //
+  // Color: tag + convert as BT.709 limited range to match Remotion's output
+  // path (remotion/remotion.config.ts sets colorSpace='bt709'). Without the
+  // tag, ffmpeg defaults to BT.601 conversion AND Chromium decodes the
+  // resulting untagged HD H.264 as BT.709 by heuristic — those two assumptions
+  // disagree, desaturating greens and pushing reds toward orange in the final
+  // short. The explicit zscale forces ffmpeg's RGB→YUV conversion to use the
+  // same matrix the VUI tags advertise, so any decoder reads back the colors
+  // we put in.
   const child = spawn('ffmpeg', [
     '-y',
     '-hide_banner',
@@ -221,10 +243,15 @@ function startRawVideoEncoder(opts, outPath) {
     '-r', String(opts.fps),
     '-i', 'pipe:0',
     '-an',
+    '-vf', 'zscale=matrix=709:matrixin=709:range=limited',
     '-c:v', 'libx264',
     '-qp', '0',
     '-preset', 'veryfast',
     '-pix_fmt', 'yuv444p',
+    '-colorspace', 'bt709',
+    '-color_primaries', 'bt709',
+    '-color_trc', 'bt709',
+    '-color_range', 'tv',
     outPath,
   ], { stdio: ['pipe', 'pipe', 'pipe'] });
   let stderr = '';
@@ -459,7 +486,9 @@ async function captureRunFrames(page, opts, outPath, seed, tailFrames, hardCapFr
       };
       frameCount = i + 1;
       if (endingFirstFrame < 0 && frame.ending) endingFirstFrame = frameCount;
-      if (endingFirstFrame > 0 && frameCount - endingFirstFrame >= tailFrames) break;
+      // tailFrames=0 means the caller wants exactly hardCapFrames (quick mode);
+      // skip the adaptive-on-death termination in that case.
+      if (tailFrames > 0 && endingFirstFrame > 0 && frameCount - endingFirstFrame >= tailFrames) break;
       if (frameCount % opts.fps === 0) {
         process.stdout.write(`\r  frames: ${frameCount} (${(frameCount / opts.fps).toFixed(1)}s${endingFirstFrame > 0 ? `, dying since frame ${endingFirstFrame}` : ''})     `);
       }
@@ -541,58 +570,79 @@ async function main() {
   const addr = vite.httpServer?.address();
   const port = typeof addr === 'object' && addr ? addr.port : 5173;
 
-  const probeBrowser = await chromium.launch({ headless: !args.headed });
-  let probeCtx = null;
-  let probePage = null;
   let chosenSeed = null;
   let chosenProbe = null;
 
-  try {
-    probeCtx = await probeBrowser.newContext({
-      acceptDownloads: false,
-      deviceScaleFactor: 1,
-      viewport: { width: STAGE_SIZE, height: STAGE_SIZE },
-    });
-    await probeCtx.addInitScript(devicePixelRatioSource(1));
-    const probeUrl = new URL(`http://127.0.0.1:${port}/playground.html`);
-    probeUrl.searchParams.set('assetPreset', 'x1');
-    probePage = await probeCtx.newPage();
-    probePage.on('pageerror', (err) => { throw err; });
-    probePage.on('console', (msg) => {
-      if (msg.type() === 'error') console.error('probe console error:', msg.text());
-    });
-    await probePage.goto(probeUrl.href);
-    await probePage.waitForFunction(() => Boolean(window.__game__), null, { timeout: 30_000 });
+  // Quick mode: skip the probe entirely. Used for color/encoding iteration —
+  // we don't need a real death, just N seconds of pixels and a sidecar.
+  if (args.quickSeconds !== null) {
+    chosenSeed = args.seedBase;
+    chosenProbe = {
+      ticks: Math.round(args.quickSeconds * GAME_FPS),
+      endingTick: -1,
+      ended: false,
+      heightMeters: 0,
+      score: 0,
+    };
+    console.log(
+      `Quick mode: skipping probe — capturing ${args.quickSeconds}s from seed ${chosenSeed}.`,
+    );
+  }
 
-    const probeMaxTicks = Math.max(1, Math.round(args.probeTimeoutSeconds * GAME_FPS));
-    const minTicks = Math.round(args.minSeconds * GAME_FPS);
-    const maxTicks = Math.round(args.maxSeconds * GAME_FPS);
+  const probeBrowser = chosenSeed === null
+    ? await chromium.launch({ headless: !args.headed })
+    : null;
+  let probeCtx = null;
+  let probePage = null;
 
-    console.log(`Probing seeds ${args.seedBase}..${args.seedBase + args.maxProbes - 1} for a death in ${args.minSeconds}–${args.maxSeconds}s (video preset)`);
-    for (let i = 0; i < args.maxProbes; i += 1) {
-      const seed = args.seedBase + i;
-      const probeStart = Date.now();
-      const probe = await probeSeed(probePage, seed, probeMaxTicks);
-      const elapsed = ((Date.now() - probeStart) / 1000).toFixed(1);
-      const deathSec = (probe.endingTick > 0 ? probe.endingTick : probe.ticks) / GAME_FPS;
-      const verdict = !probe.ended
-        ? 'survived' // hit cap
-        : probe.endingTick >= minTicks && probe.endingTick <= maxTicks
-          ? 'GREEN'
-          : probe.endingTick < minTicks
-            ? 'too short'
-            : 'too long';
-      console.log(`  seed=${seed} death=${deathSec.toFixed(2)}s height=${probe.heightMeters}m ticks=${probe.ticks} (${elapsed}s real, ${verdict})`);
-      if (verdict === 'GREEN') {
-        chosenSeed = seed;
-        chosenProbe = probe;
-        break;
+  if (probeBrowser) {
+    try {
+      probeCtx = await probeBrowser.newContext({
+        acceptDownloads: false,
+        deviceScaleFactor: 1,
+        viewport: { width: STAGE_SIZE, height: STAGE_SIZE },
+      });
+      await probeCtx.addInitScript(devicePixelRatioSource(1));
+      const probeUrl = new URL(`http://127.0.0.1:${port}/playground.html`);
+      probeUrl.searchParams.set('assetPreset', 'x1');
+      probePage = await probeCtx.newPage();
+      probePage.on('pageerror', (err) => { throw err; });
+      probePage.on('console', (msg) => {
+        if (msg.type() === 'error') console.error('probe console error:', msg.text());
+      });
+      await probePage.goto(probeUrl.href);
+      await probePage.waitForFunction(() => Boolean(window.__game__), null, { timeout: 30_000 });
+
+      const probeMaxTicks = Math.max(1, Math.round(args.probeTimeoutSeconds * GAME_FPS));
+      const minTicks = Math.round(args.minSeconds * GAME_FPS);
+      const maxTicks = Math.round(args.maxSeconds * GAME_FPS);
+
+      console.log(`Probing seeds ${args.seedBase}..${args.seedBase + args.maxProbes - 1} for a death in ${args.minSeconds}–${args.maxSeconds}s (video preset)`);
+      for (let i = 0; i < args.maxProbes; i += 1) {
+        const seed = args.seedBase + i;
+        const probeStart = Date.now();
+        const probe = await probeSeed(probePage, seed, probeMaxTicks);
+        const elapsed = ((Date.now() - probeStart) / 1000).toFixed(1);
+        const deathSec = (probe.endingTick > 0 ? probe.endingTick : probe.ticks) / GAME_FPS;
+        const verdict = !probe.ended
+          ? 'survived' // hit cap
+          : probe.endingTick >= minTicks && probe.endingTick <= maxTicks
+            ? 'GREEN'
+            : probe.endingTick < minTicks
+              ? 'too short'
+              : 'too long';
+        console.log(`  seed=${seed} death=${deathSec.toFixed(2)}s height=${probe.heightMeters}m ticks=${probe.ticks} (${elapsed}s real, ${verdict})`);
+        if (verdict === 'GREEN') {
+          chosenSeed = seed;
+          chosenProbe = probe;
+          break;
+        }
       }
+    } finally {
+      if (probePage) await probePage.close().catch(() => {});
+      if (probeCtx) await probeCtx.close().catch(() => {});
+      await probeBrowser.close().catch(() => {});
     }
-  } finally {
-    if (probePage) await probePage.close().catch(() => {});
-    if (probeCtx) await probeCtx.close().catch(() => {});
-    await probeBrowser.close().catch(() => {});
   }
 
   if (chosenSeed === null) {
@@ -601,19 +651,26 @@ async function main() {
     process.exit(1);
   }
 
-  const tailFrames = Math.round(args.tailSeconds * GAME_FPS);
-  // Hard cap = max-seconds + a healthy slack + tail. The render uses adaptive
-  // termination (stops once it has captured tailFrames past the actual death),
-  // but if some seed flake makes the render outlive the probe by a lot we
-  // still want a safety stop.
-  const hardCapFrames = Math.round((args.maxSeconds + args.tailSeconds + 10) * GAME_FPS);
-  console.log(`\nGreen seed=${chosenSeed} (probe death at tick ${chosenProbe.endingTick}, ${(chosenProbe.endingTick / GAME_FPS).toFixed(2)}s; render uses adaptive termination, ${tailFrames} frame tail, hard cap ${hardCapFrames})`);
+  // Quick mode: no death tail, capture exactly quickSeconds. Otherwise: full
+  // render uses adaptive termination (death + tail) with a maxSeconds-derived
+  // hard cap.
+  const isQuick = args.quickSeconds !== null;
+  const tailFrames = isQuick ? 0 : Math.round(args.tailSeconds * GAME_FPS);
+  const hardCapFrames = isQuick
+    ? Math.round(args.quickSeconds * GAME_FPS)
+    : Math.round((args.maxSeconds + args.tailSeconds + 10) * GAME_FPS);
+  if (isQuick) {
+    console.log(`\nQuick capture: seed=${chosenSeed}, ${args.quickSeconds}s = ${hardCapFrames} frames per preset`);
+  } else {
+    console.log(`\nGreen seed=${chosenSeed} (probe death at tick ${chosenProbe.endingTick}, ${(chosenProbe.endingTick / GAME_FPS).toFixed(2)}s; render uses adaptive termination, ${tailFrames} frame tail, hard cap ${hardCapFrames})`);
+  }
 
   const renders = [];
   try {
     for (const presetKey of args.presets) {
       const target = ASSET_TARGETS[presetKey];
-      const outName = `interwheel-seed${chosenSeed}-${target.label}.mp4`;
+      const tag = isQuick ? `-quick${args.quickSeconds}s` : '';
+      const outName = `interwheel-seed${chosenSeed}-${target.label}${tag}.mp4`;
       const meta = await renderRun(repoRoot, port, args, target, chosenSeed, tailFrames, hardCapFrames, outName);
       renders.push({ presetKey, ...meta });
     }
@@ -623,8 +680,12 @@ async function main() {
 
   console.log('\n=== Summary ===');
   console.log(`  seed:                ${chosenSeed}`);
-  console.log(`  probe death:         tick ${chosenProbe.endingTick} (${(chosenProbe.endingTick / GAME_FPS).toFixed(2)}s)`);
-  console.log(`  probe height:        ${chosenProbe.heightMeters}m`);
+  if (!isQuick) {
+    console.log(`  probe death:         tick ${chosenProbe.endingTick} (${(chosenProbe.endingTick / GAME_FPS).toFixed(2)}s)`);
+    console.log(`  probe height:        ${chosenProbe.heightMeters}m`);
+  } else {
+    console.log(`  mode:                quick (${args.quickSeconds}s, no probe)`);
+  }
   for (const r of renders) {
     const meta = r.meta;
     const lf = meta.lastFrame;

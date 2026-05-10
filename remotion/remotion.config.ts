@@ -10,3 +10,10 @@ Config.setCodec('h264');
 Config.setPixelFormat('yuv444p');
 Config.setCrf(18);
 Config.setOverwriteOutput(true);
+// Force BT.709 (limited range) on the final encode + tag the file. Without
+// this, Remotion v4 falls back to BT.601 untagged, and downstream players
+// (Chrome/QuickTime/etc.) heuristically decode HD H.264 as BT.709 — the
+// matrix mismatch desaturates greens and shifts reds toward orange. With
+// the tag set, every consumer agrees on the colorimetry. The matching
+// source-side tag lives in scripts/interwheel/make-video.mjs.
+Config.setColorSpace('bt709');

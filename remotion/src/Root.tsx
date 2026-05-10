@@ -7,8 +7,9 @@ const SHORT_WIDTH = 1080;
 const SHORT_HEIGHT = 1920;
 const MAX_DURATION_FRAMES = FPS * 120;
 
-// WASTED effect renders at 1:1 — base.mp4 is currently 1200×1200 game
-// footage; we render at 1200 to keep one source pixel per output pixel.
+// WASTED standalone (compose-wasted.mjs) renders at 1:1 — base.mp4 is
+// 1200×1200 game footage; we render at 1200 to keep one source pixel per
+// output pixel.
 const WASTED_SIDE = 1200;
 const WASTED_DURATION_FRAMES = Math.round(WASTED_EFFECT_DEFAULTS.totalSec * FPS);
 
@@ -27,7 +28,10 @@ export const Root: React.FC = () => {
           sidecarSrc: 'latest/game.ndjson',
           musicSrc: 'latest/music.opus',
           musicStartSec: 0,
-          musicDuckStartFrame: null,
+          wastedStartFrame: null,
+          wastedTextSrc: 'latest/wasted.png',
+          wastedAudioSrc: 'latest/wasted.mp3',
+          wastedEffectProps: WASTED_EFFECT_DEFAULTS,
         }}
       />
       <Composition
