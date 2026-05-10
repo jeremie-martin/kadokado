@@ -157,7 +157,7 @@ const LayoutFrame: React.FC<{
           padding: '0 44px',
           filter: supportFilter,
           backgroundColor: waterDanger > 0
-            ? `rgba(255, 60, 50, ${(waterDanger * 0.55).toFixed(3)})`
+            ? `rgba(255, 100, 60, ${(waterDanger * 0.55).toFixed(3)})`
             : undefined,
         }}
       >
@@ -176,15 +176,15 @@ const LayoutFrame: React.FC<{
       >
         <AbsoluteFill style={{ filter: wasted?.grade.filter ?? preTellGrade ?? undefined }}>
           {game}
+          {waterDanger > 0 && (
+            <AbsoluteFill
+              style={{
+                backgroundColor: `rgba(255, 100, 60, ${(waterDanger * 0.25).toFixed(3)})`,
+                pointerEvents: 'none',
+              }}
+            />
+          )}
         </AbsoluteFill>
-        {!wasted && waterDanger > 0 && (
-          <AbsoluteFill
-            style={{
-              backgroundColor: `rgba(255, 60, 50, ${(waterDanger * 0.25).toFixed(3)})`,
-              pointerEvents: 'none',
-            }}
-          />
-        )}
         {wasted && (
           <>
             <WastedTintLayer opacity={wasted.tint.opacity} color={wasted.tint.color} />
@@ -205,7 +205,7 @@ const LayoutFrame: React.FC<{
           height: BOTTOM_BAND_HEIGHT,
           filter: supportFilter,
           backgroundColor: waterDanger > 0
-            ? `rgba(255, 60, 50, ${(waterDanger * 0.55).toFixed(3)})`
+            ? `rgba(255, 100, 60, ${(waterDanger * 0.55).toFixed(3)})`
             : undefined,
         }}
       />

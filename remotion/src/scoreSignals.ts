@@ -30,8 +30,14 @@ export const PX_PER_METER = 5;
 // raw signal uses a quadratic ease-in so the response stays subtle across
 // the wider range and only intensifies as water gets genuinely close —
 // "red even at distance, not red all the time".
-export const DANGER_FAR_M = 35;
-export const TAU_WATER_DANGER_SEC = 0.3;
+export const DANGER_FAR_M = 40;
+// Asymmetric leaky integrator on the danger signal: fast attack so the
+// visual reacts immediately when water closes in, slow decay so the red
+// "lingers" after a near-miss (water moving away still leaves residual
+// tint for a moment, like a fading alarm). Symmetric LP averaged the two
+// and felt sluggish on attack and abrupt on relaxation.
+export const TAU_WATER_ATTACK_SEC = 0.2;
+export const TAU_WATER_DECAY_SEC = 0.8;
 
 export type ScoreSignals = {
   warmth: number[];        // raw integrator value, frame-indexed
@@ -110,13 +116,19 @@ export function useScorePulseState(
 // continuous [0,1] signal (dangerRaw), so the filter just smooths it.
 export function buildWaterDanger(sidecar: SidecarRow[], fps: number): number[] {
   const n = sidecar.length;
-  const raw = new Array<number>(n);
+  const alphaAttack = 1 - Math.exp(-1 / (TAU_WATER_ATTACK_SEC * fps));
+  const alphaDecay = 1 - Math.exp(-1 / (TAU_WATER_DECAY_SEC * fps));
+  const out = new Array<number>(n);
+  let x = 0;
   for (let i = 0; i < n; i++) {
     const distM = (sidecar[i].waterY - sidecar[i].blob.y) / PX_PER_METER;
     const t = clamp01(1 - Math.max(0, distM) / DANGER_FAR_M);
-    raw[i] = t * t; // quadratic ease-in: subtle at distance, sharp near 0
+    const raw = t * t; // quadratic ease-in: subtle at distance, sharp near 0
+    const alpha = raw > x ? alphaAttack : alphaDecay;
+    x = (1 - alpha) * x + alpha * raw;
+    out[i] = x;
   }
-  return computeLeaky(raw, TAU_WATER_DANGER_SEC, fps);
+  return out;
 }
 
 export function useWaterDanger(
