@@ -227,11 +227,14 @@ function writeStream(stream, chunk) {
 }
 
 function startRawVideoEncoder(opts, outPath) {
-  // Lossless H.264 mp4: -qp 0 makes the encoder reconstruct the source pixels
-  // exactly. yuv444p preserves chroma without subsampling — sprite art with
-  // saturated colors and sharp edges needs this. -preset veryfast keeps the
-  // encode wall-clock close to the rendering loop's pace; lossless mode means
-  // the preset only affects compression ratio, not visual quality.
+  // Visually-lossless H.264 mp4: -crf 16 stays below the perceptual
+  // threshold for sprite art with hard edges, while shrinking the file
+  // ~10-15× vs true lossless (-qp 0). This capture is an intermediate that
+  // gets re-encoded by Remotion downstream, so pixel-exact reproduction
+  // isn't required. yuv444p preserves chroma without subsampling — sprite
+  // art with saturated colors and sharp edges needs this; yuv420p bleeds
+  // reds/greens at edges. -preset slow trades encode wall-clock for tighter
+  // compression at the same visual quality.
   //
   // Color: tag + convert as BT.709 limited range to match Remotion's output
   // path (remotion/remotion.config.ts sets colorSpace='bt709'). Without the
@@ -253,8 +256,8 @@ function startRawVideoEncoder(opts, outPath) {
     '-an',
     '-vf', 'zscale=matrix=709:matrixin=709:range=limited',
     '-c:v', 'libx264',
-    '-qp', '0',
-    '-preset', 'veryfast',
+    '-crf', '16',
+    '-preset', 'slow',
     '-pix_fmt', 'yuv444p',
     '-colorspace', 'bt709',
     '-color_primaries', 'bt709',
