@@ -26,11 +26,6 @@ const DEFAULT_TAIL_SECONDS = 2;
 const DEFAULT_MAX_PROBES = 50;
 const DEFAULT_PROBE_TIMEOUT_SECONDS = 5 * 60;
 const DEFAULT_FPS = 40;
-// Render-time planner config. Step-budget only (budgetMs = Infinity) so the
-// AI's plans depend solely on edge rollouts — same input produces the same
-// frames on any CPU. 500 leaves comfortable headroom over the ~180-edge
-// average and the 360 worst-case observed in headless analytics.
-const VIDEO_MAX_EDGE_ROLLOUTS = 500;
 
 // Asset roots are URL paths served by Vite from `public/assets/`. The x2/x4
 // variant trees live in `generated-assets/interwheel-upscale/` (gitignored,
@@ -244,12 +239,12 @@ function startRawVideoEncoder(opts, outPath) {
   return { child, closed };
 }
 
-async function probeSeed(page, seed, maxTicks, maxEdgeRollouts) {
+async function probeSeed(page, seed, maxTicks) {
   // Single page.evaluate so applyScene/reseed/loop run with no inter-eval
   // boundaries — keeps Math.random consumption identical to the render path
   // (where setupFrameCanvas + reseedRandomFresh + first stepFrame is the
   // equivalent boundary).
-  return await page.evaluate(({ s, maxT, edgeCap }) => {
+  return await page.evaluate(({ s, maxT }) => {
     const game = window.__game__;
     if (!game?.app) throw new Error('Interwheel game is not ready');
     game.app.ticker.stop();
@@ -265,11 +260,6 @@ async function probeSeed(page, seed, maxTicks, maxEdgeRollouts) {
     const reseedBtn = document.getElementById('game-reseed');
     if (!reseedBtn) throw new Error('game-reseed button missing');
     reseedBtn.click();
-    // Pin search limits AFTER reseed (so it's not overwritten by any reset
-    // hook) and BEFORE the first game.update so probe and render plan with
-    // identical configs. Infinity budgetMs = step-budget only.
-    if (!window.__planner__) throw new Error('Planner is not ready');
-    window.__planner__.setSearchLimits({ maxEdgeRollouts: edgeCap, budgetMs: Number.POSITIVE_INFINITY });
     // Reseed Math.random AFTER the wrapped-reset's own seed/save/restore so
     // every subsequent game.update consumes from a known fresh stream.
     let rs = (s | 0) >>> 0;
@@ -294,7 +284,7 @@ async function probeSeed(page, seed, maxTicks, maxEdgeRollouts) {
       heightMeters: Math.floor(game.maxHeight * 0.2),
       score: game.score,
     };
-  }, { s: seed, maxT: maxTicks, edgeCap: maxEdgeRollouts });
+  }, { s: seed, maxT: maxTicks });
 }
 
 async function setupRenderRun(page, opts, seed) {
@@ -313,10 +303,6 @@ async function setupRenderRun(page, opts, seed) {
     const reseedBtn = document.getElementById('game-reseed');
     if (!reseedBtn) throw new Error('game-reseed button missing');
     reseedBtn.click();
-    // Pin search limits to match probe (step-budget only, same edge cap).
-    // Wall-clock independence here is what makes probe→render frame-aligned.
-    if (!window.__planner__) throw new Error('Planner is not ready');
-    window.__planner__.setSearchLimits({ maxEdgeRollouts: init.maxEdgeRollouts, budgetMs: Number.POSITIVE_INFINITY });
     // Set up the recording canvas centered over the game canvas.
     const source = game.app.canvas;
     const sourceWidth = source.width;
@@ -525,7 +511,6 @@ async function renderRun(repoRoot, port, args, target, seed, tailFrames, hardCap
       height: outputSide,
       fps: args.fps,
       background: '#0e1418',
-      maxEdgeRollouts: VIDEO_MAX_EDGE_ROLLOUTS,
     }, outPath, seed, tailFrames, hardCapFrames);
     return { outPath, meta };
   } finally {
@@ -586,7 +571,7 @@ async function main() {
     for (let i = 0; i < args.maxProbes; i += 1) {
       const seed = args.seedBase + i;
       const probeStart = Date.now();
-      const probe = await probeSeed(probePage, seed, probeMaxTicks, VIDEO_MAX_EDGE_ROLLOUTS);
+      const probe = await probeSeed(probePage, seed, probeMaxTicks);
       const elapsed = ((Date.now() - probeStart) / 1000).toFixed(1);
       const deathSec = (probe.endingTick > 0 ? probe.endingTick : probe.ticks) / GAME_FPS;
       const verdict = !probe.ended

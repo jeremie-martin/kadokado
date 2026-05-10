@@ -540,10 +540,7 @@ export const PLANNER_PERCEPTION_DEFAULTS = {
 };
 
 export const PLANNER_SEARCH_DEFAULTS = {
-  // Wall-clock cap is opt-in. Default Number.POSITIVE_INFINITY so the search
-  // is gated purely by edge rollouts — deterministic and CPU-independent.
-  // The live HUD opts in to a finite ms budget as a frame-time guard.
-  budgetMs: Number.POSITIVE_INFINITY,
+  budgetMs: 5,
   maxEdgeRollouts: 360,
   maxStableDepth: 3,
 };
@@ -679,9 +676,7 @@ export class InterwheelPlanner {
       this.cfg.maxNodes = rollouts;
     }
     if (params.budgetMs !== undefined) {
-      this.cfg.budgetMs = Number.isFinite(params.budgetMs)
-        ? clamp(params.budgetMs, 1, 50)
-        : params.budgetMs;
+      this.cfg.budgetMs = clamp(params.budgetMs, 1, 50);
     }
     this.lastResult = null;
   }
