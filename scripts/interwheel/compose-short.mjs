@@ -108,12 +108,14 @@ function parseArgs(argv) {
     wastedTextFile: DEFAULT_WASTED_TEXT,
     wastedAudioFile: DEFAULT_WASTED_AUDIO,
     studio: false,
+    previousHighScore: null,
     help: false,
   };
   for (const raw of argv.slice(2)) {
     if (raw === '--help' || raw === '-h') args.help = true;
     else if (raw === '--no-music') args.noMusic = true;
     else if (raw === '--studio') args.studio = true;
+    else if (raw.startsWith('--prev-high=')) args.previousHighScore = Number(raw.slice('--prev-high='.length));
     else if (raw.startsWith('--seed=')) args.seed = Number(raw.slice('--seed='.length));
     else if (raw.startsWith('--preset=')) args.preset = raw.slice('--preset='.length);
     else if (raw.startsWith('--in=')) args.inMp4 = raw.slice('--in='.length);
@@ -162,6 +164,10 @@ OPTIONS:
   --studio                 Stage assets into remotion/public/latest/ and exit
                            (skip render). Use with 'cd remotion && npm run studio'
                            for a live-reload preview loop.
+  --prev-high=N            Display N as the previous high score on the right of
+                           the top band. When the live score crosses N, the HIGH
+                           readout fades out, the score label flips to "NEW BEST"
+                           and a synthetic kick fires on the score's pulse.
   --wasted-text=PATH       WASTED text PNG. Default ./${DEFAULT_WASTED_TEXT}.
   --wasted-audio=PATH      WASTED audio sting. Default ./${DEFAULT_WASTED_AUDIO}.
 
@@ -454,6 +460,7 @@ async function main() {
     wastedTextSrc: 'latest/wasted.png',
     wastedAudioSrc: 'latest/wasted.mp3',
     wastedEffectProps: wastedProps,
+    previousHighScore: args.previousHighScore,
   };
   await spawnLogged('npx', [
     'remotion', 'render',

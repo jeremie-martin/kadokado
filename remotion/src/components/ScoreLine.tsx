@@ -51,7 +51,8 @@ export const ScoreLine: React.FC<{
   score: number;
   warmth?: number;
   kickEnv?: number;
-}> = ({ score, warmth = 0, kickEnv = 0 }) => {
+  label?: string;
+}> = ({ score, warmth = 0, kickEnv = 0, label = 'Score' }) => {
   const blur = 6 + 28 * warmth + 22 * kickEnv;
   const glowOpacity = Math.min(1, 0.2 + 0.5 * warmth + 0.4 * kickEnv);
   const scale = (1 + 0.025 * warmth) * (1 + 0.06 * kickEnv);
@@ -63,7 +64,7 @@ export const ScoreLine: React.FC<{
 
   return (
     <Fragment>
-      <span style={labelStyle}>Score</span>
+      <span style={labelStyle}>{label}</span>
       <span
         style={{
           ...baseValueStyle,

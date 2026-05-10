@@ -12,8 +12,14 @@ import {
   useVideoConfig,
 } from 'remotion';
 import { ScoreLine } from './components/ScoreLine';
+import { HighScoreLine } from './components/HighScoreLine';
 import { loadSidecar, SidecarRow } from './sidecar';
-import { useScorePulseState, useWaterDanger, clamp01 } from './scoreSignals';
+import {
+  useScorePulseState,
+  useWaterDanger,
+  useHighScoreState,
+  clamp01,
+} from './scoreSignals';
 import {
   WastedEffectKnobs,
   WastedTextLayer,
@@ -153,6 +159,12 @@ export type InterwheelShortProps = {
   // the WASTED phase derives it from wastedStartFrame so the slow-mo replay
   // begins exactly where the regular gameplay leaves off.
   wastedEffectProps: WastedEffectKnobs;
+
+  // Previous high score to display on the right of the top band. When the
+  // live score crosses it, the HighScoreLine fades out, the ScoreLine label
+  // flips to "New Best", and a synthetic kick fires on the score's pulse.
+  // null/undefined hides the high score readout entirely.
+  previousHighScore?: number | null;
 };
 
 function resolveUrl(src: string): string {
@@ -180,9 +192,14 @@ const LayoutFrame: React.FC<{
   // lead-in window. Ignored when `wasted` is set — WASTED's grade takes over.
   preTellGrade?: string | null;
   // Score-pulse state from useScorePulseState (warmth in [0,1], kickEnv
-  // in [0,1]). Passed through to ScoreLine.
+  // in [0,1]). Passed through to ScoreLine. `kickEnv` here is already the
+  // max of the natural pastille kick and the synthetic high-score-crossing
+  // kick — caller composes.
   warmth: number;
   kickEnv: number;
+  scoreLabel: string;
+  previousHighScore: number | null | undefined;
+  highScoreOpacity: number;
   // Water danger ∈ [0, 1], LP-filtered (see useWaterDanger). Drives a red
   // tint overlay on both top and bottom bands — replaces the numeric
   // WaterGauge readout. 0 = calm, 1 = blob touching/below water.
@@ -203,6 +220,9 @@ const LayoutFrame: React.FC<{
   preTellGrade,
   warmth,
   kickEnv,
+  scoreLabel,
+  previousHighScore,
+  highScoreOpacity,
   waterDanger,
   dangerTintRGB,
   dangerVisibility,
@@ -242,10 +262,9 @@ const LayoutFrame: React.FC<{
           top: 0,
           width: SHORT_WIDTH,
           height: TOP_BAND_HEIGHT,
-          display: 'grid',
-          gridTemplateColumns: 'auto 1fr',
-          alignContent: 'center',
-          columnGap: 40,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
           padding: '0 44px',
           filter: supportFilter,
           backgroundColor: waterDanger > 0 && dangerVisibility > 0
@@ -253,7 +272,19 @@ const LayoutFrame: React.FC<{
             : undefined,
         }}
       >
-        <ScoreLine score={row?.score ?? 0} warmth={warmth} kickEnv={kickEnv} />
+        <div style={{ display: 'flex', alignItems: 'baseline', columnGap: 40 }}>
+          <ScoreLine
+            score={row?.score ?? 0}
+            warmth={warmth}
+            kickEnv={kickEnv}
+            label={scoreLabel}
+          />
+        </div>
+        {previousHighScore != null && previousHighScore > 0 && highScoreOpacity > 0 && (
+          <div style={{ display: 'flex', alignItems: 'baseline', columnGap: 24 }}>
+            <HighScoreLine highScore={previousHighScore} opacity={highScoreOpacity} />
+          </div>
+        )}
       </div>
 
       <div
@@ -325,12 +356,14 @@ const RegularPhase: React.FC<{
   videoUrl: string;
   sidecar: SidecarRow[] | null;
   wastedStartFrame: number | null;
-}> = ({ videoUrl, sidecar, wastedStartFrame }) => {
+  previousHighScore: number | null | undefined;
+}> = ({ videoUrl, sidecar, wastedStartFrame, previousHighScore }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
   const row = sidecar ? sidecar[Math.min(frame, sidecar.length - 1)] ?? null : null;
   const pulse = useScorePulseState(sidecar, frame, fps);
   const waterDanger = useWaterDanger(sidecar, frame, fps);
+  const highScore = useHighScoreState(sidecar, previousHighScore, frame, fps);
   const dangerTint = computeDangerTint({
     waterDanger,
     frameAbs: frame,
@@ -362,7 +395,10 @@ const RegularPhase: React.FC<{
       game={<OffthreadVideo src={videoUrl} muted style={centerGameStyle} />}
       preTellGrade={preTellGrade}
       warmth={pulse.warmth}
-      kickEnv={pulse.kickEnv}
+      kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
+      scoreLabel={highScore.scoreLabelIsNewBest ? 'New Best' : 'Score'}
+      previousHighScore={previousHighScore}
+      highScoreOpacity={highScore.highScoreOpacity}
       waterDanger={waterDanger}
       dangerTintRGB={dangerTint.rgb}
       dangerVisibility={dangerTint.visibility}
@@ -391,6 +427,7 @@ const WastedPhase: React.FC<{
   sidecar: SidecarRow[] | null;
   wastedStartFrame: number;
   effectProps: WastedEffectKnobs;
+  previousHighScore: number | null | undefined;
 }> = ({
   videoUrl,
   textUrl,
@@ -398,6 +435,7 @@ const WastedPhase: React.FC<{
   sidecar,
   wastedStartFrame,
   effectProps,
+  previousHighScore,
 }) => {
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
@@ -410,6 +448,7 @@ const WastedPhase: React.FC<{
   const row = sidecar ? sidecar[Math.min(absFrame, sidecar.length - 1)] ?? null : null;
   const pulse = useScorePulseState(sidecar, absFrame, fps);
   const waterDanger = useWaterDanger(sidecar, absFrame, fps);
+  const highScore = useHighScoreState(sidecar, previousHighScore, absFrame, fps);
   const dangerTint = computeDangerTint({
     waterDanger,
     frameAbs: absFrame,
@@ -459,7 +498,10 @@ const WastedPhase: React.FC<{
           ) : null
         }
         warmth={pulse.warmth}
-        kickEnv={pulse.kickEnv}
+        kickEnv={Math.max(pulse.kickEnv, highScore.crossKickEnv)}
+        scoreLabel={highScore.scoreLabelIsNewBest ? 'New Best' : 'Score'}
+        previousHighScore={previousHighScore}
+        highScoreOpacity={highScore.highScoreOpacity}
         waterDanger={waterDanger}
         dangerTintRGB={dangerTint.rgb}
         dangerVisibility={dangerTint.visibility}
@@ -479,6 +521,7 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
   wastedTextSrc,
   wastedAudioSrc,
   wastedEffectProps,
+  previousHighScore = null,
 }) => {
   const [sidecar, setSidecar] = useState<SidecarRow[] | null>(null);
   const [handle] = useState(() => delayRender('Loading sidecar'));
@@ -523,6 +566,7 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
           videoUrl={videoUrl}
           sidecar={sidecar}
           wastedStartFrame={wastedStartFrame}
+          previousHighScore={previousHighScore}
         />
       </Sequence>
 
@@ -535,6 +579,7 @@ export const InterwheelShort: React.FC<InterwheelShortProps> = ({
             sidecar={sidecar}
             wastedStartFrame={wastedStartFrame}
             effectProps={wastedEffectProps}
+            previousHighScore={previousHighScore}
           />
         </Sequence>
       )}

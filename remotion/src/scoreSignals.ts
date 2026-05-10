@@ -144,3 +144,54 @@ export function useWaterDanger(
   const idx = Math.min(Math.max(0, frame), sidecar.length - 1);
   return clamp01(arr[idx]);
 }
+
+// High-score crossing — when the current score first equals/exceeds the
+// previous high score, a synthetic kick fires on the score's kick channel,
+// the HighScoreLine fades out, and the score's label flips from "Score" to
+// "New Best". `previousHighScore` is null/undefined for runs without a high
+// score input (no crossing, HIGH not displayed).
+
+export const HIGH_SCORE_FADE_DURATION_SEC = 0.4;
+export const HIGH_SCORE_KICK_DECAY_SEC = 0.25; // matches score's kick decay
+
+function findCrossingFrame(
+  sidecar: SidecarRow[],
+  previousHighScore: number,
+): number | null {
+  for (let i = 0; i < sidecar.length; i++) {
+    if (sidecar[i].score >= previousHighScore) return i;
+  }
+  return null;
+}
+
+export type HighScoreState = {
+  highScoreOpacity: number;       // 1 pre-crossing, 0 fully past, lerps over fade window
+  scoreLabelIsNewBest: boolean;   // false pre-crossing, true at/after the crossing frame
+  crossKickEnv: number;           // [0, 1]; synthetic kick fired on the score at the crossing
+};
+
+export function useHighScoreState(
+  sidecar: SidecarRow[] | null,
+  previousHighScore: number | null | undefined,
+  frame: number,
+  fps: number,
+): HighScoreState {
+  const crossingFrame = useMemo(() => {
+    if (!sidecar || previousHighScore == null || previousHighScore <= 0) return null;
+    return findCrossingFrame(sidecar, previousHighScore);
+  }, [sidecar, previousHighScore]);
+
+  if (crossingFrame == null) {
+    return { highScoreOpacity: 1, scoreLabelIsNewBest: false, crossKickEnv: 0 };
+  }
+  const elapsed = (frame - crossingFrame) / fps;
+  if (elapsed < 0) {
+    return { highScoreOpacity: 1, scoreLabelIsNewBest: false, crossKickEnv: 0 };
+  }
+  const fadeT = clamp01(elapsed / HIGH_SCORE_FADE_DURATION_SEC);
+  return {
+    highScoreOpacity: 1 - fadeT,
+    scoreLabelIsNewBest: true,
+    crossKickEnv: pulseDecay(elapsed, HIGH_SCORE_KICK_DECAY_SEC),
+  };
+}
