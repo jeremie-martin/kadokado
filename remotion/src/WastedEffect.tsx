@@ -50,6 +50,15 @@ export type WastedEffectKnobs = {
   tintColor: string;           // '#34221a' — sepia. Pass cool teal '#1d2a35'
                                // for the Max-Payne alternative.
 
+  // Post-impact saturation drop. After the WASTED text lands, saturation
+  // can lerp further down toward postImpactSaturation over a window of
+  // postImpactSaturationDurationSec. Pass postImpactSaturation =
+  // endSaturation (the default) to disable — saturation just holds at the
+  // drain endpoint. Useful for pushing the death moment further toward
+  // grayscale/old-film once the text has impacted.
+  postImpactSaturation: number;
+  postImpactSaturationDurationSec: number;
+
   // Vignette.
   vignetteIntensity: number;   // 0.86 — final dark-edge strength (0..1)
   vignetteInnerRadius: number; // 0.28 — fraction where dimming starts (0..1)
@@ -94,6 +103,8 @@ export const WASTED_EFFECT_DEFAULTS: WastedEffectKnobs = {
   tintColor: '#34221a',
   vignetteIntensity: 0.86,
   vignetteInnerRadius: 0.28,
+  postImpactSaturation: 0.26,    // = endSaturation → no-op by default
+  postImpactSaturationDurationSec: 1.0,
   basePlaybackRate: 0.15,
   baseStartFromSec: 0,
   textOvershootScale: 1.18,
@@ -130,7 +141,16 @@ export function useWastedTimeline(
   const drain = clamp(t / props.drainSec, 0, 1);
   const drainEased = Easing.out(Easing.cubic)(drain);
 
-  const sat = lerp(1, props.endSaturation, drainEased);
+  // Two-stage saturation: phase 1 drains 1 → endSaturation over drainSec
+  // (eased), phase 2 (post-impact) lerps endSaturation → postImpactSaturation
+  // over postImpactSaturationDurationSec, kicking in once the text impacts.
+  const drainSat = lerp(1, props.endSaturation, drainEased);
+  const postImpactT = clamp(
+    (t - props.textAppearSec) / Math.max(0.001, props.postImpactSaturationDurationSec),
+    0,
+    1,
+  );
+  const sat = lerp(drainSat, props.postImpactSaturation, postImpactT);
   const bri = lerp(1, props.endBrightness, drainEased);
   const con = lerp(1, props.endContrast, drainEased);
 

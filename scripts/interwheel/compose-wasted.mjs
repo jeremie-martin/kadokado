@@ -51,6 +51,8 @@ const DEFAULTS = {
   tintColor: '#34221a',
   vignetteIntensity: 0.86,
   vignetteInnerRadius: 0.28,
+  postImpactSaturation: 0.26,    // = endSaturation by default
+  postImpactSaturationDurationSec: 1.0,
   basePlaybackRate: 0.15,
   baseStartFromSec: 0,
   textOvershootScale: 1.18,

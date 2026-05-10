@@ -76,6 +76,11 @@ const CINEMATIC_WASTED_PROPS = {
   tintColor: '#3a2410',
   vignetteIntensity: 0.78,
   vignetteInnerRadius: 0.26,
+  // After the WASTED text impacts, lerp saturation further down toward
+  // 0 (full grayscale) over 1s. Pushes the post-impact moments deeper
+  // into "old film" before the WASTED phase ends.
+  postImpactSaturation: 0.0,
+  postImpactSaturationDurationSec: 1.0,
   basePlaybackRate: 0.10,
   baseStartFromSec: 0,            // overwritten inside InterwheelShort
   textOvershootScale: 1.24,
