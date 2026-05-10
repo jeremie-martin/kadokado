@@ -103,11 +103,13 @@ const LayoutFrame: React.FC<{
   // box only (HUD bands and backdrop unaffected) during the regular phase's
   // lead-in window. Ignored when `wasted` is set — WASTED's grade takes over.
   preTellGrade?: string | null;
-  // TEMP iteration scaffold (see ScoreVariantsLab). Rendered in the empty
-  // 1fr column of the bottom band, alongside WaterGauge. null/undefined
-  // hides it entirely — bottom band stays as it shipped.
-  scoreLabNode?: React.ReactNode;
-}> = ({ row, backdrop, game, wasted, textNode, preTellGrade, scoreLabNode }) => {
+  // TEMP iteration scaffold flag. When true, the central gameplay box does
+  // NOT receive the WASTED grade/tint/vignette — the lab content fills it
+  // raw so subtle warmth/glow effects are visible without competing with a
+  // WASTED color drain. The caller is responsible for passing the lab as
+  // `game` when this is set.
+  isScoreLab?: boolean;
+}> = ({ row, backdrop, game, wasted, textNode, preTellGrade, isScoreLab }) => {
   const drain = wasted?.drainEased ?? 0;
   // Soft grade applied to the HUD bands and the blurred backdrop during
   // WASTED. Peak (drain=1) lands at saturate(0.55) brightness(0.82) — strong
@@ -166,10 +168,12 @@ const LayoutFrame: React.FC<{
           overflow: 'hidden',
         }}
       >
-        <AbsoluteFill style={{ filter: wasted?.grade.filter ?? preTellGrade ?? undefined }}>
+        <AbsoluteFill
+          style={{ filter: isScoreLab ? undefined : wasted?.grade.filter ?? preTellGrade ?? undefined }}
+        >
           {game}
         </AbsoluteFill>
-        {wasted && (
+        {wasted && !isScoreLab && (
           <>
             <WastedTintLayer opacity={wasted.tint.opacity} color={wasted.tint.color} />
             <WastedVignetteLayer
@@ -196,7 +200,6 @@ const LayoutFrame: React.FC<{
         }}
       >
         <WaterGauge waterY={row?.waterY ?? 0} blobY={row?.blob.y ?? 0} />
-        {scoreLabNode}
       </div>
 
       {textNode}
@@ -248,13 +251,15 @@ const RegularPhase: React.FC<{
     <LayoutFrame
       row={row}
       backdrop={<OffthreadVideo src={videoUrl} muted style={blurredBackdropStyle} />}
-      game={<OffthreadVideo src={videoUrl} muted style={centerGameStyle} />}
-      preTellGrade={preTellGrade}
-      scoreLabNode={
+      game={
         showScoreLab ? (
           <ScoreVariantsLab sidecar={sidecar} frame={frame} fps={fps} />
-        ) : null
+        ) : (
+          <OffthreadVideo src={videoUrl} muted style={centerGameStyle} />
+        )
       }
+      preTellGrade={showScoreLab ? null : preTellGrade}
+      isScoreLab={showScoreLab}
     />
   );
 };
@@ -329,7 +334,13 @@ const WastedPhase: React.FC<{
       <LayoutFrame
         row={row}
         backdrop={slowMoBackdrop}
-        game={slowMoGame}
+        game={
+          showScoreLab ? (
+            <ScoreVariantsLab sidecar={sidecar} frame={absFrame} fps={fps} />
+          ) : (
+            slowMoGame
+          )
+        }
         wasted={timeline}
         textNode={
           timeline.text.visible ? (
@@ -341,11 +352,7 @@ const WastedPhase: React.FC<{
             />
           ) : null
         }
-        scoreLabNode={
-          showScoreLab ? (
-            <ScoreVariantsLab sidecar={sidecar} frame={absFrame} fps={fps} />
-          ) : null
-        }
+        isScoreLab={showScoreLab}
       />
 
       <Audio src={audioUrl} startFrom={audioStartFromFrames} />

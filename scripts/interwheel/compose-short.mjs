@@ -367,7 +367,10 @@ async function main() {
     wastedProps.textAppearSec * wastedProps.basePlaybackRate * FPS,
   );
   const wastedDurationFrames = Math.round(wastedProps.totalSec * FPS);
-  const wastedStartFrame = deathFrame == null
+  // In score-lab mode the lab fills the central game area for the whole
+  // run; the WASTED takeover is irrelevant (and would just decay the
+  // integrators since the score is frozen post-death). Force-disable it.
+  const wastedStartFrame = (deathFrame == null || args.scoreLab)
     ? null
     : Math.max(0, deathFrame - wastedLeadFrames);
   const totalFrames = wastedStartFrame == null
@@ -380,6 +383,8 @@ async function main() {
       `(${(wastedStartFrame / FPS).toFixed(2)}s, lead ${wastedLeadFrames} frames before death), ` +
       `runs ${wastedDurationFrames} frames (${wastedProps.totalSec.toFixed(2)}s)`,
     );
+  } else if (args.scoreLab) {
+    console.log('Score lab mode — WASTED takeover skipped, lab fills the run.');
   } else {
     console.log('No death in this run — rendering gameplay only, no WASTED.');
   }

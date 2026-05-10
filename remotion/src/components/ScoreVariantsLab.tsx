@@ -1,214 +1,343 @@
-// TEMPORARY iteration scaffold — five score-pulse treatments rendered side
-// by side so a single render exposes all candidates simultaneously. The
-// "winner" gets folded back into ScoreLine and the lab + the showScoreLab
-// prop get deleted.
+// TEMPORARY iteration scaffold (v2) — five score-warmth treatments rendered
+// in the central 1080×1080 game area so each variant gets ~200 px of vertical
+// room and subtle effects are visible. The "winner" gets folded back into
+// ScoreLine and this whole file + the showScoreLab prop come out.
 //
-// Variants (in render order, top to bottom):
-//   V1 plain     — control. No pulse, just the value.
-//   V2 scale     — soft scale bump on every increment, ~120ms cubic decay.
-//                  ±4% size — the "tasteful default".
-//   V3 flash     — brightness flash (filter brightness 1 → 1.5 → 1) over
-//                  ~150ms. Tests whether a luminance kick reads better than
-//                  a size kick.
-//   V4 tier      — thresholded: small pulse for tiny deltas, bigger pulse
-//                  + warm color tint for delta ≥ 200 (pastille proxy). The
-//                  derivative-aware variant from the brief.
-//   V5 spring    — overshoot+settle damped sinusoid, ~400ms. Stacking on
-//                  rapid increments gives a "kept hitting" feel — tests
-//                  whether physical motion reads as more alive.
+// Model — both channels precomputed once over the full sidecar in useMemo,
+// indexed per frame to render. O(n) once, O(1) per frame.
 //
-// All five share the same input data (sidecar score, current frame, fps);
-// only the treatment differs. The lab walks back up to 2s through the
-// sidecar to find the most recent score increment, then drives each variant
-// off `(elapsedSec, delta)`. Walk is bounded to keep per-frame cost flat.
+//   Warmth channel (continuous "is something happening")
+//   ──────────────────────────────────────────────────────
+//   Leaky integrator over Δscore[t]:
+//       x[t+1] = (1 − α) · x[t] + α · Δ[t]   with α = 1 − exp(−1 / (τ·fps))
+//
+//   Two τ values are precomputed: 0.7 s (smooth) and 0.3 s (jumpy). Both
+//   are normalized by WARMTH_NORM (= 100) and clamped to [0, 1].
+//
+//   Empirical from seed4200: τ=0.7 sits at p50≈19, p90≈33, p99≈122,
+//   max=214 — pastilles spike clearly above the climbing baseline.
+//
+//   Kick channel (impulsive "got a real bonus")
+//   ───────────────────────────────────────────
+//   Sharp envelope ON when Δ ≥ KICK_THRESHOLD (= 100). Quadratic decay
+//   over KICK_DECAY_SEC (= 0.25 s). Independent of warmth — fires only on
+//   the bimodal upper tail (pastilles and finale spikes).
+//
+// Variants (top→bottom in the panel):
+//   L1 glow                — warmth → drop-shadow glow only
+//   L2 color               — warmth → white→gold lerp only
+//   L3 glow + color + scale — combined warmth treatment, no kick
+//   L4 + kick              — L3 plus kick (extra glow + scale + brightness)
+//   L5 jumpy warmth        — L4 with τ=0.3 s on warmth (more reactive)
+//
+// A small live-signal strip at the top of the panel shows w₀.₇, w₀.₃, kick
+// as 0..1 bars so the visual response can be cross-referenced to the input.
 
+import { useMemo } from 'react';
 import { SidecarRow } from '../sidecar';
 
 const FONT_FAMILY = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
-const VARIANT_LABEL_FONT_SIZE = 22;
-const VARIANT_VALUE_FONT_SIZE = 56;
-const PASTILLE_TIER_DELTA = 200;
+const VALUE_FONT_PX = 132;
+const LABEL_FONT_PX = 30;
+const HINT_FONT_PX = 20;
+const SIGNAL_STRIP_HEIGHT = 56;
 
-type IncrementState = {
-  elapsedSec: number;
-  delta: number;
+const WARMTH_NORM = 100;       // raw integrator value that maps to 1.0
+const KICK_THRESHOLD = 100;    // Δscore ≥ this fires the kick
+const KICK_DECAY_SEC = 0.25;   // kick envelope length
+
+type LabSignals = {
+  warmth07: number[];
+  warmth03: number[];
+  kickElapsed: number[]; // seconds since most recent Δ ≥ KICK_THRESHOLD
 };
 
-function findLastIncrement(
-  sidecar: SidecarRow[],
-  idx: number,
-  fps: number,
-): IncrementState {
-  const lookbackFrames = Math.min(idx, fps * 2); // 2s lookback bound
-  for (let i = idx; i > idx - lookbackFrames; i--) {
-    if (i <= 0) break;
-    const dx = sidecar[i].score - sidecar[i - 1].score;
-    if (dx > 0) {
-      return { elapsedSec: (idx - i) / fps, delta: dx };
-    }
+function computeLeaky(deltas: number[], tauSec: number, fps: number): number[] {
+  const alpha = 1 - Math.exp(-1 / (tauSec * fps));
+  const out = new Array(deltas.length);
+  let x = 0;
+  for (let i = 0; i < deltas.length; i++) {
+    x = (1 - alpha) * x + alpha * deltas[i];
+    out[i] = x;
   }
-  return { elapsedSec: 999, delta: 0 };
+  return out;
 }
 
-// Quadratic-decay impulse envelope: 1 at t=0, 0 at t=durationSec.
+function buildSignals(sidecar: SidecarRow[], fps: number): LabSignals {
+  const n = sidecar.length;
+  const deltas = new Array<number>(n).fill(0);
+  for (let i = 1; i < n; i++) deltas[i] = sidecar[i].score - sidecar[i - 1].score;
+
+  const warmth07 = computeLeaky(deltas, 0.7, fps);
+  const warmth03 = computeLeaky(deltas, 0.3, fps);
+
+  const kickElapsed = new Array<number>(n);
+  let lastBigFrame = -10000;
+  for (let i = 0; i < n; i++) {
+    if (deltas[i] >= KICK_THRESHOLD) lastBigFrame = i;
+    kickElapsed[i] = (i - lastBigFrame) / fps;
+  }
+  return { warmth07, warmth03, kickElapsed };
+}
+
 function pulseDecay(elapsedSec: number, durationSec: number): number {
   if (elapsedSec >= durationSec || elapsedSec < 0) return 0;
   const t = elapsedSec / durationSec;
   return (1 - t) ** 2;
 }
 
-// Damped cosine for the spring variant. Frequency in Hz, decay in 1/s.
-function dampedSpring(elapsedSec: number, freqHz: number, decayPerSec: number): number {
-  if (elapsedSec < 0) return 0;
-  return Math.exp(-elapsedSec * decayPerSec) * Math.cos(elapsedSec * 2 * Math.PI * freqHz);
+function clamp01(v: number): number {
+  return Math.max(0, Math.min(1, v));
 }
-
-const baseValueStyle: React.CSSProperties = {
-  fontFamily: FONT_FAMILY,
-  fontSize: VARIANT_VALUE_FONT_SIZE,
-  lineHeight: 1,
-  fontWeight: 800,
-  color: '#fff',
-  fontVariantNumeric: 'tabular-nums',
-  letterSpacing: -1,
-  textShadow: '0 2px 12px rgba(0, 0, 0, 0.45)',
-  display: 'inline-block',
-  transformOrigin: 'left center',
-};
-
-const labelStyle: React.CSSProperties = {
-  fontFamily: FONT_FAMILY,
-  fontSize: VARIANT_LABEL_FONT_SIZE,
-  fontWeight: 600,
-  color: 'rgba(255, 255, 255, 0.55)',
-  textTransform: 'uppercase',
-  letterSpacing: 2,
-  width: 80,
-  flexShrink: 0,
-};
 
 function formatScore(score: number): string {
   return score.toLocaleString('en-US');
 }
 
-function VariantRow({
-  label,
-  children,
-}: {
-  label: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 16, height: 64 }}>
-      <span style={labelStyle}>{label}</span>
-      {children}
-    </div>
-  );
+// Lerp white(255,255,255) → gold(255,209,102).
+function warmthColor(w: number): string {
+  const r = 255;
+  const g = Math.round(255 - (255 - 209) * w);
+  const b = Math.round(255 - (255 - 102) * w);
+  return `rgb(${r}, ${g}, ${b})`;
 }
 
-const V1Plain: React.FC<{ score: number }> = ({ score }) => (
-  <VariantRow label="V1 plain">
-    <span style={baseValueStyle}>{formatScore(score)}</span>
-  </VariantRow>
+const baseValueStyle: React.CSSProperties = {
+  fontFamily: FONT_FAMILY,
+  fontSize: VALUE_FONT_PX,
+  lineHeight: 1,
+  fontWeight: 800,
+  color: '#fff',
+  fontVariantNumeric: 'tabular-nums',
+  letterSpacing: -2,
+  display: 'inline-block',
+  transformOrigin: 'left center',
+  willChange: 'transform, filter, color',
+};
+
+const baseShadow = 'drop-shadow(0 4px 14px rgba(0,0,0,0.6))';
+
+const L1Glow: React.FC<{ score: number; w: number }> = ({ score, w }) => {
+  const blur = 8 + 36 * w;
+  const opacity = 0.25 + 0.55 * w;
+  const filter =
+    `drop-shadow(0 0 ${blur.toFixed(1)}px rgba(255, 195, 110, ${opacity.toFixed(3)})) ` +
+    baseShadow;
+  return <span style={{ ...baseValueStyle, filter }}>{formatScore(score)}</span>;
+};
+
+const L2Color: React.FC<{ score: number; w: number }> = ({ score, w }) => (
+  <span style={{ ...baseValueStyle, color: warmthColor(w), filter: baseShadow }}>
+    {formatScore(score)}
+  </span>
 );
 
-const V2Scale: React.FC<{ score: number; inc: IncrementState }> = ({
-  score,
-  inc,
-}) => {
-  const scale = 1 + 0.04 * pulseDecay(inc.elapsedSec, 0.12);
+const L3Combined: React.FC<{ score: number; w: number }> = ({ score, w }) => {
+  const blur = 6 + 28 * w;
+  const opacity = 0.2 + 0.5 * w;
+  const scale = 1 + 0.025 * w;
+  const filter =
+    `drop-shadow(0 0 ${blur.toFixed(1)}px rgba(255, 195, 110, ${opacity.toFixed(3)})) ` +
+    baseShadow;
   return (
-    <VariantRow label="V2 scale">
-      <span style={{ ...baseValueStyle, transform: `scale(${scale.toFixed(4)})` }}>
-        {formatScore(score)}
-      </span>
-    </VariantRow>
+    <span
+      style={{
+        ...baseValueStyle,
+        color: warmthColor(w),
+        filter,
+        transform: `scale(${scale.toFixed(4)})`,
+      }}
+    >
+      {formatScore(score)}
+    </span>
   );
 };
 
-const V3Flash: React.FC<{ score: number; inc: IncrementState }> = ({
+const TwoChannel: React.FC<{ score: number; w: number; kickEnv: number }> = ({
   score,
-  inc,
+  w,
+  kickEnv,
 }) => {
-  const bri = 1 + 0.5 * pulseDecay(inc.elapsedSec, 0.15);
+  const blur = 6 + 28 * w + 22 * kickEnv;
+  const opacity = clamp01(0.2 + 0.5 * w + 0.4 * kickEnv);
+  const scale = (1 + 0.025 * w) * (1 + 0.06 * kickEnv);
+  const brightness = 1 + 0.4 * kickEnv;
+  const filter =
+    `drop-shadow(0 0 ${blur.toFixed(1)}px rgba(255, 195, 110, ${opacity.toFixed(3)})) ` +
+    `brightness(${brightness.toFixed(3)}) ` +
+    baseShadow;
   return (
-    <VariantRow label="V3 flash">
-      <span style={{ ...baseValueStyle, filter: `brightness(${bri.toFixed(3)})` }}>
-        {formatScore(score)}
-      </span>
-    </VariantRow>
+    <span
+      style={{
+        ...baseValueStyle,
+        color: warmthColor(w),
+        filter,
+        transform: `scale(${scale.toFixed(4)})`,
+      }}
+    >
+      {formatScore(score)}
+    </span>
   );
 };
 
-const V4Tier: React.FC<{ score: number; inc: IncrementState }> = ({
-  score,
-  inc,
+const labelColStyle: React.CSSProperties = {
+  width: 280,
+  flexShrink: 0,
+  paddingLeft: 60,
+};
+const labelTitleStyle: React.CSSProperties = {
+  fontFamily: FONT_FAMILY,
+  fontSize: LABEL_FONT_PX,
+  fontWeight: 700,
+  color: 'rgba(255, 255, 255, 0.85)',
+  letterSpacing: 4,
+  textTransform: 'uppercase',
+  display: 'block',
+};
+const labelHintStyle: React.CSSProperties = {
+  fontFamily: FONT_FAMILY,
+  fontSize: HINT_FONT_PX,
+  fontWeight: 500,
+  color: 'rgba(255, 255, 255, 0.45)',
+  marginTop: 6,
+  display: 'block',
+};
+
+const VariantRow: React.FC<{
+  label: string;
+  hint: string;
+  children: React.ReactNode;
+}> = ({ label, hint, children }) => (
+  <div style={{ display: 'flex', alignItems: 'center', minHeight: 168 }}>
+    <div style={labelColStyle}>
+      <span style={labelTitleStyle}>{label}</span>
+      <span style={labelHintStyle}>{hint}</span>
+    </div>
+    <div style={{ flex: 1 }}>{children}</div>
+  </div>
+);
+
+const SignalBar: React.FC<{ label: string; value: number; max?: number }> = ({
+  label,
+  value,
+  max = 1,
 }) => {
-  const big = inc.delta >= PASTILLE_TIER_DELTA;
-  const mag = big ? 0.10 : 0.04;
-  const dur = big ? 0.22 : 0.10;
-  const env = pulseDecay(inc.elapsedSec, dur);
-  const scale = 1 + mag * env;
-  // Big tier also adds a warm tint that fades with the same envelope.
-  const tintStrength = big ? env : 0;
-  const color = tintStrength > 0
-    ? `rgb(255, ${Math.round(255 - 30 * tintStrength)}, ${Math.round(255 - 120 * tintStrength)})`
-    : '#fff';
+  const pct = clamp01(value / max);
   return (
-    <VariantRow label="V4 tier">
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flex: 1 }}>
       <span
         style={{
-          ...baseValueStyle,
-          transform: `scale(${scale.toFixed(4)})`,
-          color,
+          fontFamily: FONT_FAMILY,
+          fontSize: 16,
+          color: 'rgba(255,255,255,0.55)',
+          fontVariantNumeric: 'tabular-nums',
+          width: 110,
+          letterSpacing: 1,
         }}
       >
-        {formatScore(score)}
+        {label}
       </span>
-    </VariantRow>
+      <div
+        style={{
+          flex: 1,
+          height: 6,
+          borderRadius: 3,
+          background: 'rgba(255,255,255,0.08)',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            width: `${(pct * 100).toFixed(1)}%`,
+            height: '100%',
+            background: 'rgba(255, 195, 110, 0.85)',
+          }}
+        />
+      </div>
+      <span
+        style={{
+          fontFamily: FONT_FAMILY,
+          fontSize: 16,
+          color: 'rgba(255,255,255,0.65)',
+          fontVariantNumeric: 'tabular-nums',
+          width: 56,
+          textAlign: 'right',
+        }}
+      >
+        {value.toFixed(2)}
+      </span>
+    </div>
   );
 };
 
-const V5Spring: React.FC<{ score: number; inc: IncrementState }> = ({
-  score,
-  inc,
-}) => {
-  const offset = 0.08 * dampedSpring(inc.elapsedSec, 6, 6);
-  const scale = 1 + offset;
-  return (
-    <VariantRow label="V5 spring">
-      <span style={{ ...baseValueStyle, transform: `scale(${scale.toFixed(4)})` }}>
-        {formatScore(score)}
-      </span>
-    </VariantRow>
-  );
-};
+const SignalStrip: React.FC<{ w07: number; w03: number; kickEnv: number }> = ({
+  w07,
+  w03,
+  kickEnv,
+}) => (
+  <div
+    style={{
+      height: SIGNAL_STRIP_HEIGHT,
+      padding: '0 60px',
+      display: 'flex',
+      alignItems: 'center',
+      gap: 32,
+      borderBottom: '1px solid rgba(255,255,255,0.08)',
+    }}
+  >
+    <SignalBar label="w  τ=0.7s" value={w07} />
+    <SignalBar label="w  τ=0.3s" value={w03} />
+    <SignalBar label="kick" value={kickEnv} />
+  </div>
+);
 
 export const ScoreVariantsLab: React.FC<{
   sidecar: SidecarRow[] | null;
   frame: number;
   fps: number;
 }> = ({ sidecar, frame, fps }) => {
-  if (!sidecar || sidecar.length === 0) return null;
+  const signals = useMemo(
+    () => (sidecar ? buildSignals(sidecar, fps) : null),
+    [sidecar, fps],
+  );
+  if (!sidecar || !signals || sidecar.length === 0) return null;
+
   const idx = Math.min(frame, sidecar.length - 1);
   const score = sidecar[idx].score;
-  const inc = findLastIncrement(sidecar, idx, fps);
+  const w07 = clamp01(signals.warmth07[idx] / WARMTH_NORM);
+  const w03 = clamp01(signals.warmth03[idx] / WARMTH_NORM);
+  const kickEnv = pulseDecay(signals.kickElapsed[idx], KICK_DECAY_SEC);
 
   return (
     <div
       style={{
+        width: '100%',
+        height: '100%',
+        background:
+          'radial-gradient(ellipse at center, #131820 0%, #08090c 100%)',
         display: 'flex',
         flexDirection: 'column',
-        gap: 8,
-        justifyContent: 'center',
-        height: '100%',
+        boxSizing: 'border-box',
       }}
     >
-      <V1Plain score={score} />
-      <V2Scale score={score} inc={inc} />
-      <V3Flash score={score} inc={inc} />
-      <V4Tier score={score} inc={inc} />
-      <V5Spring score={score} inc={inc} />
+      <SignalStrip w07={w07} w03={w03} kickEnv={kickEnv} />
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'space-evenly' }}>
+        <VariantRow label="L1" hint="warmth → glow">
+          <L1Glow score={score} w={w07} />
+        </VariantRow>
+        <VariantRow label="L2" hint="warmth → color (white→gold)">
+          <L2Color score={score} w={w07} />
+        </VariantRow>
+        <VariantRow label="L3" hint="glow + color + tiny scale">
+          <L3Combined score={score} w={w07} />
+        </VariantRow>
+        <VariantRow label="L4" hint="L3 + kick on Δ ≥ 100">
+          <TwoChannel score={score} w={w07} kickEnv={kickEnv} />
+        </VariantRow>
+        <VariantRow label="L5" hint="L4 with τ = 0.3 s warmth">
+          <TwoChannel score={score} w={w03} kickEnv={kickEnv} />
+        </VariantRow>
+      </div>
     </div>
   );
 };
